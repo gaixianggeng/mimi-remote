@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 // deepSeekTestDependencies 的发现候选固定在这个地址上。
@@ -34,9 +35,7 @@ func writeStaleDeepSeekConnection(t *testing.T, enabled bool, baseURL string, au
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, enabled, baseURL, tokenPath)
 	setDeepSeekAutoDiscover(t, configPath, autoDiscover)
-	if err := os.WriteFile(tokenPath, []byte("stale-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("stale-token\n"))
 	return configPath, tokenPath
 }
 
@@ -190,9 +189,7 @@ func TestRotateDeepSeekCredentialRefusesIneligibleConnections(t *testing.T) {
 				tokenPath = filepath.Join(filepath.Dir(configPath), "external.token")
 				writeDeepSeekConfigAtPath(t, configPath, tc.enabled, tc.baseURL, tokenPath)
 				setDeepSeekAutoDiscover(t, configPath, tc.autoDiscover)
-				if err := os.WriteFile(tokenPath, []byte("stale-token\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, tokenPath, []byte("stale-token\n"))
 			}
 			original := mustReadFile(t, configPath)
 			dependencies := deepSeekTestDependencies()

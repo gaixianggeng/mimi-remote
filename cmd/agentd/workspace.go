@@ -20,17 +20,30 @@ func runWorkspaceWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	path := fs.String("config", config.DefaultPath(), "配置文件路径")
 	root := fs.String("root", "", "项目扫描与移动设备浏览授权目录")
+	scan := fs.String("scan-root", "", "项目扫描目录")
+	browse := fs.String("browse-root", "", "移动设备浏览授权目录；省略时保留现有授权")
 	restore := fs.String("restore-state", "", "恢复先前目录设置事务 JSON")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || (*root == "") == (*restore == "") {
-		return invalidOnboardingRequest(fmt.Errorf("必须且只能传入 --root 或 --restore-state，不能带位置参数"))
+	hasRoot := flagSetByCaller(fs, "root")
+	hasScan := flagSetByCaller(fs, "scan-root")
+	hasBrowse := flagSetByCaller(fs, "browse-root")
+	hasRestore := flagSetByCaller(fs, "restore-state")
+	valid := false
+	switch {
+	case hasRestore:
+		valid = *restore != "" && !hasRoot && !hasScan && !hasBrowse
+	case hasRoot:
+		valid = *root != "" && !hasScan && !hasBrowse
+	case hasScan:
+		valid = *scan != "" && (!hasBrowse || *browse != "")
 	}
-	if err := prepareDefaultConfigMigration(fs, *path, stderr); err != nil {
-		return err
+	if fs.NArg() != 0 || !valid {
+		return invalidOnboardingRequest(fmt.Errorf("请选择 --root、--scan-root [--browse-root] 或 --restore-state 中的一种形式"))
 	}
+	legacy := setupLegacyPath(fs)
 	var result agentsetup.WorkspaceConfigurationResult
 	var err error
 	if *restore != "" {
@@ -44,9 +57,11 @@ func runWorkspaceWithWriters(args []string, stdout, stderr io.Writer) error {
 		if receipt.Previous == nil || receipt.Applied == nil {
 			return invalidOnboardingRequest(fmt.Errorf("目录恢复记录不完整"))
 		}
-		result, err = agentsetup.RestoreWorkspace(*path, agentsetup.WorkspaceConfigurationResult{Previous: *receipt.Previous, Applied: *receipt.Applied})
+		result, err = agentsetup.EditWorkspace(*path, legacy, "", "", &agentsetup.WorkspaceConfigurationResult{Previous: *receipt.Previous, Applied: *receipt.Applied})
+	} else if hasScan {
+		result, err = agentsetup.EditWorkspace(*path, legacy, *scan, *browse, nil)
 	} else {
-		result, err = agentsetup.ConfigureWorkspace(*path, *root)
+		result, err = agentsetup.EditWorkspace(*path, legacy, *root, *root, nil)
 		if err != nil {
 			return moduleConfigFailure(*path, workspaceFailure(*root, err))
 		}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/tailcatevents"
 )
@@ -288,9 +289,7 @@ func TestRouterReplaysManagedPolicyAfterSidecarRestart(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	cfg := config.Config{Listen: "127.0.0.1:8787", Tailcat: config.TailcatConfig{Enabled: true, SidecarBin: binary}}
 	data, _ := json.Marshal(cfg)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, data)
 	managed := &syncCountingManagedPairing{}
 	_, router := NewRouterWithInstallationIDAndOptions(
 		cfg, nil, nil, "test", testInstallationID,

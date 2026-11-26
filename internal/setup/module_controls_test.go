@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func moduleTestConfig(t *testing.T) string {
@@ -24,16 +25,25 @@ func moduleTestConfig(t *testing.T) string {
 	document["projects"] = []config.ProjectConfig{{ID: "module-test", Name: "Module test", Path: t.TempDir()}}
 	if runtime.GOOS == "windows" {
 		appServer := config.DefaultManagedAppServerConfig()
-		appServer.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
+
+		token, err := config.CreatePrivateTemp(t.TempDir(), "app-server-token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := token.WriteString("synthetic-test-companion"); err != nil {
+			t.Fatal(err)
+		}
+		if err := token.Close(); err != nil {
+			t.Fatal(err)
+		}
+		appServer.WSTokenFile = token.Name()
 		document["app_server"] = appServer
 	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, raw)
 	return path
 }
 func moduleConfig(t *testing.T, path string) config.Config {

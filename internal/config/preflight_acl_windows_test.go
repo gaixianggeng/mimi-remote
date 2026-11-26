@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -26,10 +27,14 @@ func TestReadPrivatePreflightFileChecksWindowsDACL(t *testing.T) {
 		{"owner, administrators and SYSTEM", "(A;;FA;;;BA)(A;;FA;;;SY)", true},
 		{"everyone can read", "(A;;FR;;;WD)", false},
 		{"authenticated users can replace", "(A;;FW;;;AU)", false},
-		{"Users only see metadata", "(A;;0x80;;;BU)", true},
+		{"Users only see metadata", "(A;;FA;;;BA)(A;;FA;;;SY)(A;;0x80;;;BU)", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")" + tc.extra)
+			extra := tc.extra
+			if token.User.Sid.IsWellKnown(windows.WinLocalSystemSid) {
+				extra = strings.ReplaceAll(extra, "(A;;FA;;;SY)", "")
+			}
+			sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")" + extra)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -48,6 +53,28 @@ func TestReadPrivatePreflightFileChecksWindowsDACL(t *testing.T) {
 				t.Fatalf("broad DACL: bytes=%d err=%v", len(b), err)
 			}
 		})
+	}
+	// winnt.h ACE types not declared by x/sys/windows.
+	const accessAllowedObjectACE = 0x05
+	const accessAllowedCallbackACE = 0x09
+	for _, kind := range []uint8{accessAllowedObjectACE, accessAllowedCallbackACE, windows.ACCESS_DENIED_ACE_TYPE} {
+		sd, err := privateDescriptor()
+		if err != nil {
+			t.Fatal(err)
+		}
+		acl, _, err := sd.DACL()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, 0, &ace); err != nil {
+			t.Fatal(err)
+		}
+		// Only the in-memory ACE discriminator changes; no policy is installed.
+		ace.Header.AceType = kind
+		if privatePreflightDACL(acl, token.User.Sid) {
+			t.Fatalf("accepted ACE type %d", kind)
+		}
 	}
 	if privatePreflightDACL(nil, token.User.Sid) {
 		t.Error("accepted a NULL DACL")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 type bootTestHost struct {
@@ -56,9 +57,7 @@ func newBootTestHost(t *testing.T, enabled bool, markers ...string) *bootTestHos
 	}}
 	cfg.Auth.Token = testToken
 	data, _ := json.Marshal(cfg)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, data)
 	sidecar := newTailcatSidecarSupervisor(cfg, path)
 	sidecar.restartBaseDelay = 20 * time.Millisecond
 	sidecar.restartMaxDelay = 40 * time.Millisecond

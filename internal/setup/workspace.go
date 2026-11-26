@@ -2,21 +2,19 @@ package setup
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
-
-	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"time"
 )
 
-// WorkspaceState contains only the two user-selected access roots, never credentials.
 type WorkspaceState struct {
 	ScanRoots   json.RawMessage `json:"scan_roots,omitempty"`
 	BrowseRoots json.RawMessage `json:"browse_roots,omitempty"`
+	Confirmed   json.RawMessage `json:"workspace_confirmed,omitempty"`
 }
-
 type WorkspaceConfigurationResult struct {
 	Changed         bool           `json:"changed"`
 	RestartRequired bool           `json:"restart_required"`
@@ -24,82 +22,109 @@ type WorkspaceConfigurationResult struct {
 	Applied         WorkspaceState `json:"applied"`
 }
 
-// ConfigureWorkspace changes explicit roots without resetting tokens, pairings or modules.
 func ConfigureWorkspace(path, root string) (WorkspaceConfigurationResult, error) {
-	if !filepath.IsAbs(root) {
-		return WorkspaceConfigurationResult{}, fmt.Errorf("请选择完整的代码目录路径")
-	}
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return WorkspaceConfigurationResult{}, fmt.Errorf("无法打开代码目录：%w", err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.IsDir() {
-		return WorkspaceConfigurationResult{}, fmt.Errorf("代码目录必须是存在的文件夹")
-	}
-	doc, err := readModuleDocument(path, "network")
+	return ConfigureWorkspaceRoots(path, root, root)
+}
+func ConfigureWorkspaceRoots(path, scan, browse string) (WorkspaceConfigurationResult, error) {
+	return EditWorkspace(path, "", scan, browse, nil)
+}
+func RestoreWorkspace(path string, prior WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
+	return EditWorkspace(path, "", "", "", &prior)
+}
+func EditWorkspace(path, legacy, scan, browse string, restore *WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path, err := resolveConfigPath(path)
 	if err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
-	raw, err := json.Marshal([]string{filepath.Clean(resolved)})
+	if err = recoverPublication(ctx, path, legacy, defaultSetupFileTransactionOps(), nil); err != nil {
+		return WorkspaceConfigurationResult{}, err
+	}
+	p, err := readProposal(path, legacy, false)
 	if err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
-	return commitWorkspace(doc, WorkspaceState{ScanRoots: raw, BrowseRoots: raw})
-}
-
-func RestoreWorkspace(path string, previous WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
-	doc, err := readModuleDocument(path, "network")
+	if !p.source.exists {
+		return WorkspaceConfigurationResult{}, saveFailure("config_missing", os.ErrNotExist)
+	}
+	before := workspaceState(p.doc)
+	if restore != nil {
+		if !reflect.DeepEqual(before, compactWorkspaceState(restore.Applied)) {
+			return WorkspaceConfigurationResult{}, saveFailure("config_concurrent_change", errors.New("代码目录已更改，请刷新后重试"))
+		}
+		prev := restore.Previous
+		for key, raw := range map[string]json.RawMessage{"scan_roots": prev.ScanRoots, "browse_roots": prev.BrowseRoots} {
+			var roots []string
+			if raw == nil {
+				p.set(nil, key)
+				continue
+			}
+			if err = json.Unmarshal(raw, &roots); err != nil {
+				return WorkspaceConfigurationResult{}, saveFailure("invalid_request", err)
+			}
+			for _, r := range roots {
+				d, err := inspectSelection(r)
+				if err != nil {
+					return WorkspaceConfigurationResult{}, err
+				}
+				p.roots = append(p.roots, d)
+			}
+			p.set(raw, key)
+		}
+		if prev.Confirmed == nil {
+			p.set(nil, "onboarding", "workspace_confirmed")
+		} else {
+			p.set(prev.Confirmed, "onboarding", "workspace_confirmed")
+		}
+	} else {
+		if scan == "" {
+			return WorkspaceConfigurationResult{}, saveFailure("invalid_request", errors.New("请选择代码目录"))
+		}
+		for _, c := range []struct{ key, root string }{{"scan_roots", scan}, {"browse_roots", browse}} {
+			if c.root == "" {
+				for _, prior := range p.cfg.BrowseRoots {
+					d, err := inspectSelection(prior)
+					if err != nil {
+						return WorkspaceConfigurationResult{}, err
+					}
+					p.roots = append(p.roots, d)
+				}
+				continue
+			}
+			d, err := inspectSelection(c.root)
+			if err != nil {
+				return WorkspaceConfigurationResult{}, err
+			}
+			p.roots = append(p.roots, d)
+			p.set([]string{d.resolved}, c.key)
+		}
+		p.set(true, "onboarding", "workspace_confirmed")
+	}
+	raw, err := p.bytes()
 	if err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
-	if !reflect.DeepEqual(workspaceState(doc), compactWorkspaceState(previous.Applied)) {
-		return WorkspaceConfigurationResult{}, fmt.Errorf("代码目录已被其他操作修改，未覆盖新的设置；请刷新后重试")
+	if _, err = p.commit(ctx, raw, defaultSetupFileTransactionOps()); err != nil {
+		return WorkspaceConfigurationResult{}, err
 	}
-	return commitWorkspace(doc, previous.Previous)
+	return WorkspaceConfigurationResult{p.changed, p.changed, before, workspaceState(p.doc)}, nil
 }
-
-func workspaceState(doc moduleDocument) WorkspaceState {
-	return compactWorkspaceState(WorkspaceState{ScanRoots: doc.document["scan_roots"], BrowseRoots: doc.document["browse_roots"]})
+func workspaceState(doc setupDocument) WorkspaceState {
+	var section setupDocument
+	_ = json.Unmarshal(doc[doc.spelling("onboarding")], &section)
+	return compactWorkspaceState(WorkspaceState{doc[doc.spelling("scan_roots")], doc[doc.spelling("browse_roots")], section[section.spelling("workspace_confirmed")]})
 }
-
-// CLI JSON is indented for display; indentation in its raw values does not change the roots.
-func compactWorkspaceState(state WorkspaceState) WorkspaceState {
+func compactWorkspaceState(s WorkspaceState) WorkspaceState {
 	compact := func(raw json.RawMessage) json.RawMessage {
 		if raw == nil {
 			return nil
 		}
-		var buffer bytes.Buffer
-		if err := json.Compact(&buffer, raw); err != nil {
+		var b bytes.Buffer
+		if json.Compact(&b, raw) != nil {
 			return raw
 		}
-		return buffer.Bytes()
+		return b.Bytes()
 	}
-	return WorkspaceState{ScanRoots: compact(state.ScanRoots), BrowseRoots: compact(state.BrowseRoots)}
-}
-
-func commitWorkspace(doc moduleDocument, after WorkspaceState) (WorkspaceConfigurationResult, error) {
-	before := workspaceState(doc)
-	after = compactWorkspaceState(after)
-	changed := !reflect.DeepEqual(before, after)
-	if changed {
-		for key, raw := range map[string]json.RawMessage{"scan_roots": after.ScanRoots, "browse_roots": after.BrowseRoots} {
-			if raw == nil {
-				delete(doc.document, key)
-			} else {
-				doc.document[key] = raw
-			}
-		}
-		raw, err := json.MarshalIndent(doc.document, "", "  ")
-		if err != nil {
-			return WorkspaceConfigurationResult{}, err
-		}
-		if _, err := config.LoadSnapshot(raw); err != nil {
-			return WorkspaceConfigurationResult{}, fmt.Errorf("新的目录配置无效：%w", err)
-		}
-		if err := writePrivateFileAtomicallyCAS(doc.path, doc.original, append(raw, '\n')); err != nil {
-			return WorkspaceConfigurationResult{}, err
-		}
-	}
-	return WorkspaceConfigurationResult{Changed: changed, RestartRequired: changed, Previous: before, Applied: after}, nil
+	return WorkspaceState{compact(s.ScanRoots), compact(s.BrowseRoots), compact(s.Confirmed)}
 }

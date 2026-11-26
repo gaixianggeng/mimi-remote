@@ -26,17 +26,6 @@ func stubGatewayGitCommonDirectory(t *testing.T, stub func(ctx context.Context, 
 	t.Cleanup(func() { gatewayGitCommonDirectory = original })
 }
 
-func slowGitCommonDirectory(delay time.Duration) func(ctx context.Context, path string) (string, error) {
-	return func(ctx context.Context, path string) (string, error) {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-		return resolveGatewayGitCommonDirectory(ctx, path)
-	}
-}
-
 func hungGitCommonDirectory(ctx context.Context, _ string) (string, error) {
 	<-ctx.Done()
 	return "", ctx.Err()
@@ -90,8 +79,20 @@ func TestGlobalThreadListReusesGitOwnershipAcrossResponses(t *testing.T) {
 }
 
 func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
-	const gitDelay = 1500 * time.Millisecond
-	stubGatewayGitCommonDirectory(t, slowGitCommonDirectory(gitDelay))
+	// Hold Git until both responses arrive, regardless of runner or subprocess speed.
+	blocked, releaseGit := context.WithCancel(t.Context())
+	defer releaseGit()
+	resolved := make(chan error, 2)
+	stubGatewayGitCommonDirectory(t, func(ctx context.Context, path string) (string, error) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-blocked.Done():
+		}
+		dir, err := resolveGatewayGitCommonDirectory(ctx, path)
+		resolved <- err
+		return dir, err
+	})
 	browseRoot := t.TempDir()
 	var listPayload []byte
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
@@ -125,31 +126,27 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"method":"thread/list","params":{"limit":50}}`)); err != nil {
 		t.Fatal(err)
 	}
-	<-received
+	readUpstreamFrame(t, received)
 	scoped, err := json.Marshal(map[string]any{"id": 2, "method": "thread/list", "params": map[string]any{"cwd": projectDir, "limit": 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sentScoped := time.Now()
 	if err := conn.WriteMessage(websocket.TextMessage, scoped); err != nil {
 		t.Fatal(err)
 	}
-	<-received
+	readUpstreamFrame(t, received)
 	var list []byte
-	var scopedElapsed time.Duration
-	for list == nil || scopedElapsed == 0 {
+	var gotScoped bool
+	for list == nil || !gotScoped {
 		frame := readGatewayRaw(t, conn)
 		switch {
 		case bytes.Contains(frame, []byte(`"id":2`)):
-			scopedElapsed = time.Since(sentScoped)
+			gotScoped = true
 		case bytes.Contains(frame, []byte(`"id":1`)):
 			list = frame
 		default:
 			t.Fatalf("意外的帧：%s", frame)
 		}
-	}
-	if scopedElapsed >= gitDelay {
-		t.Fatalf("Git 判定慢时同连接的作用域列表不能跟着等完：elapsed=%s git=%s", scopedElapsed, gitDelay)
 	}
 	if bytes.Contains(list, []byte(`"thread-0"`)) {
 		t.Fatalf("归属未判定的外部 Worktree 会话不能放行：%s", list)
@@ -159,38 +156,35 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 		t.Fatalf("未判定完的页必须给出重取本页的 cursor，不能让客户端当作遍历结束：%s", list)
 	}
 
-	// 注入延迟结束不等于后台 Git 已退出并写入缓存（Windows 启动进程尤其慢）。
-	// 按客户端协议重取未判定页，直到确实完成，而不是把固定 sleep 当完成信号。
-	deadline := time.Now().Add(10 * time.Second)
-	for requestID := 3; ; requestID++ {
-		retry, err := json.Marshal(map[string]any{"id": requestID, "method": "thread/list", "params": map[string]any{"limit": 50, "cursor": retryCursor}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.WriteMessage(websocket.TextMessage, retry); err != nil {
-			t.Fatal(err)
-		}
-		if upstreamRetry := <-received; bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
-			t.Fatalf("重取首页不能带 cursor 发给上游：%s", upstreamRetry)
-		}
-		complete := readGatewayRaw(t, conn)
-		cursor, unsettled := globalListResponseCursor(t, complete)
-		if !unsettled {
-			if !bytes.Contains(complete, []byte(`"thread-29"`)) {
-				t.Fatalf("判定完成后重取本页应完整返回：%s", complete)
+	// Wait for the worktree and registered project's actual ownership lookups.
+	// A retry before they finish consumes the same first-page request budget.
+	releaseGit()
+	wait, cancel := context.WithTimeout(t.Context(), gatewayGitOwnershipResolveTimeout)
+	defer cancel()
+	for range 2 {
+		select {
+		case err := <-resolved:
+			if err != nil {
+				t.Fatal(err)
 			}
-			break
+		case <-wait.Done():
+			t.Fatal("Git ownership lookups did not finish")
 		}
-		if cursor == "" || bytes.Contains(complete, []byte(`"thread-0"`)) {
-			t.Fatalf("未完成的页必须保留有效重试 cursor，且不能放行未判定会话：%s", complete)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("等待后台 Git 判定完成超时：%s", complete)
-		}
-		retryCursor = cursor
-		time.Sleep(10 * time.Millisecond)
 	}
-
+	retry, err := json.Marshal(map[string]any{"id": 3, "method": "thread/list", "params": map[string]any{"limit": 50, "cursor": retryCursor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, retry); err != nil {
+		t.Fatal(err)
+	}
+	complete := readGatewayRaw(t, conn)
+	if _, unsettled := globalListResponseCursor(t, complete); unsettled || !bytes.Contains(complete, []byte(`"thread-29"`)) {
+		t.Fatalf("判定完成后重取本页应完整返回：%s", complete)
+	}
+	if upstreamRetry := readUpstreamFrame(t, received); bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
+		t.Fatalf("重取首页不能带 cursor 发给上游：%s", upstreamRetry)
+	}
 }
 
 func TestGlobalThreadListGitTimeoutKeepsPageUnsettled(t *testing.T) {

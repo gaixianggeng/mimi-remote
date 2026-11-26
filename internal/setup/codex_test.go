@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
@@ -279,9 +280,7 @@ func TestRepairCodexBinPreservesUserConfigAndSecrets(t *testing.T) {
 	if err := json.Unmarshal(raw, &expected); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, append(raw, '\n'))
 
 	const recovered = "/Applications/ChatGPT.app/Contents/Resources/codex"
 	path, repaired, err := repairCodexBin(configPath, func(configured string) (string, error) {
@@ -289,7 +288,7 @@ func TestRepairCodexBinPreservesUserConfigAndSecrets(t *testing.T) {
 			t.Fatalf("收到意外旧路径：%s", configured)
 		}
 		return recovered, nil
-	}, writePrivateFileAtomically)
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,9 +327,7 @@ func TestRepairCodexBinDoesNotRewriteValidAbsolutePath(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	original := []byte("{\n  \"codex\": {\"bin\": \"/valid/codex\"},\n  \"future\": true\n}\n")
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, configPath, original)
 	writeCalled := false
 	path, repaired, err := repairCodexBin(configPath, func(configured string) (string, error) {
 		return configured, nil
@@ -349,9 +346,7 @@ func TestRepairCodexBinDoesNotRewriteValidAbsolutePath(t *testing.T) {
 func TestRepairCodexBinRejectsLegacySharingBeforeResolvingOrWriting(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ws","shared_fallback":{"transport":"ws"}},"codex":{"bin":"codex"}}`)
-	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, cfgPath, original)
 	resolverCalled := false
 	writerCalled := false
 	_, _, err := repairCodexBin(cfgPath, func(string) (string, error) {

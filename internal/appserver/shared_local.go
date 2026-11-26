@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gorilla/websocket"
 )
 
@@ -474,7 +475,7 @@ func writeSystemdEnvironmentFile(directory string, env []string) (path string, r
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("创建共享 App Server control 目录失败：%w", err)
 	}
-	file, err := os.CreateTemp(directory, ".resident-env-")
+	file, err := config.CreatePrivateTemp(directory, ".resident-env-")
 	if err != nil {
 		return "", fmt.Errorf("创建共享 App Server 临时环境文件失败：%w", err)
 	}
