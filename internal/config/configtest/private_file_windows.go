@@ -2,8 +2,6 @@ package configtest
 
 import (
 	"os"
-	"strings"
-	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -32,38 +30,4 @@ func createPrivateFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	return os.NewFile(uintptr(h), path), nil
-}
-
-// FileAccess compares the file owner, DACL protection and ordered ACEs.
-// Windows may set different automatic-inheritance bookkeeping bits on creation.
-func FileAccess(t testing.TB, path string) (access struct {
-	Owner     string
-	Protected bool
-	ACEs      string
-}) {
-	t.Helper()
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
-	if err != nil || sd == nil {
-		t.Fatalf("security descriptor: %v", err)
-	}
-	owner, _, err := sd.Owner()
-	if err != nil || owner == nil {
-		t.Fatalf("file owner: %v", err)
-	}
-	control, _, err := sd.Control()
-	if err != nil {
-		t.Fatal(err)
-	}
-	acl, _, err := sd.DACL()
-	if err != nil || acl == nil {
-		t.Fatalf("file DACL: %v", err)
-	}
-	sddl := sd.String()
-	if sddl == "" {
-		t.Fatal("could not encode file security descriptor")
-	}
-	access.Owner = owner.String()
-	access.Protected = control&windows.SE_DACL_PROTECTED != 0
-	_, access.ACEs, _ = strings.Cut(sddl, "(")
-	return access
 }

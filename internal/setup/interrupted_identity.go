@@ -24,7 +24,7 @@ func (id interruptedIdentity) digest() string {
 
 func readInterruptedIdentity(path string) (interruptedIdentity, error) {
 	var id interruptedIdentity
-	b, err := config.ReadPrivateTokenFile(path, 8192)
+	b, err := config.ReadPrivatePreflightFile(path, 8192)
 	if errors.Is(err, os.ErrNotExist) {
 		return id, nil
 	}
@@ -54,7 +54,7 @@ func keepInterruptedIdentity(journal string, id interruptedIdentity, ops setupFi
 		return err
 	}
 	dir := filepath.Dir(path)
-	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw, config.StagePermissions{Token: true})
+	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw, "")
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func forgetCommittedIdentity(journal string, cfg config.Config, ops setupFileTra
 		return recoveryError(path, errors.New("保留的身份与已提交的身份不同"))
 	}
 	if cfg.AppServer.Transport == "ws" && id.Upstream != "" {
-		token, err := config.ReadPrivateTokenFile(config.ExpandPath(cfg.AppServer.WSTokenFile), 4096)
+		token, err := config.ReadPrivatePreflightFile(config.ExpandPath(cfg.AppServer.WSTokenFile), 4096)
 		if err != nil || string(bytes.TrimSpace(token)) != id.Upstream {
 			return recoveryError(path, errors.New("保留的凭据与已提交的凭据不同"))
 		}

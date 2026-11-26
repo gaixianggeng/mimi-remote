@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -195,9 +194,8 @@ func (p *proposal) check(ctx context.Context) error {
 		}
 	}
 	if p.referencedToken.exists {
-		current, err := config.ReadPrivateTokenFile(p.referencedToken.path, 4096)
-		if err != nil || !bytes.Equal(current, p.referencedToken.raw) {
-			return saveFailure("config_concurrent_change", errors.New("配置引用的凭据已更改"))
+		if err := p.referencedToken.check(); err != nil {
+			return err
 		}
 	}
 	for _, d := range p.roots {

@@ -172,7 +172,7 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 }
 
 func stageLegacyConfig(dir string, pattern string, raw []byte, source string) (result stagedLegacyConfig, resultErr error) {
-	file, err := CreatePrivateStage(dir, pattern, StagePermissions{Source: source})
+	file, err := CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return result, err
 	}
@@ -183,6 +183,16 @@ func stageLegacyConfig(dir string, pattern string, raw []byte, source string) (r
 			_ = os.Remove(result.path)
 		}
 	}()
+	if runtime.GOOS != "windows" {
+		if err := file.Chmod(0o600); err != nil {
+			return result, err
+		}
+	}
+	if runtime.GOOS == "windows" {
+		if err := CopyPrivatePermissions(source, result.path); err != nil {
+			return result, err
+		}
+	}
 	if _, err := io.Copy(file, bytes.NewReader(raw)); err != nil {
 		return result, err
 	}

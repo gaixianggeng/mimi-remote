@@ -439,8 +439,8 @@ func TestSetupPublicationTwoStagedWriters(t *testing.T) {
 		opts.ScanRoot = t.TempDir()
 		ops := defaultSetupFileTransactionOps()
 		stage := ops.stage
-		ops.stage = func(dir, prefix string, raw []byte, permissions config.StagePermissions) (string, error) {
-			name, err := stage(dir, prefix, raw, permissions)
+		ops.stage = func(dir, prefix string, raw []byte, permissionsFrom string) (string, error) {
+			name, err := stage(dir, prefix, raw, permissionsFrom)
 			if err == nil && strings.HasPrefix(prefix, ".config.json.tmp-") {
 				bothStaged <- struct{}{}
 				select {

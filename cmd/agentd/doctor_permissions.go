@@ -46,8 +46,6 @@ func repairDoctorFileAccess(ctx context.Context, path string, asJSON bool, w io.
 			if err != nil || string(current) != string(raw) {
 				return onboardingFailure("config_concurrent_change", "config_store", true, errors.New("配置已更改，请重新检查"))
 			}
-			_, err = config.RepairPrivateTokenPermissions(target)
-			return err
 		}
 		_, err := config.RepairPrivatePermissions(target)
 		return err

@@ -23,90 +23,59 @@ func openSnapshotFile(path string) (*os.File, error) {
 }
 
 func checkPreflightFileAccess(file *os.File, _ os.FileInfo) error {
-	return checkFilePrivacy(file, false)
-}
-
-func checkTokenFileAccess(file *os.File, _ os.FileInfo) error {
-	return checkFilePrivacy(file, true)
-}
-
-func fileSecurityDescriptor(file *os.File, fields windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error) {
-	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, fields)
-	if err != nil {
-		return nil, err
-	}
-	if sd == nil || !sd.IsValid() {
-		return nil, windows.ERROR_INVALID_SECURITY_DESCR
-	}
-	return sd, nil
-}
-
-const ownerDACL = windows.OWNER_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
-
-func checkFilePrivacy(file *os.File, token bool) error {
-	sd, err := fileSecurityDescriptor(file, ownerDACL)
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
-	return checkOwnedDescriptor(sd, token)
-}
-
-func currentFileOwner(descriptor *windows.SECURITY_DESCRIPTOR) (*windows.SID, error) {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	current, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if owner == nil || !owner.Equals(current.User.Sid) {
-		return nil, errors.New("文件不属于当前用户")
-	}
-	return owner, nil
-}
-
-func checkOwnedDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, token bool) error {
-	owner, err := currentFileOwner(descriptor)
-	if err != nil {
-		return err
+		return errors.New("文件不属于当前用户")
 	}
 	acl, _, err := descriptor.DACL()
-	if err != nil {
-		return err
-	}
-	return checkPrivateDACL(acl, owner, token)
-}
-
-func privateTrustee(sid, owner *windows.SID) bool {
-	return sid.Equals(owner) || sid.IsWellKnown(windows.WinLocalSystemSid) ||
-		sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) || sid.IsWellKnown(windows.WinCreatorOwnerRightsSid)
-}
-
-func checkPrivateDACL(acl *windows.ACL, owner *windows.SID, token bool) error {
-	if acl == nil {
+	if err != nil || !privatePreflightDACL(acl, owner) {
 		return errPreflightFileNotPrivate
 	}
-	const metadata = windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA | windows.READ_CONTROL | windows.SYNCHRONIZE | windows.FILE_EXECUTE
+	return nil
+}
+
+func privatePreflightDACL(acl *windows.ACL, owner *windows.SID) bool {
+	// A NULL or absent DACL grants every principal full access.
+	if acl == nil {
+		return false
+	}
+	const sensitive = windows.GENERIC_ALL | windows.GENERIC_READ | windows.GENERIC_WRITE |
+		windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.FILE_WRITE_ATTRIBUTES |
+		windows.FILE_WRITE_EA | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER
 	for i := uint16(0); i < acl.AceCount; i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
-			return err
+			return false
 		}
 		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
 			continue
 		}
+		// Object/callback ACEs have a different SID layout; keep the file
+		// in recovery if its access cannot be established.
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
-			return windows.ERROR_NOT_SUPPORTED
+			return false
 		}
-		if !token && fileRights(uint32(ace.Mask))&^metadata == 0 {
+		if ace.Mask&sensitive == 0 {
 			continue
 		}
-		if !privateTrustee((*windows.SID)(unsafe.Pointer(&ace.SidStart)), owner) {
-			return errPreflightFileNotPrivate
+		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if !principal.Equals(owner) && !principal.IsWellKnown(windows.WinLocalSystemSid) &&
+			!principal.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !principal.IsWellKnown(windows.WinCreatorOwnerRightsSid) {
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 func directoryAccessible(path string, _ os.FileInfo, write bool) bool {

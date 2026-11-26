@@ -49,7 +49,7 @@ func TestReadPrivatePreflightFileChecksWindowsDACL(t *testing.T) {
 			}
 		})
 	}
-	if checkPrivateDACL(nil, token.User.Sid, false) == nil {
+	if privatePreflightDACL(nil, token.User.Sid) {
 		t.Error("accepted a NULL DACL")
 	}
 }

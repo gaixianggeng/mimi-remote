@@ -58,19 +58,3 @@ func TestFileDACLPreservation(t *testing.T) {
 		t.Fatal("stage must preserve DACL protection")
 	}
 }
-
-func TestFileDACLPreservesOwnerAndSystemAccess(t *testing.T) {
-	source := fileDACL{owner: "user", systemACEs: []string{"mandatory label", "central policy"}}
-	for _, stage := range []fileDACL{
-		{owner: "administrators", systemACEs: source.systemACEs},
-		{owner: source.owner, systemACEs: source.systemACEs[:1]},
-		{owner: source.owner, systemACEs: []string{"different label", "central policy"}},
-	} {
-		if source.preservedBy(stage) {
-			t.Fatal("accepted a replacement that changed the owner or an access-governing system ACE")
-		}
-	}
-	if !source.preservedBy(source) {
-		t.Fatal("rejected identical policies")
-	}
-}

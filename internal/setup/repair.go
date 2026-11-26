@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -47,14 +48,16 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: source})
+	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, source)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tempPath)
-	if source == "" {
-		rename = renameNewSetupFile
-	} else if err := copyAndSyncPermissions(source, tempPath); err != nil {
+	if _, err := os.Lstat(path); err == nil {
+		if err = copyAndSyncPermissions(path, tempPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	if err := rename(tempPath, path); err != nil {
@@ -69,8 +72,8 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 	return nil
 }
 
-func stagePrivateFile(dir string, pattern string, raw []byte, permissions config.StagePermissions) (string, error) {
-	return stagePrivateFileWithOps(dir, pattern, raw, permissions, privateFileStageOps{
+func stagePrivateFile(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
+	return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, privateFileStageOps{
 		write: func(file *os.File, raw []byte) (int, error) {
 			return file.Write(raw)
 		},
@@ -80,8 +83,8 @@ func stagePrivateFile(dir string, pattern string, raw []byte, permissions config
 	})
 }
 
-func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissions config.StagePermissions, ops privateFileStageOps) (string, error) {
-	file, err := config.CreatePrivateStage(dir, pattern, permissions)
+func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissionsFrom string, ops privateFileStageOps) (string, error) {
+	file, err := config.CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return "", err
 	}
@@ -94,6 +97,14 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissions
 		}
 	}()
 
+	if err := config.MakeFilePrivate(file); err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "windows" && permissionsFrom != "" {
+		if err := config.CopyPrivatePermissions(permissionsFrom, path); err != nil {
+			return "", err
+		}
+	}
 	written, err := ops.write(file, raw)
 	if err != nil {
 		return "", err

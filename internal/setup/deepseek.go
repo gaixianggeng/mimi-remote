@@ -382,13 +382,6 @@ func readDeepSeekTokenFile(path string, requireManagedMode bool) (string, error)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", errors.New("DeepSeek token 文件必须是 regular file")
 	}
-	if runtime.GOOS == "windows" {
-		raw, err := config.ReadPrivateTokenFile(path, 4096)
-		if err != nil {
-			return "", err
-		}
-		return harnessclient.ParseTokenFile(raw)
-	}
 	if requireManagedMode && runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		return "", errors.New("受管 DeepSeek token 文件必须是 0600")
 	}

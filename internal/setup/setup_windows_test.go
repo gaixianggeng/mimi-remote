@@ -5,11 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"golang.org/x/sys/windows"
 )
 
@@ -65,21 +63,20 @@ func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
-		t.Fatal(err)
+	for _, file := range []string{path, tokenPath} {
+		if err := windows.SetNamedSecurityInfo(file, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
-	tokenSD, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + principal.User.Sid.String() + ")(A;;FR;;;SY)")
-	if err != nil {
-		t.Fatal(err)
+	dacl := func(path string) string {
+		t.Helper()
+		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sd.String()
 	}
-	tokenDACL, _, err := tokenSD.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := windows.SetNamedSecurityInfo(tokenPath, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, tokenDACL, nil); err != nil {
-		t.Fatal(err)
-	}
-	cfgACL, tokenACL := configtest.FileAccess(t, path), configtest.FileAccess(t, tokenPath)
+	cfgACL, tokenACL := dacl(path), dacl(tokenPath)
 	token, err := config.ReadPrivatePreflightFile(tokenPath, 4096)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +98,7 @@ func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) 
 	if err != nil || string(newToken) != string(token) {
 		t.Fatalf("referenced WS token changed: %v", err)
 	}
-	if cfgACL != configtest.FileAccess(t, path) || tokenACL != configtest.FileAccess(t, tokenPath) {
+	if cfgACL != dacl(path) || tokenACL != dacl(tokenPath) {
 		t.Fatal("custom DACL changed after save or rollback")
 	}
 }
@@ -144,15 +141,14 @@ func TestWindowsStageChecksInheritedDACLBeforeWritingSecrets(t *testing.T) {
 		write: func(f *os.File, raw []byte) (int, error) {
 			// If this filesystem can preserve the private policy exactly, it
 			// must already be in effect at the first write.
-			sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-			if err != nil || strings.Contains(sd.String(), ";;;WD)") {
+			if _, err := config.ReadPrivatePreflightFile(f.Name(), 64); err != nil {
 				t.Fatal("secret write attempted with an unsafe inherited DACL")
 			}
 			return f.Write(raw)
 		},
 		sync: func(f *os.File) error { return f.Sync() },
 	}
-	name, err := stagePrivateFileWithOps(destDir, "stage-", []byte("fixture"), config.StagePermissions{Source: source.Name()}, stageOps)
+	name, err := stagePrivateFileWithOps(destDir, "stage-", []byte("fixture"), source.Name(), stageOps)
 	if err == nil {
 		if _, err := config.ReadPrivatePreflightFile(name, 64); err != nil {
 			t.Fatal(err)
@@ -169,100 +165,5 @@ func TestWindowsStageChecksInheritedDACLBeforeWritingSecrets(t *testing.T) {
 		}
 	} else {
 		assertSetupDirectoryEntries(t, destDir)
-	}
-	tokenStage, err := stagePrivateFile(destDir, "token-", []byte("fixture"), config.StagePermissions{Token: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	companion := filepath.Join(destDir, "companion")
-	if err := publishSetupCompanion(tokenStage, companion, defaultSetupFileTransactionOps()); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{tokenStage, companion} {
-		raw, err := config.ReadPrivateTokenFile(path, 64)
-		if err != nil || string(raw) != "fixture" {
-			t.Fatalf("token inherited access from its directory: %v", err)
-		}
-		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			t.Fatal(err)
-		}
-		control, _, err := sd.Control()
-		if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
-			t.Fatalf("token lost its protected DACL: %v", err)
-		}
-	}
-
-}
-
-func TestWindowsTwoFileSaveRetainsBothPrivateDACLs(t *testing.T) {
-	dir := t.TempDir()
-	destination, token := filepath.Join(dir, "config.json"), filepath.Join(dir, "token")
-	principal, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sid := principal.User.Sid.String()
-	for path, extra := range map[string]string{destination: "(A;;0x80;;;BU)", token: "(A;;FR;;;SY)"} {
-		configtest.CreatePrivateFile(t, path, []byte("before"))
-		sd, err := windows.SecurityDescriptorFromString("D:P(D;;0x2;;;OW)(A;;FA;;;" + sid + ")" + extra)
-		if err != nil {
-			t.Fatal(err)
-		}
-		acl, _, err := sd.DACL()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cfgBefore, tokenBefore := configtest.FileAccess(t, destination), configtest.FileAccess(t, token)
-	if err := writeSetupFilesAtomically(destination, token, []byte("after"), []byte("new token"), defaultSetupFileTransactionOps()); err != nil {
-		t.Fatal(err)
-	}
-	if configtest.FileAccess(t, destination) != cfgBefore || configtest.FileAccess(t, token) != tokenBefore {
-		t.Fatal("two-file save changed an original owner or DACL")
-	}
-	raw, err := config.ReadPrivateTokenFile(token, 64)
-	if err != nil || string(raw) != "new token" {
-		t.Fatalf("token publication failed: %v", err)
-	}
-}
-
-func TestWindowsPublishRejectsAnACLOnlyChange(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	configtest.CreatePrivateFile(t, path, []byte("old"))
-	set := func(extra string) {
-		t.Helper()
-		sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + user.User.Sid.String() + ")" + extra)
-		if err != nil {
-			t.Fatal(err)
-		}
-		acl, _, err := sd.DACL()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	set("(A;;FR;;;SY)")
-	stage, err := stagePrivateFile(dir, "stage-", []byte("new"), config.StagePermissions{Source: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	set("")
-	if err := renameSetupFile(stage, path); err == nil {
-		t.Fatal("published access that the destination owner had removed")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || string(raw) != "old" {
-		t.Fatal("failed publication changed the original")
 	}
 }

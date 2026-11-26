@@ -251,7 +251,7 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 func failingSetupFileOps(configPath string, failure string, sentinel error) setupFileTransactionOps {
 	ops := defaultSetupFileTransactionOps()
 	if failure == "config-write" || failure == "config-fsync" {
-		ops.stage = func(dir string, pattern string, raw []byte, permissions config.StagePermissions) (string, error) {
+		ops.stage = func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
 			stageOps := privateFileStageOps{
 				write: func(file *os.File, raw []byte) (int, error) {
 					if strings.HasSuffix(failure, "-write") {
@@ -268,28 +268,36 @@ func failingSetupFileOps(configPath string, failure string, sentinel error) setu
 					return file.Sync()
 				},
 			}
-			return stagePrivateFileWithOps(dir, pattern, raw, permissions, stageOps)
+			return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, stageOps)
 		}
 	}
-	if failure == "config-rename" || failure == "directory-fsync" {
-		committed := false
-		wrap := func(rename renameFile) renameFile {
-			return func(src, dst string) error {
-				if failure == "config-rename" && dst == configPath {
-					return sentinel
-				}
-				err := rename(src, dst)
-				if err == nil && dst == configPath {
-					committed = true
-				}
-				return err
+	defaultRename := ops.rename
+	if failure == "config-rename" {
+		ops.rename = func(oldPath string, newPath string) error {
+			isConfigCommit := newPath == configPath
+			if isConfigCommit {
+				return sentinel
 			}
+			return defaultRename(oldPath, newPath)
 		}
-		ops.rename, ops.renameNew = wrap(ops.rename), wrap(ops.renameNew)
+	}
+	if failure == "config-rename" {
+		ops.renameNew = ops.rename
+	}
+	if failure == "directory-fsync" {
 		defaultSyncDir := ops.syncDir
+		committed := false
+		ops.rename = func(src, dst string) error {
+			err := defaultRename(src, dst)
+			if err == nil && dst == configPath {
+				committed = true
+			}
+			return err
+		}
+		ops.renameNew = ops.rename
 		failed := false
 		ops.syncDir = func(dir string) error {
-			if failure == "directory-fsync" && committed && !failed {
+			if committed && !failed {
 				failed = true
 				return sentinel
 			}

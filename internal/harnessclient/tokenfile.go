@@ -43,11 +43,6 @@ func ReadTokenFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("harnessclient: 读取 Harness token 文件失败：%w", err)
 	}
-	return ParseTokenFile(raw)
-}
-
-// ParseTokenFile decodes a bounded credential read by the caller.
-func ParseTokenFile(raw []byte) (string, error) {
 	token := strings.TrimSpace(string(raw))
 	if token == "" {
 		return "", errors.New("harnessclient: token 文件为空")

@@ -114,8 +114,8 @@ func TestSetupRevalidatesSelectionAndPreservesDistinctPriorGrants(t *testing.T) 
 			ops := defaultSetupFileTransactionOps()
 			stage := ops.stage
 			reachedStage := false
-			ops.stage = func(dir, pattern string, raw []byte, permissions config.StagePermissions) (string, error) {
-				p, err := stage(dir, pattern, raw, permissions)
+			ops.stage = func(dir, pattern string, raw []byte, permissionsFrom string) (string, error) {
+				p, err := stage(dir, pattern, raw, permissionsFrom)
 				if err == nil && !reachedStage {
 					reachedStage = true
 					switch test {
