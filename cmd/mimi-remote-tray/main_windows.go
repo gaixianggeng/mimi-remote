@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -89,6 +90,7 @@ const (
 	menuTailcatToggle
 	menuTailcatStatus
 	menuTailcatManaged
+	menuFirstSetup
 )
 
 // wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
@@ -187,26 +189,27 @@ type notifyIconData struct {
 }
 
 type trayApplication struct {
-	window         uintptr
-	icon           uintptr
-	ownsIcon       bool
-	taskbarCreated uint32
-	controller     *agentController
-	mu             sync.RWMutex
-	status         agentStatus
-	statusErr      error
-	statusRequest  uint64
-	statusApplied  uint64
-	busy           bool
-	pairingBusy    bool
-	quitting       bool
-	initialPairing bool
-	initialShow    bool
-	refreshStop    chan struct{}
-	panel          *controlPanel
-	tailcat        tailcatTrayStatus
-	hasTailcat     bool
-	tailcatErr     error
+	window                uintptr
+	icon                  uintptr
+	ownsIcon              bool
+	taskbarCreated        uint32
+	controller            *agentController
+	mu                    sync.RWMutex
+	status                agentStatus
+	statusErr             error
+	preflightSetupPending bool
+	statusRequest         uint64
+	statusApplied         uint64
+	busy                  bool
+	pairingBusy           bool
+	quitting              bool
+	initialPairing        bool
+	initialShow           bool
+	refreshStop           chan struct{}
+	panel                 *controlPanel
+	tailcat               tailcatTrayStatus
+	hasTailcat            bool
+	tailcatErr            error
 }
 
 var currentTray *trayApplication
@@ -523,22 +526,10 @@ func (a *trayApplication) bootstrap() {
 	// unavailable service until the next 20-second refresh, making a manual
 	// start look necessary. Retry the initial handshake a few times instead.
 	for attempt := 0; attempt < 3; attempt++ {
-		ctx, cancel := statusContext()
-		status, err := a.controller.status(ctx, false)
-		cancel()
-		if err != nil {
-			trayLogf("bootstrap status check %d failed: %v", attempt+1, err)
-		}
-		if err == nil && !status.ProcessOK {
-			trayLogf("bootstrap status check %d found agentd stopped; starting it", attempt+1)
-			actionCtx, actionCancel := actionContext()
-			_ = a.controller.action(actionCtx, "start")
-			actionCancel()
-		}
 		a.refreshStatus()
 
 		a.mu.RLock()
-		ready := a.status.ServiceOK
+		ready := a.statusErr == nil && a.status.ServiceOK
 		a.mu.RUnlock()
 		if ready {
 			trayLogf("bootstrap reached a ready service state on check %d", attempt+1)
@@ -553,7 +544,7 @@ func (a *trayApplication) bootstrap() {
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			a.mu.RLock()
-			ready := a.status.ServiceOK
+			ready := a.statusErr == nil && a.status.ServiceOK
 			a.mu.RUnlock()
 			if ready {
 				break
@@ -589,11 +580,27 @@ func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 	ctx, cancel := statusContext()
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
-	a.completeStatusRequest(request, status, err)
+	preflightPending := false
+	if status.workspacePendingConfirmation() || (err != nil && !isFirstSetupError(err)) {
+		preflightCtx, stop := context.WithTimeout(context.Background(), trayCommandTimeout("windows", "preflight"))
+		report, preflightErr := a.controller.preflight(preflightCtx, "setup", nil, request, nil)
+		stop()
+		if preflightErr == nil {
+			preflightPending, preflightErr = pendingFromSetupReport(report)
+		}
+		if preflightErr != nil {
+			err = preflightErr
+		} else if err == nil {
+			status.WorkspaceConfirmed = report.WorkspaceConfirmed
+		}
+	}
+	a.completeStatusRequestWithSetup(request, status, err, preflightPending)
 	if err == nil {
 		a.refreshTailcat(status.ProcessOK)
 	}
-	procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+	if a.window != 0 {
+		procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+	}
 }
 
 func (a *trayApplication) beginStatusRequest() uint64 {
@@ -604,6 +611,10 @@ func (a *trayApplication) beginStatusRequest() uint64 {
 }
 
 func (a *trayApplication) completeStatusRequest(request uint64, status agentStatus, err error) {
+	a.completeStatusRequestWithSetup(request, status, err, false)
+}
+
+func (a *trayApplication) completeStatusRequestWithSetup(request uint64, status agentStatus, err error, preflightPending bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if request < a.statusApplied {
@@ -612,8 +623,21 @@ func (a *trayApplication) completeStatusRequest(request uint64, status agentStat
 	a.statusApplied = request
 	if err == nil {
 		a.status = status
+		a.preflightSetupPending = false
+	} else {
+		a.preflightSetupPending = preflightPending
+		if preflightPending || isFirstSetupError(err) {
+			// Fresh configuration evidence supersedes the last successful status.
+			a.status.WorkspaceConfirmed = nil
+		}
 	}
 	a.statusErr = err
+}
+
+func (a *trayApplication) firstSetupRequired() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return needsFirstSetup(a.status, a.statusErr, a.preflightSetupPending)
 }
 
 func (a *trayApplication) showMenu() {
@@ -626,16 +650,20 @@ func (a *trayApplication) showMenu() {
 	a.mu.RLock()
 	status := a.status
 	statusErr := a.statusErr
+	preflightPending := a.preflightSetupPending
 	busy := a.busy
 	pairingBusy := a.pairingBusy
 	tailcat, hasTailcat, tailcatErr := a.tailcat, a.hasTailcat, a.tailcatErr
 	a.mu.RUnlock()
 
+	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
 	header := "状态：" + status.lifecycleTitle()
-	if status.Version == "" {
+	if firstSetupNeeded {
+		header = "状态：待完成首次设置"
+	} else if status.Version == "" {
 		header = "状态：正在检查"
 	}
-	if statusErr != nil {
+	if statusErr != nil && !firstSetupNeeded {
 		if status.Version == "" {
 			header = "状态：服务不可用"
 		} else {
@@ -643,6 +671,9 @@ func (a *trayApplication) showMenu() {
 		}
 	}
 	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
+	if firstSetupNeeded {
+		appendMenu(menu, menuFlags(busy), menuFirstSetup, "完成首次设置…")
+	}
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGray, menuStatus, header)
 	appendMenu(menu, mfString, menuRefresh, "刷新状态")
@@ -651,8 +682,8 @@ func (a *trayApplication) showMenu() {
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuRestart, "重新启动服务")
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
-	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
+	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
 	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
 	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
@@ -702,6 +733,8 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	switch command {
 	case menuControlPanel:
 		a.showControlPanel()
+	case menuFirstSetup:
+		a.showFirstSetupInstructions(showMessage)
 	case menuRefresh:
 		a.refreshStatusInteractive()
 	case menuStart:
@@ -752,7 +785,7 @@ func (a *trayApplication) runAction(label string, action string) {
 		cancel()
 		a.refreshStatus()
 		if err != nil {
-			a.showError(fmt.Errorf("%s服务失败：%w", label, err))
+			a.showError(err)
 			return
 		}
 		a.showBalloon("Mimi Remote", "服务已"+label, niifInfo)
@@ -783,9 +816,23 @@ func (a *trayApplication) runDoctor(fix bool) {
 	}()
 }
 
+// BE-6 must identify the single authenticated Inno maintenance image before
+// the tray can launch it. Any future launcher must start the exact file it
+// verified. Until then this action only displays local instructions.
+func (a *trayApplication) showFirstSetupInstructions(show func(uintptr, string, string, uint32) int) {
+	if a.firstSetupRequired() {
+		show(a.window, "完成首次设置", "请手动运行 Mimi Remote 安装程序，选择“修改”，按提示确认代码目录。完成后，回到托盘并点击“刷新状态”。", mbOK|mbIconInfo)
+	}
+}
+
 func (a *trayApplication) requestPairing() {
+	if a.firstSetupRequired() {
+		trayLogf("pairing request rejected because workspace confirmation is pending")
+		a.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))
+		return
+	}
 	a.mu.RLock()
-	ready := a.status.ServiceOK
+	ready := a.statusErr == nil && a.status.ServiceOK
 	a.mu.RUnlock()
 	if !ready {
 		trayLogf("pairing request rejected because the tray status is not ready")
@@ -862,8 +909,9 @@ func (a *trayApplication) showError(err error) {
 	if err == nil {
 		return
 	}
-	showMessage(a.window, "Mimi Remote", err.Error(), mbOK|mbIconError)
-	a.showBalloon("Mimi Remote", err.Error(), niifError)
+	message := formatTrayUserError(err)
+	showMessage(a.window, "Mimi Remote", message, mbOK|mbIconError)
+	a.showBalloon("Mimi Remote", message, niifError)
 }
 
 func (a *trayApplication) showBalloon(title string, text string, infoFlags uint32) {

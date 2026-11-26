@@ -72,6 +72,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	calls := 0
 	future := false
 	v1 := false
+	receiptNetwork := ""
 	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
 		if strings.Join(args, " ") != "pair --network tailscale --qr-only --json" {
 			t.Fatal("unsafe pairing arguments", args)
@@ -81,7 +82,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 			return json.Marshal(map[string]string{"schema": "mimi.onboarding.future/v2", "pair_url": "mimiremote://pair?" + query.Encode(), "pair_expires_at": expires})
 		}
 		if v1 {
-			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
+			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Network: receiptNetwork, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 		}
 		return json.Marshal(linuxPairingInfo{PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 	}}
@@ -102,6 +103,14 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("v1 ticket missing network accepted")
 	}
+	receiptNetwork = "lan"
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("receipt for a different direct network was accepted")
+	}
+	receiptNetwork = "tailscale"
+	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
+		t.Fatal(err)
+	}
 	v1 = false
 	query.Set("token", "long-lived-secret")
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
@@ -113,7 +122,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("expired ticket accepted")
 	}
-	if calls != 6 {
+	if calls != 8 {
 		t.Fatal(calls)
 	}
 }
@@ -207,5 +216,39 @@ func TestLinuxFailedActionsOnlyDisplayTheLocalizedError(t *testing.T) {
 	stdout = `{"ok":false,"checks":[{"name":"service","message":"服务未运行"}]}`
 	if output, err := c.action(context.Background(), "doctor"); err == nil || !strings.Contains(output, "服务未运行") {
 		t.Fatal("legacy read-only doctor report lost")
+	}
+}
+
+func TestLinuxCopyFailureNeverOpensTerminalOrCopiesEndpointAsPairLink(t *testing.T) {
+	state := readyLinuxSnapshot()
+	var copied []string
+	terminalOpens := 0
+	app := &linuxTrayApplication{
+		ctx:       context.Background(),
+		state:     state,
+		operation: make(chan struct{}, 1),
+		clipboardCopy: func(_ context.Context, value string) error {
+			copied = append(copied, value)
+			return fmt.Errorf("clipboard failed")
+		},
+		terminalOpener: func(string) {
+			terminalOpens++
+		},
+	}
+
+	app.dispatch("copy")
+	app.dispatch("copy-pair-link")
+	if len(copied) != 0 {
+		t.Fatalf("copy-pair-link must never fall back to Status.Endpoint: %v", copied)
+	}
+	app.dispatch("copy-endpoint")
+	if len(copied) != 1 || copied[0] != state.Status.Endpoint {
+		t.Fatalf("copy-endpoint got %v, want [%s]", copied, state.Status.Endpoint)
+	}
+	if terminalOpens != 0 {
+		t.Fatalf("copy failure accidentally opened terminal %d times", terminalOpens)
+	}
+	if app.snapshot().UIError == "" {
+		t.Fatal("copy failure must surface a retryable UIError in tray")
 	}
 }

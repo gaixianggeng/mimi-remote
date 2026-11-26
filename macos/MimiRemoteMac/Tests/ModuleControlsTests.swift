@@ -171,22 +171,76 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
 
-    func testSelectingLANInPairingPickerEnablesLANAndGeneratesQRCode() async {
+    func testSelectingDisabledLANInPairingPickerDoesNotAutoEnableAndExplicitEnableWorks() async {
         let fixture = ModuleFixture(codex: true, claude: false, ts: true, lan: false)
         fixture.succeedOnPair = true
         let store = fixture.store()
         await store.bootstrap()
         XCTAssertFalse(store.lanEnabled)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale])
+        let registrationsBeforePick = fixture.registrationCalls
 
-        await store.refreshPairingFromPicker(.localNetwork)
+        // 选中未启用的局域网通道严格不自动开启、不重启服务。
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .lan)
+
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        // 显式点击开启后执行单次重载并签发二维码。
+        await pairingWindow.enableSelectedTransport(.lan)
 
         XCTAssertTrue(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick + 1)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale, .localNetwork])
-        XCTAssertEqual(store.pairing?.network, .localNetwork)
-        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .localNetwork)
         XCTAssertNil(store.lastError)
+        XCTAssertNil(pairingWindow.pairingError)
         XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testExplicitTailscaleEnableReloadsOnceAndIssuesQR() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertFalse(store.tailscaleEnabled)
+        let registrationsBefore = fixture.registrationCalls
+
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .tailscale)
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        await pairingWindow.enableSelectedTransport(.tailscale)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore + 1)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .tailscale)
+        XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testPairingWindowRejectsUnreachableLANEndpoint() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let host = fixture.store(lanReachable: false)
+        let window = PairingWindowStore(dependencies: .live(hostStore: host) { _ in })
+        await window.handleAppear(preferredTransport: .lan)
+        await window.issuePairingQR(for: .lan)
+        XCTAssertGreaterThan(fixture.pairCalls, 0)
+        XCTAssertNil(window.issuedPairing)
+        XCTAssertFalse(window.canCopyPairingLink)
+        XCTAssertNotNil(window.pairingError)
+    }
+
+    func testCanPairIsFalseWhenNoNetworkIsEnabledEvenIfSwitchable() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertTrue(store.availablePairingNetworks.isEmpty)
+        XCTAssertFalse(store.canPair)
     }
 
     func testUnavailableLANReportsSpecificReasonInsteadOfGenericNoConnectionError() async {
@@ -407,9 +461,14 @@ private final class ModuleFixture: @unchecked Sendable {
             }
         }
     }
-    @MainActor func store() -> HostStore {
+    @MainActor func store(lanReachable: Bool = true) -> HostStore {
         let agent = AgentCommandClient(
             configExists: { true }, setup: { _ in throw ModuleTestError.unexpected },
+            preflight: { _, _ in
+                self.lock.withLock {
+                    PairingWindowStoreTests.makePairReport(tailscaleEnabled: self.ts, lanEnabled: self.lan)
+                }
+            },
             status: {
                 if self.failStatusReads { throw ModuleTestError.unexpected }
                 return self.status()
@@ -445,7 +504,7 @@ private final class ModuleFixture: @unchecked Sendable {
                     endpoint: network == .localNetwork ? "http://192.168.31.10:8787" : "http://100.64.0.1:8787",
                     network: network,
                     pairURL: "mimiremote://pair?network=\(network.rawValue)",
-                    expiresAt: "2026-11-17T14:00:00Z",
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(120)),
                     warnings: []
                 )
             },
@@ -503,7 +562,7 @@ private final class ModuleFixture: @unchecked Sendable {
         )
         return HostStore(agent: agent, services: services,
                          homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
-                         health: HealthClient(check: { _ in false }, checkDirect: { _ in true }),
+                         health: HealthClient(check: { _ in false }, checkDirect: { _ in lanReachable }),
                          logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }))
     }
 }

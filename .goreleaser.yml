@@ -95,7 +95,6 @@ archives:
       - scripts/install-linux.sh
       - scripts/install-linux-tray.sh
       - scripts/install-omarchy-tray-qr.py
-      - packaging/linux/omarchy/MimiPairingQR.qml
       - packaging/linux/mimi-remote.desktop
       - cmd/mimi-remote-tray/assets/mimi.png
       - cmd/mimi-remote-tray/assets/mimi-remote-symbolic.svg

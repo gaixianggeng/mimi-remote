@@ -162,6 +162,56 @@ final class MenuRuntimePresentationTests: XCTestCase {
         XCTAssertEqual(slots[2].windowLabel, "短周期")
     }
 
+    func testMenuBarUnconfiguredGuideCardHidesGreySwitchesAndUsesClearCopy() {
+        XCTAssertTrue(MenuBarPresentation.showsUnconfiguredGuideCard(
+            lifecycle: .notConfigured,
+            isOnboardingInProgress: false,
+            hasConfiguration: false
+        ))
+        XCTAssertTrue(MenuBarPresentation.showsUnconfiguredGuideCard(
+            lifecycle: .ready,
+            isOnboardingInProgress: true,
+            hasConfiguration: true
+        ))
+        XCTAssertTrue(MenuBarPresentation.showsUnconfiguredGuideCard(
+            lifecycle: .loading,
+            isOnboardingInProgress: false,
+            hasConfiguration: false
+        ))
+        XCTAssertFalse(MenuBarPresentation.showsUnconfiguredGuideCard(
+            lifecycle: .ready,
+            isOnboardingInProgress: false,
+            hasConfiguration: true
+        ))
+        XCTAssertEqual(
+            MenuBarPresentation.unconfiguredGuideButtonTitle(isOnboardingInProgress: true),
+            "继续首次设置…"
+        )
+        XCTAssertEqual(
+            MenuBarPresentation.unconfiguredGuideButtonTitle(isOnboardingInProgress: false),
+            "完成首次设置…"
+        )
+        XCTAssertNil(MenuBarPresentation.visibleErrorMessage(
+            lifecycle: .failed("启动超时"),
+            lastError: "启动超时"
+        ))
+        XCTAssertEqual(
+            MenuBarPresentation.visibleErrorMessage(
+                lifecycle: .ready,
+                lastError: "Authorization: Bearer secret-token"
+            ),
+            OnboardingCopyCatalog.safeFallbackCopy
+        )
+    }
+
+    func testTailcatRemovesExperimentalBadgeAndUsesFreeCrossNetworkTagline() {
+        XCTAssertNil(ModuleRowPresentation.badge(for: .tailcat))
+        XCTAssertEqual(ModuleRowPresentation.subtitle(for: .tailcat), "免费可用 · 支持跨网")
+        XCTAssertNil(ModuleRowPresentation.subtitle(for: .tailscale))
+        XCTAssertFalse(ModuleChangePresentation.boundary(.tailcat).contains("实验"))
+        XCTAssertTrue(ModuleChangePresentation.boundary(.tailcat).contains("免费可用 · 支持跨网"))
+    }
+
     private func makeRuntime(
         id: String = "test",
         title: String = "Test",

@@ -18,7 +18,6 @@ type linuxMenuItem struct {
 	Action    string
 	Enabled   bool
 	Separator bool
-	IconData  []byte
 	Children  []linuxMenuItem
 }
 
@@ -31,8 +30,7 @@ type linuxTraySnapshot struct {
 	HasTailcat   bool
 	TailcatError string
 	UIError      string
-	InlineQR     bool
-	PairMenu     *linuxMenuPair
+	HasPairLink  bool
 }
 
 func (s linuxTraySnapshot) title() string {
@@ -59,7 +57,7 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 				if !runtime.Enabled {
 					continue
 				}
-				items = append(items, linuxMenuItem{ID: int32(20 + i), Label: fmt.Sprintf("%s · %s", runtime.Title, linuxRuntimeLabel(runtime.State))})
+				items = append(items, linuxMenuItem{ID: int32(20 + i), Label: fmt.Sprintf("%s · %s", trayAssistantTitle(runtime.ID, runtime.Title), linuxRuntimeLabel(runtime.State))})
 			}
 			if s.Status.RuntimeStatus.Stale || s.Status.RuntimeStatus.Refreshing {
 				items = append(items, linuxMenuItem{ID: 7, Label: "Runtime 状态正在刷新或已过期"})
@@ -73,10 +71,15 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 90, Separator: true},
 		linuxMenuItem{ID: 100, Label: "在终端中打开", Action: "status", Enabled: true},
 		linuxMenuItem{ID: 101, Label: "刷新状态", Action: "refresh", Enabled: available},
-		linuxMenuItem{ID: 102, Label: "Tailcat 配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
-		linuxMenuItem{ID: 110, Label: "Tailscale 配对…", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
-		linuxMenuItem{ID: 111, Label: "局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
-		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy", Enabled: s.HasStatus && s.Status.Endpoint != ""},
+	)
+	items = append(items,
+		linuxMenuItem{ID: 120, Label: "生成并复制配对链接", Enabled: fresh && s.Status.ServiceOK, Children: []linuxMenuItem{
+			{ID: 410, Label: "Tailscale", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
+			{ID: 402, Label: "内置连接（Tailcat）", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
+			{ID: 411, Label: "同一局域网", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
+		}},
+		linuxMenuItem{ID: 119, Label: "复制当前配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink},
+		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy-endpoint", Enabled: s.HasStatus && s.Status.Endpoint != ""},
 		linuxMenuItem{ID: 91, Separator: true},
 		linuxMenuItem{ID: 112, Label: "服务管理", Enabled: true, Children: []linuxMenuItem{
 			{ID: 106, Label: "启动服务…", Action: "start", Enabled: fresh && !s.Status.ProcessOK},
@@ -95,13 +98,17 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 92, Separator: true},
 		linuxMenuItem{ID: 109, Label: "退出托盘", Action: "quit", Enabled: true},
 	)
-	if s.InlineQR {
-		items = linuxPairMenuItems(items, s)
-	}
+	redactLinuxMenuItems(items)
+	return items
+}
+
+func redactLinuxMenuItems(items []linuxMenuItem) {
 	for i := range items {
 		items[i].Label = truncateUTF16Text(redactTrayText(items[i].Label), 150)
+		if len(items[i].Children) > 0 {
+			redactLinuxMenuItems(items[i].Children)
+		}
 	}
-	return items
 }
 
 func (s linuxTraySnapshot) tailcatTitle() string {
@@ -124,12 +131,22 @@ func linuxRuntimeLabel(state string) string {
 	switch state {
 	case "connected", "ready":
 		return "已连接"
+	case "available":
+		return "运行时可用"
+	case "signed_out":
+		return "未登录"
+	case "unavailable":
+		return "不可用"
 	case "disconnected":
 		return "未连接"
 	case "connecting":
 		return "连接中"
+	case "disabled":
+		return "未启用"
+	case "unsupported", "unsupported_platform":
+		return "此平台不支持"
 	}
-	return state
+	return "状态未知"
 }
 
 func flattenLinuxMenu(items []linuxMenuItem) []linuxMenuItem {
@@ -176,9 +193,6 @@ func menuProperties(item linuxMenuItem, names []string) map[string]dbus.Variant 
 	all := map[string]dbus.Variant{"label": dbus.MakeVariant(item.Label), "enabled": dbus.MakeVariant(item.Enabled), "visible": dbus.MakeVariant(true)}
 	if item.Separator {
 		all["type"] = dbus.MakeVariant("separator")
-	}
-	if len(item.IconData) > 0 {
-		all["icon-data"] = dbus.MakeVariant(item.IconData)
 	}
 	if len(item.Children) > 0 {
 		all["children-display"] = dbus.MakeVariant("submenu")
@@ -252,6 +266,10 @@ func (m *linuxDBusMenu) GetProperty(id int32, name string) (dbus.Variant, *dbus.
 	return dbus.MakeVariant(""), dbus.MakeFailedError(fmt.Errorf("unknown property"))
 }
 func (m *linuxDBusMenu) Event(id int32, event string, data dbus.Variant, timestamp uint32) *dbus.Error {
+	if id == 0 && event == "closed" {
+		m.dispatch("menu-closed")
+		return nil
+	}
 	if event != "clicked" {
 		return nil
 	}
@@ -265,7 +283,7 @@ func (m *linuxDBusMenu) Event(id int32, event string, data dbus.Variant, timesta
 	}
 	m.mu.RUnlock()
 	if action != "" {
-		go m.dispatch(action)
+		m.dispatch(action)
 	}
 	return nil
 }

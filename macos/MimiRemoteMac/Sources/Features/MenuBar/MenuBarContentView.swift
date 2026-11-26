@@ -17,6 +17,45 @@ enum MenuBarLayout {
     static let actionDividerOpacity: Double = 0.28
 }
 
+enum MenuBarPresentation {
+    static func showsUnconfiguredGuideCard(
+        lifecycle: HostLifecycleState,
+        isOnboardingInProgress: Bool,
+        hasConfiguration: Bool
+    ) -> Bool {
+        lifecycle == .notConfigured || isOnboardingInProgress || (lifecycle == .loading && !hasConfiguration)
+    }
+
+    static func unconfiguredGuideTitle(isOnboardingInProgress: Bool) -> String {
+        isOnboardingInProgress ? "继续完成首次设置" : "完成首次设置"
+    }
+
+    static func unconfiguredGuideMessage(isOnboardingInProgress: Bool) -> String {
+        if isOnboardingInProgress {
+            return "首次设置尚未完成。回到设置向导选择代码目录并检查助手与连接方式，完成后即可在此管理全部开关。"
+        }
+        return "完成首次设置后，即可在这里管理 AI 编程助手、手机连接方式并生成配对二维码。"
+    }
+
+    static func unconfiguredGuideButtonTitle(isOnboardingInProgress: Bool) -> String {
+        isOnboardingInProgress ? "继续首次设置…" : "完成首次设置…"
+    }
+
+    static func visibleErrorMessage(lifecycle: HostLifecycleState, lastError: String?) -> String? {
+        guard let trimmed = lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        if let detail = lifecycle.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+           detail == trimmed
+        {
+            return nil
+        }
+        return DiagnosticLogSanitizer.serviceMessage(trimmed)
+    }
+}
+
 struct MenuBarContentView: View {
     let store: HostStore
     let updates: AppUpdateStore
@@ -42,16 +81,29 @@ struct MenuBarContentView: View {
                 .padding(.top, 10)
 
             // MenuBarExtra 会把只有 maxHeight 的 ScrollView 压缩到接近 0。
-            // 高频开关直接参与首屏固有尺寸计算，保证每次点开菜单栏都可见。
-            VStack(alignment: .leading, spacing: 12) {
-                ModuleControlsGroup(store: store, group: .agents)
-                Divider().opacity(0.45)
-                ModuleControlsGroup(store: store, group: .connections)
+            // 未配置前隐藏 7 个灰显开关，改为可操作的引导卡；配置完成后再展示模块开关。
+            if showsUnconfiguredGuideCard {
+                MenuUnconfiguredGuideCard(
+                    isOnboardingInProgress: store.isOnboardingInProgress,
+                    isBusy: store.isBusy
+                ) {
+                    presentWindow(.dashboard)
+                }
+                .padding(.vertical, 10)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ModuleControlsGroup(store: store, group: .agents)
+                    Divider().opacity(0.45)
+                    ModuleControlsGroup(store: store, group: .connections)
+                }
+                .padding(.vertical, 8)
             }
-            .padding(.vertical, 8)
 
-            if let lastError = store.lastError {
-                MenuStatusMessage(message: lastError)
+            if let visibleError = MenuBarPresentation.visibleErrorMessage(
+                lifecycle: store.lifecycle,
+                lastError: store.lastError
+            ) {
+                MenuStatusMessage(message: visibleError)
                     .padding(.top, 8)
             }
 
@@ -228,12 +280,21 @@ struct MenuBarContentView: View {
         }
     }
 
+    private var showsUnconfiguredGuideCard: Bool {
+        MenuBarPresentation.showsUnconfiguredGuideCard(
+            lifecycle: store.lifecycle,
+            isOnboardingInProgress: store.isOnboardingInProgress,
+            hasConfiguration: store.hasConfiguration()
+        )
+    }
+
     private var needsPrimaryAction: Bool {
+        guard !showsUnconfiguredGuideCard else { return false }
         switch store.lifecycle {
         case .notConfigured, .migrationRequired, .degraded, .stopped, .failed:
-            true
+            return true
         case .loading, .starting, .ready:
-            false
+            return false
         }
     }
 
@@ -338,7 +399,7 @@ private struct MenuStatusHeader: View {
         case .migrationRequired: "可安全迁移，现有配置和配对都会保留。"
         case .starting: startingDetail ?? "移动设备连接会在服务就绪后自动恢复。"
         case .ready: "管理 AI 编程助手与移动连接。"
-        case .degraded(let message), .failed(let message): message
+        case .degraded(let message), .failed(let message): DiagnosticLogSanitizer.serviceMessage(message)
         case .stopped: "打开 App 或重新登录后可以再次启动。"
         }
     }
@@ -350,6 +411,43 @@ private struct MenuStatusHeader: View {
         case .notConfigured, .migrationRequired, .degraded: .orange
         case .stopped: .secondary
         case .failed: .red
+        }
+    }
+}
+
+private struct MenuUnconfiguredGuideCard: View {
+    let isOnboardingInProgress: Bool
+    let isBusy: Bool
+    let openSetup: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(MenuBarPresentation.unconfiguredGuideTitle(isOnboardingInProgress: isOnboardingInProgress))
+                    .font(.subheadline.weight(.semibold))
+                Text(MenuBarPresentation.unconfiguredGuideMessage(isOnboardingInProgress: isOnboardingInProgress))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: openSetup) {
+                Label(
+                    MenuBarPresentation.unconfiguredGuideButtonTitle(isOnboardingInProgress: isOnboardingInProgress),
+                    systemImage: "slider.horizontal.3"
+                )
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(isBusy)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 }

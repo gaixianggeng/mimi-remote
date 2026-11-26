@@ -2051,10 +2051,10 @@ final class HostStoreTests: XCTestCase {
         XCTAssertFalse(store.canChangeModule(.lan))
     }
 
-
     func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
+        isHomebrewLoaded: (@Sendable () async -> Bool)? = nil,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
         agentConfigurationError: @escaping @MainActor () -> String? = { nil },
         isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
@@ -2068,6 +2068,8 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        mainAppStatus: @escaping @MainActor () -> ServiceRegistrationState = { .enabled },
+        registerMainApp: @escaping @MainActor () throws -> Void = {},
         restartAgent: @escaping @MainActor () async throws -> Void = {
             throw AgentClientError.commandFailed("快速重启未配置")
         },
@@ -2174,13 +2176,13 @@ final class HostStoreTests: XCTestCase {
             unregisterAgent: unregisterAgent,
             restartAgent: restartAgent,
             agentLaunchFailure: agentLaunchFailure,
-            mainAppStatus: { .enabled },
-            registerMainApp: {},
+            mainAppStatus: mainAppStatus,
+            registerMainApp: registerMainApp,
             unregisterMainApp: {},
             openLoginItemsSettings: {}
         )
         let homebrew = HomebrewServiceClient(
-            isLoaded: { homebrewLoaded },
+            isLoaded: isHomebrewLoaded ?? { homebrewLoaded },
             installedAgentBinary: { URL(filePath: "/opt/homebrew/bin/agentd") },
             start: homebrewStart,
             stop: homebrewStop

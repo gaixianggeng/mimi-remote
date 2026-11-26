@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "$ROOT_DIR" <<'PY'
-import os, pathlib, shutil, subprocess, sys, tempfile
+import os, pathlib, runpy, shutil, subprocess, sys, tempfile
 root=pathlib.Path(sys.argv[1])
 with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     base=pathlib.Path(temporary)
@@ -12,6 +12,22 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     env=dict(os.environ, HOME=str(task_home), XDG_DATA_HOME=str(xdg_data), MIMI_TRAY_NO_START='1')
     env.pop('XDG_CONFIG_HOME',None)
     env.pop('MIMI_TRAY_INLINE_QR',None)
+    adapter = root/'scripts/install-omarchy-tray-qr.py'
+    plugin = task_home/'.config/omarchy/plugins/tray'
+    plugin.mkdir(parents=True)
+    tray = plugin/'Tray.qml'
+    # A pre-existing clone may contain user customizations alongside the old hooks.
+    hooks = runpy.run_path(str(adapter))['legacy_hooks']()
+    custom = '// user customization\n'
+    clean = custom + '\n'.join(before for before, _ in hooks)
+    legacy = custom + '\n'.join(after for _, after in hooks)
+    tray.write_text(clean)
+    subprocess.run([sys.executable,adapter,plugin],env=env,check=True)
+    assert tray.read_text() == clean and not (plugin/'MimiPairingQR.qml').exists()
+    tray.write_text(legacy)
+    for _ in range(2):
+        subprocess.run([sys.executable,adapter,plugin,'--uninstall'],env=env,check=True)
+        assert tray.read_text() == clean, 'uninstall lost local edits or retained legacy hooks'
     tools_dir=base/'bin';tools_dir.mkdir()
     # Keep the self-test useful in root-owned CI containers without installing
     # into the real user's home or touching a real desktop bus.
@@ -47,19 +63,14 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     icons=xdg_data/'mimi-remote/icons'
     assert len(list(icons.glob('*-symbolic.svg')))==3
     assert '--inline-qr' not in autostart.read_text()
-    env['MIMI_TRAY_INLINE_QR']='invalid'
-    run(two,'upgrade',False);assert version()=='1.0.0'
+    # Old desktop entries and environment settings migrate to clipboard pairing.
+    for entry in [desktop, autostart]:
+        entry.write_text(entry.read_text().replace('\nIcon=', ' --inline-qr\nIcon='))
     env['MIMI_TRAY_INLINE_QR']='1'
     run(two,'upgrade')
-    assert '--inline-qr' in desktop.read_text() and '--inline-qr' in autostart.read_text()
-    env.pop('MIMI_TRAY_INLINE_QR')
-    run(two,'upgrade')
-    assert '--inline-qr' in autostart.read_text(),'upgrade dropped inline QR preference'
-    env['MIMI_TRAY_INLINE_QR']='0'
-    run(one,'upgrade')
-    assert '--inline-qr' not in autostart.read_text()
-    run(one,'rollback')
-    assert '--inline-qr' in autostart.read_text(),'rollback did not restore inline QR preference'
+    assert all('--inline-qr' not in entry.read_text() for entry in [desktop,autostart])
+    run(two,'rollback')
+    assert '--inline-qr' in autostart.read_text(),'rollback lost previous desktop entry'
     run(one,'upgrade')
     env.pop('MIMI_TRAY_INLINE_QR')
     binary.write_text('#!/bin/sh\ncase "$1" in version) echo 1.0.0;; --quit) exit 9;; esac\n')

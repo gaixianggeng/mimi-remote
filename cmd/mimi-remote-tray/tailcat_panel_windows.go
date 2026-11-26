@@ -102,8 +102,9 @@ func (p *controlPanel) switchPairingNetwork() {
 	modules := p.app.status.ModuleStatus
 	p.app.mu.RUnlock()
 	_, hasTailcat, tailcatErr := p.app.tailcatSnapshot()
-	appendMenu(menu, menuFlags(!hasTailcat || tailcatErr != nil), 1, "内置连接（Tailcat）· 免费可用")
-	appendMenu(menu, menuFlags(modules == nil || !modules.TailscaleEnabled || !modules.TailscaleAvailable), 2, "Tailscale")
+	// D2 channel ordering: Tailscale > Built-in connection (Tailcat) > Same LAN.
+	appendMenu(menu, menuFlags(modules == nil || !modules.TailscaleEnabled || !modules.TailscaleAvailable), 1, "Tailscale")
+	appendMenu(menu, menuFlags(!hasTailcat || tailcatErr != nil), 2, "内置连接（Tailcat）· 免费可用")
 	appendMenu(menu, menuFlags(modules == nil || !modules.LANEnabled || !modules.LANAvailable), 3, "同一局域网")
 	var bounds panelRect
 	procPanelGetWindowRect.Call(p.pairNetwork, uintptr(unsafe.Pointer(&bounds)))
@@ -111,13 +112,17 @@ func (p *controlPanel) switchPairingNetwork() {
 		uintptr(bounds.Left), uintptr(bounds.Bottom), 0, p.window, 0)
 	switch choice {
 	case 1:
-		p.selectBuiltinPairing()
-	case 2, 3:
+		p.clearPairingState()
 		p.pairingTailcat = false
 		p.pairingNetwork = "tailscale"
-		if choice == 3 {
-			p.pairingNetwork = "lan"
-		}
+		p.refreshPairing()
+	case 2:
+		p.clearPairingState()
+		p.selectBuiltinPairing()
+	case 3:
+		p.clearPairingState()
+		p.pairingTailcat = false
+		p.pairingNetwork = "lan"
 		p.refreshPairing()
 	}
 }
@@ -166,7 +171,7 @@ func tailcatPairingCopy(base pairingCopy, loading bool, failed bool, ready bool)
 	case failed:
 		result.Warning = "请稍后点击“刷新二维码”重试，或运行诊断查看 Tailcat 状态。"
 	case ready:
-		result.Badge = "Tailcat · 10 分钟"
+		result.Badge = "Tailcat · 短期有效"
 		result.Summary = "Mimi 全部功能免费。扫码同步中转选择；选择 Mimi 中转后，在手机完成开通并自动配置。"
 	}
 	return result

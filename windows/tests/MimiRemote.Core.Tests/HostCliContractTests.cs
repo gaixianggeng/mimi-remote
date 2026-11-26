@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MimiRemote.App;
-using MimiRemote.App.Pages;
 using MimiRemote.App.ViewModels;
 using MimiRemote.Core;
 using Xunit;
@@ -482,7 +481,7 @@ public sealed class HostCliContractTests
         {
             DesktopPreferences.ConfigPath = Path.Combine(tempRoot, "missing-config.json");
 
-            // Invalid setup stdout (ok:false) MUST fail and NEVER call start or workspace
+            // Invalid setup stdout (ok:false) MUST fail and NEVER call up or workspace
             var badContext = new ClientContext
             {
                 Confirm = (_, _) => Task.FromResult(true),
@@ -490,33 +489,48 @@ public sealed class HostCliContractTests
             badContext.Agent.RunHandler = (args, _) => Task.FromResult(args[0] == "setup"
                 ? """{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T00:05:00Z"}"""
                 : "{}");
-            using var badVm = new SetupViewModel(badContext) { Root = tempRoot };
+            var fresh = JsonNode.Parse(ReadFixture("preflight-claude-only-no-network.json"))!;
+            var pairReportJson = ReadFixture("preflight-windows-public.json");
+            fresh["checks"]!.AsArray().Add(JsonNode.Parse(pairReportJson)!["checks"]!.AsArray()[^1]!.DeepClone());
+            fresh["scan_root"] = tempRoot;
+            fresh["browse_root"] = tempRoot;
+            var freshJson = fresh.ToJsonString();
+            badContext.Agent.PreflightHandler = (options, _, _) => Task.FromResult(AgentClient.DecodePreflightReport(freshJson, "windows", options));
+            using var badVm = new SetupViewModel(badContext);
+            await badVm.NextFromStep1Command.ExecuteAsync(null);
             await badVm.FinishCommand.ExecuteAsync(null);
             Assert.True(badVm.Failed);
-            Assert.Single(badContext.Agent.Calls);
-            Assert.Equal("setup", badContext.Agent.Calls[0][0]);
+            Assert.Single(badContext.Agent.Calls, call => call[0] == "setup");
+            Assert.DoesNotContain(badContext.Agent.Calls, call => call[0] is "up" or "start" or "workspace");
 
-            // Valid no-ticket setup receipt succeeds and proceeds to start + workspace
-            Type? navigated = null;
+            // Valid no-ticket setup receipt saves once with --no-pair and --browse-root == scan_root, then calls up (no scary dialog, no redundant workspace)
+            var confirmCalls = 0;
             var goodContext = new ClientContext
             {
-                Confirm = (_, _) => Task.FromResult(true),
-                Navigate = page => navigated = page,
+                Confirm = (_, _) => { confirmCalls++; return Task.FromResult(true); },
             };
             var deferredJson = ReadFixture("setup-ok-pairing-deferred.json");
+            var upReadyJson = ReadFixture("up-ok-ready.json");
             goodContext.Agent.RunHandler = (args, _) => Task.FromResult(args[0] switch
             {
                 "setup" => deferredJson,
-                "workspace" => """{"restart_required":false}""",
-                "status" => """{"service_ok":true}""",
+                "up" => upReadyJson,
+                "preflight" => pairReportJson,
                 _ => "{}",
             });
-            using var goodVm = new SetupViewModel(goodContext) { Root = tempRoot };
+            goodContext.Agent.PreflightHandler = (options, _, _) => Task.FromResult(
+                AgentClient.DecodePreflightReport(options.Stage == "setup" ? freshJson : pairReportJson, "windows", options));
+            using var goodVm = new SetupViewModel(goodContext);
+            await goodVm.NextFromStep1Command.ExecuteAsync(null);
             await goodVm.FinishCommand.ExecuteAsync(null);
             Assert.False(goodVm.Failed);
-            Assert.Equal(typeof(PairingPage), navigated);
-            Assert.Equal("setup", goodContext.Agent.Calls[0][0]);
-            Assert.Equal("start", goodContext.Agent.Calls[1][0]);
+            Assert.Equal(0, confirmCalls);
+            Assert.Equal(OnboardingWizardStep.ServiceAndPermissions, goodVm.Wizard.CurrentStep);
+            var setupCall = Assert.Single(goodContext.Agent.Calls, call => call[0] == "setup");
+            Assert.Contains("--no-pair", setupCall, StringComparer.Ordinal);
+            Assert.Contains("--browse-root", setupCall, StringComparer.Ordinal);
+            Assert.Equal(["setup", "up"], goodContext.Agent.Calls.Select(call => call[0]).Where(name => name != "preflight"));
+            Assert.DoesNotContain(goodContext.Agent.Calls, call => string.Equals(call[0], "workspace", StringComparison.Ordinal));
         }
         finally
         {
@@ -526,6 +540,25 @@ public sealed class HostCliContractTests
                 Directory.Delete(tempRoot, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void UnverifiedPermissionRepairLocksWindowsWithoutOfferingAnAction()
+    {
+        var report = JsonNode.Parse(ReadFixture("preflight-windows-public.json"))!;
+        report["recommended_next"] = "config_store";
+        var config = report["checks"]!.AsArray()[0]!;
+        config["state"] = "error";
+        config["blocking"] = true;
+        config["code"] = "config_permissions_unsafe";
+        config["fix"] = JsonNode.Parse("""{"kind":"run_fix","action":"doctor_fix"}""");
+        var options = new OnboardingPreflightOptions { Stage = "pair" };
+
+        var failure = Assert.Throws<OnboardingCliException>(() => AgentClient.DecodePreflightReport(report.ToJsonString(), "windows", options));
+        Assert.Equal(OnboardingGateState.RecoveryLocked, OnboardingNavigationGate.Evaluate(null, failure.Diagnostic));
+        Assert.Null(failure.Diagnostic!.AllowedFix);
+        config["fix"]!["rotates_token"] = true;
+        Assert.Throws<InvalidDataException>(() => AgentClient.DecodePreflightReport(report.ToJsonString(), "windows", options));
     }
 
     private static readonly string[] ForbiddenLeakTokens =

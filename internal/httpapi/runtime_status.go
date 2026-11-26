@@ -600,6 +600,11 @@ func (r *Router) readCodexRuntime(ctx context.Context, includeQuota bool) (statu
 	if err != nil {
 		return status
 	}
+	var observationGeneration string
+	if includeQuota && r.pairingGeneration != nil {
+		// A live Tailcat change can advance the pairing generation while Codex replies.
+		observationGeneration = r.currentPairingGeneration(ctx)
+	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -633,7 +638,7 @@ func (r *Router) readCodexRuntime(ctx context.Context, includeQuota bool) (statu
 		return status
 	}
 
-	r.pairingStatus.observeCodexAccount(r.cfg.SourceGeneration(), status)
+	r.pairingStatus.observeCodexAccount(observationGeneration, status)
 	var limits runtimeRateLimitsEnvelope
 	if err := rpc.call(ctx, "account/rateLimits/read", map[string]any{}, &limits); err == nil {
 		status.RateLimits = normalizeRuntimeRateLimits(limits, "codex")

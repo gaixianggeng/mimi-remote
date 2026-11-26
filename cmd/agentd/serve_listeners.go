@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
@@ -39,7 +38,7 @@ func bindServeListenersWithPolicy(cfg config.Config, addresses []string, bind fu
 	for _, address := range addresses {
 		listener, err := bind(cfg, address)
 		if err != nil {
-			if loopback != "" && address == strings.TrimSpace(cfg.Listen) && errors.Is(err, syscall.EADDRNOTAVAIL) {
+			if loopback != "" && address == strings.TrimSpace(cfg.Listen) && errors.Is(err, socketAddressNotAvailable) {
 				unavailable = err
 				continue
 			}
