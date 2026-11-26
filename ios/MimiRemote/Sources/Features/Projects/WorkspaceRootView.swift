@@ -314,7 +314,7 @@ struct WorkspaceRootView: View {
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
-    @StateObject private var openWorkspacePresenter = OpenWorkspaceSheetPresenter()
+    @StateObject private var openWorkspacePresenter: OpenWorkspaceSheetPresenter
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
     @State private var workspaceStripViewportWidth: CGFloat = 0
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
@@ -331,6 +331,7 @@ struct WorkspaceRootView: View {
         onConnectComputer: (() -> Void)? = nil,
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
+        openWorkspacePresenter: OpenWorkspaceSheetPresenter? = nil,
         initialWorkspaceID: String? = nil,
         bottomContentMargin: CGFloat? = nil,
         onWorkspaceSelectionChange: ((String?) -> Void)? = nil,
@@ -349,6 +350,9 @@ struct WorkspaceRootView: View {
         self.onWorkspaceSelectionChange = onWorkspaceSelectionChange
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
+        _openWorkspacePresenter = StateObject(
+            wrappedValue: openWorkspacePresenter ?? OpenWorkspaceSheetPresenter()
+        )
         // 初值来自 Shell 记住的浏览选择（或预览、快照的固定值）：首帧分页就停在该工作区，
         // 不会先渲染第一页再跳转；它不在目录中时由 synchronizeSelection 回落。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
