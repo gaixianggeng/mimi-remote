@@ -64,26 +64,34 @@ func ValidatePairingTicket(secret string, ticket PairingTicket, now time.Time) e
 	if endpoint == "" || issuedAt == "" || expiresAt == "" || signature == "" {
 		return invalidPairingTicket("配对票据缺少必要字段")
 	}
+	// Keep the historical time-error text for legacy clients. Only signed
+	// timestamps can produce the expired or clock-skew diagnostic sentinel.
+	expiry, expiryErr := time.Parse(time.RFC3339Nano, expiresAt)
+	issued, issuedErr := time.Parse(time.RFC3339Nano, issuedAt)
+	var timeFailure error
+	switch {
+	case expiryErr != nil:
+		timeFailure = invalidPairingTicket("配对票据 expires_at 无效")
+	case !now.Before(expiry):
+		timeFailure = ErrPairTicketExpired
+	case issuedErr != nil:
+		timeFailure = invalidPairingTicket("配对票据 issued_at 无效")
+	case issued.After(now.Add(2 * time.Minute)):
+		timeFailure = ErrPairClockSkew
+	}
+
 	expected := SignPairingTicket(secret, endpoint, issuedAt, expiresAt)
 	if subtle.ConstantTimeCompare([]byte(signature), []byte(expected)) != 1 {
+		if timeFailure != nil {
+			return invalidPairingTicket(timeFailure.Error())
+		}
 		return invalidPairingTicket("配对票据签名无效")
 	}
-	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
-	if err != nil {
+	if issuedErr == nil && expiryErr == nil && !expiry.After(issued) {
+		if timeFailure != nil {
+			return invalidPairingTicket(timeFailure.Error())
+		}
 		return invalidPairingTicket("配对票据 expires_at 无效")
 	}
-	issued, err := time.Parse(time.RFC3339Nano, issuedAt)
-	if err != nil {
-		return invalidPairingTicket("配对票据 issued_at 无效")
-	}
-	if !expiry.After(issued) {
-		return invalidPairingTicket("配对票据 expires_at 无效")
-	}
-	if !now.Before(expiry) {
-		return ErrPairTicketExpired
-	}
-	if issued.After(now.Add(2 * time.Minute)) {
-		return ErrPairClockSkew
-	}
-	return nil
+	return timeFailure
 }

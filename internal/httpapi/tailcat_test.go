@@ -54,6 +54,7 @@ type fakeManagedPairingService struct {
 	onConfigureMode  func(managed bool)
 	relayCalls       int
 	onConfigureRelay func(context.Context, string) (tailcatStatus, error)
+	afterComplete    func()
 }
 
 func (f *fakeManagedPairingService) Start() {}
@@ -77,6 +78,9 @@ func (f *fakeManagedPairingService) Complete(
 	f.sessionID = sessionID
 	f.grant = grant
 	f.mobileKey = mobileKey
+	if f.afterComplete != nil {
+		f.afterComplete()
+	}
 	return f.status, f.operationErr
 }
 
@@ -244,6 +248,18 @@ func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *te
 	}
 	if fakeTailcat.allowCalls != 0 {
 		t.Fatal("托管配对不能写入永久免费的 clients.json 白名单")
+	}
+
+	fakeManaged.afterComplete = func() {
+		expirePairingAssistantEvidence(server.router)
+		server.router.pairingStatus.probe = func(context.Context) runtimeStatusResponse {
+			now := time.Now()
+			return runtimeStatusResponse{CheckedAt: &now}
+		}
+	}
+	response = performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), testToken) || fakeManaged.completeCall != 2 {
+		t.Fatal("released a credential after assistant eligibility expired during authorization")
 	}
 }
 

@@ -56,7 +56,7 @@ func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
 		return
 	}
-	if failure := r.pairingGate(req.Context(), nil); failure != nil {
+	if failure := r.pairingGateFor(req.Context(), nil, passivePairing, ""); failure != nil {
 		writePairingFailure(w, failure)
 		return
 	}
@@ -138,6 +138,11 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	if publicKey != "" && r.tailcat == nil {
+		markPairingFailure(w, "tailcat_relay_unreachable", "network_tailcat")
+		writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
+		return
+	}
 	if (managedSessionID == "") != (managedGrant == "") {
 		writeError(w, http.StatusBadRequest, "托管配对会话和授权必须同时提供")
 		return
@@ -165,12 +170,20 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		response.TailscaleDNSName = host.DNSName
 		response.TailscaleDeviceName = host.DeviceName
 	}
-	failure := r.pairingGate(req.Context(), func(ctx context.Context) *tailcatActionFailure {
+	var generation string
+	if publicKey != "" {
+		generation = r.currentPairingGeneration(req.Context())
+		if generation == "" {
+			writePairingFailure(w, pairingFailure("service_version_mismatch", "service_daemon"))
+			return
+		}
+	}
+	failure := r.pairingGateFor(req.Context(), func(ctx context.Context) *tailcatActionFailure {
 		if publicKey != "" {
 			return r.tailcatRoute(ctx)
 		}
 		return r.directRoute(ctx, ticket.Endpoint)
-	})
+	}, explicitPairing, generation)
 	if err := auth.ValidatePairingTicket(token, ticket, time.Now()); err != nil {
 		writeTicketError(w, err)
 		return
@@ -180,7 +193,6 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if publicKey != "" {
-		generation := r.pairingGeneration()
 		var status tailcatStatus
 		var err error
 		if managedSessionID != "" {
@@ -213,12 +225,14 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			}
 			return
 		}
+		// Cloud authorization or a sidecar write can outlast the original observation.
+		failure = r.pairingGateFor(req.Context(), r.tailcatRoute, explicitPairing, generation)
 		if err := auth.ValidatePairingTicket(token, ticket, time.Now()); err != nil {
 			writeTicketError(w, err)
 			return
 		}
-		if generation == "" || r.pairingGeneration() != generation {
-			writePairingFailure(w, pairingFailure("service_version_mismatch", "service_daemon"))
+		if failure != nil {
+			writePairingFailure(w, failure)
 			return
 		}
 		response.TailcatAddress = status.Address
@@ -252,6 +266,17 @@ func writeTailcatClaimFailure(w http.ResponseWriter, err error) {
 			return
 		case "pairing_grant_invalid", "pairing_session_expired", "pairing_not_authorized":
 			writeManagedGrantRequired(w)
+			return
+		}
+	}
+	// Preserve public legacy reasons without reflecting a filesystem, sidecar
+	// or cloud error containing a path, identifier or credential.
+	if !negotiated {
+		switch msg := err.Error(); msg {
+		case "Tailcat 稳定连接尚未就绪", "Tailcat 控制通道不可用", "托管配对公钥与已授权移动设备不一致",
+			"Mimi 中转尚未初始化", "Mimi 中转策略已经失效", "Mimi 中转策略身份或版本无效", "Mimi 中转策略版本发生回退",
+			"no_current_entitlement", "subscription_required", "pairing_grant_invalid", "pairing_session_expired", "pairing_not_authorized":
+			writeError(w, http.StatusServiceUnavailable, msg)
 			return
 		}
 	}

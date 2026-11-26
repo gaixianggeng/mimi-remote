@@ -70,6 +70,9 @@ type runtimeStatusSnapshotCache struct {
 	refreshDone       map[uint64]chan struct{}
 	forceNext         bool
 	closed            bool
+
+	pairingMode         pairingProbeMode
+	passivePairingProbe func(context.Context) runtimeStatusResponse
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -166,6 +169,10 @@ func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusR
 }
 
 func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
+	c.startProbeLocked(c.probe)
+}
+
+func (c *runtimeStatusSnapshotCache) startProbeLocked(probe func(context.Context) runtimeStatusResponse) {
 	if c.refreshing || c.closed {
 		return
 	}
@@ -174,13 +181,13 @@ func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
 	generation := c.refreshGen
 	c.refreshDoneLocked(generation)
 	c.wg.Add(1)
-	go c.refresh(generation)
+	go c.refresh(generation, probe)
 }
 
-func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
+func (c *runtimeStatusSnapshotCache) refresh(generation uint64, probe func(context.Context) runtimeStatusResponse) {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
-	response := c.probe(ctx)
+	response := probe(ctx)
 	finishedInBudget := ctx.Err() == nil
 	cancel()
 
@@ -626,6 +633,7 @@ func (r *Router) readCodexRuntime(ctx context.Context, includeQuota bool) (statu
 		return status
 	}
 
+	r.pairingStatus.observeCodexAccount(r.cfg.SourceGeneration(), status)
 	var limits runtimeRateLimitsEnvelope
 	if err := rpc.call(ctx, "account/rateLimits/read", map[string]any{}, &limits); err == nil {
 		status.RateLimits = normalizeRuntimeRateLimits(limits, "codex")

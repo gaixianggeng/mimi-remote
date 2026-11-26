@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
@@ -68,9 +69,26 @@ func (r *Router) appliedPairingGeneration() string {
 	return snap.Config.SourceGeneration()
 }
 
+// A disconnected volume can stall even a metadata lookup. Keep those reads
+// within the request budget and bound the number of outstanding syscalls.
+func pairingFileRead[T any](parent context.Context, read func() (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	return cliinspect.Bounded(ctx, read)
+}
+
+func (r *Router) currentPairingGeneration(ctx context.Context) string {
+	generation, _ := pairingFileRead(ctx, func() (string, error) { return r.pairingGeneration(), nil })
+	return generation
+}
+
 // The caller has already authenticated the bearer, ticket, or native loopback
 // request. Reinspect both the saved generation and roots after any probe wait.
 func (r *Router) pairingGate(parent context.Context, route func(context.Context) *tailcatActionFailure) *tailcatActionFailure {
+	return r.pairingGateFor(parent, route, explicitPairing, "")
+}
+
+func (r *Router) pairingGateFor(parent context.Context, route func(context.Context) *tailcatActionFailure, mode pairingProbeMode, requiredGeneration string) *tailcatActionFailure {
 	ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 	defer cancel()
 	if !r.cfg.WorkspaceConfirmed() {
@@ -82,17 +100,23 @@ func (r *Router) pairingGate(parent context.Context, route func(context.Context)
 	if r.pairingGeneration == nil {
 		return pairingFailure("service_not_running", "service_daemon")
 	}
-	generation := r.pairingGeneration()
-	if generation == "" {
+	generation := r.currentPairingGeneration(ctx)
+	if generation == "" || (requiredGeneration != "" && generation != requiredGeneration) {
 		return pairingFailure("service_version_mismatch", "service_daemon")
 	}
-	if strings.TrimSpace(r.cfg.Auth.Token) == "" || r.doctor == nil || !r.doctor.RunReadiness(ctx).OK {
+	ready, err := pairingFileRead(ctx, func() (bool, error) {
+		return strings.TrimSpace(r.cfg.Auth.Token) != "" && r.doctor != nil && r.doctor.RunReadiness(ctx).OK, nil
+	})
+	if err != nil {
+		return pairingFailure("probe_timeout", "service_daemon")
+	}
+	if !ready {
 		return pairingFailure("pair_host_unreachable", "service_daemon")
 	}
 	if len(r.cfg.ScanRoots) == 0 || len(r.cfg.BrowseRoots) == 0 {
 		return pairingFailure("workspace_confirmation_required", "workspace_root")
 	}
-	if failure := r.checkPairingAssistant(ctx, generation); failure != nil {
+	if failure := r.checkPairingAssistant(ctx, generation, mode); failure != nil {
 		return failure
 	}
 	if route != nil {
@@ -100,21 +124,30 @@ func (r *Router) pairingGate(parent context.Context, route func(context.Context)
 			return failure
 		}
 	}
-	for _, roots := range [][]string{r.cfg.ScanRoots, r.cfg.BrowseRoots} {
-		for _, path := range roots {
-			path = config.ExpandPath(path)
-			if !filepath.IsAbs(path) {
-				return pairingFailure("workspace_not_found", "workspace_root")
-			}
-			if _, code := config.InspectWorkspaceRoot(path); code != "" {
-				return pairingFailure(code, "workspace_root")
+	code, err := pairingFileRead(ctx, func() (string, error) {
+		for _, roots := range [][]string{r.cfg.ScanRoots, r.cfg.BrowseRoots} {
+			for _, path := range roots {
+				path = config.ExpandPath(path)
+				if !filepath.IsAbs(path) {
+					return "workspace_not_found", nil
+				}
+				if _, code := config.InspectWorkspaceRoot(path); code != "" {
+					return code, nil
+				}
 			}
 		}
+		return "", nil
+	})
+	if err != nil {
+		return pairingFailure("probe_timeout", "workspace_root")
+	}
+	if code != "" {
+		return pairingFailure(code, "workspace_root")
 	}
 	if ctx.Err() != nil {
 		return pairingFailure("probe_timeout", "service_daemon")
 	}
-	if r.pairingGeneration() != generation {
+	if r.currentPairingGeneration(ctx) != generation {
 		return pairingFailure("service_version_mismatch", "service_daemon")
 	}
 	// A slow policy or node check can outlive the evidence that admitted it.
@@ -189,19 +222,19 @@ func (r *Router) localPairIssue(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	fail := func(f *tailcatActionFailure) {
-		step := "network_tailcat"
+		code, step := pairingFallbackDiagnostic("/api/tailcat/managed-pairing-link", f.status, f.code)
 		var diagnostic *setup.PairingDiagnostic
 		if errors.As(f.err, &diagnostic) {
-			step = diagnostic.Step
+			code, step = diagnostic.Code, diagnostic.Step
 		}
-		writeJSON(w, f.status, map[string]string{"code": f.code, "step": step, "error": f.err.Error()})
-	}
-	if input.Version == "" || !setup.AgentVersionsCompatible(input.Version, r.version) || input.Generation == "" || input.Generation != r.pairingGeneration() {
-		fail(pairingFailure("service_version_mismatch", "service_daemon"))
-		return
+		writeJSON(w, f.status, map[string]string{"code": code, "step": step, "error": setup.OnboardingDiagnostic(code, step, "pair", true, "").Message})
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), 25*time.Second)
 	defer cancel()
+	if input.Version == "" || !setup.AgentVersionsCompatible(input.Version, r.version) || input.Generation == "" || input.Generation != r.currentPairingGeneration(ctx) {
+		fail(pairingFailure("service_version_mismatch", "service_daemon"))
+		return
+	}
 	if input.Network == setup.PairingNetworkTailcat {
 		if !r.tailcatControlMu.TryLock() {
 			fail(pairingFailure("tailcat_busy", "network_tailcat"))
@@ -213,13 +246,9 @@ func (r *Router) localPairIssue(w http.ResponseWriter, req *http.Request) {
 			fail(f)
 			return
 		}
-		pair, f := r.signTailcatPair(ctx, status)
+		pair, f := r.signTailcatPair(ctx, status, input.Generation)
 		if f != nil {
 			fail(f)
-			return
-		}
-		if input.Generation != r.pairingGeneration() {
-			fail(pairingFailure("service_version_mismatch", "service_daemon"))
 			return
 		}
 		writeJSON(w, http.StatusOK, pair)
@@ -231,16 +260,12 @@ func (r *Router) localPairIssue(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var candidate setup.Result
-	if f := r.pairingGate(ctx, func(ctx context.Context) *tailcatActionFailure {
+	if f := r.pairingGateFor(ctx, func(ctx context.Context) *tailcatActionFailure {
 		var failure *tailcatActionFailure
 		candidate, failure = r.liveDirectCandidate(ctx, network)
 		return failure
-	}); f != nil {
+	}, explicitPairing, input.Generation); f != nil {
 		fail(f)
-		return
-	}
-	if r.pairingGeneration() != input.Generation {
-		fail(pairingFailure("service_version_mismatch", "service_daemon"))
 		return
 	}
 	writeJSON(w, http.StatusOK, candidate.SignDirectPair())

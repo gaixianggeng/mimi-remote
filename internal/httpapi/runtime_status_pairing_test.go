@@ -28,6 +28,25 @@ func isolatePairingAssistantEnv(t *testing.T) {
 	}
 }
 
+type coldPairingCodexTransport struct {
+	directWSTestTransport
+	readyCalls int
+	urlCalls   int
+}
+
+func (t *coldPairingCodexTransport) WebSocketURL() (string, error) {
+	t.urlCalls++
+	if t.readyCalls == 0 {
+		return "", errors.New("resident unavailable")
+	}
+	return t.directWSTestTransport.WebSocketURL()
+}
+
+func (t *coldPairingCodexTransport) EnsureReady(context.Context) error {
+	t.readyCalls++
+	return nil
+}
+
 func TestPairingAssistantCodexUsesSelectedAccountWithoutQuota(t *testing.T) {
 	isolatePairingAssistantEnv(t)
 	for _, tc := range []struct {
@@ -37,7 +56,7 @@ func TestPairingAssistantCodexUsesSelectedAccountWithoutQuota(t *testing.T) {
 		{"chatgpt", true}, {"apiKey", true}, {"amazonBedrock", true}, {"unknown", false}, {"", false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			url, _, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, mt int, payload []byte) {
+			url, _, dials := fakeAppServerUpstream(t, func(conn *websocket.Conn, mt int, payload []byte) {
 				var frame struct {
 					ID     json.RawMessage
 					Method string
@@ -68,10 +87,38 @@ func TestPairingAssistantCodexUsesSelectedAccountWithoutQuota(t *testing.T) {
 			})
 			_, r := appServerGatewayRouterFixtureWithRouter(t, url, nil)
 			t.Cleanup(r.Shutdown)
-			if got := r.checkPairingAssistant(t.Context(), "fixture-generation") == nil; got != tc.want {
+			cold := &coldPairingCodexTransport{directWSTestTransport: directWSTestTransport{upstreamURL: url}}
+			r.appServerSSH = cold
+			for _, transport := range []string{"local", "ssh"} {
+				r.cfg.AppServer.Transport = transport
+				if r.pairingCodex(t.Context(), passivePairing) || dials.Load() != 0 || cold.urlCalls != 0 || cold.readyCalls != 0 {
+					t.Fatal("passive discovery activated Codex")
+				}
+			}
+			if got := r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil; got != tc.want {
 				t.Fatalf("usable = %v, want %v", got, tc.want)
 			}
+			if cold.readyCalls != 1 {
+				t.Fatalf("explicit readiness calls = %d", cold.readyCalls)
+			}
 		})
+	}
+}
+
+func TestPassiveCodexClaimUsesFreshAccountObservation(t *testing.T) {
+	r := newPairingTestServer(t).router
+	generation := r.pairingGeneration()
+	r.pairingStatus.passivePairingProbe = func(context.Context) runtimeStatusResponse {
+		now := time.Now()
+		return runtimeStatusResponse{CheckedAt: &now}
+	}
+	r.pairingStatus.observeCodexAccount(generation, runtimeAccountStatus{Version: "fixture", State: runtimeStateConnected})
+	if r.checkPairingAssistant(t.Context(), generation, passivePairing) != nil {
+		t.Fatal("passive discovery lost a current authenticated account observation")
+	}
+	expirePairingAssistantEvidence(r)
+	if r.checkPairingAssistant(t.Context(), generation, passivePairing) == nil {
+		t.Fatal("stale host account observation admitted discovery")
 	}
 }
 
@@ -103,14 +150,22 @@ func TestPairingAssistantUsesCurrentClaudeAndAgyAccount(t *testing.T) {
 			}
 			_, r := appServerGatewayRouterFixtureWithRouter(t, "", func(out *config.Config) { out.Codex = cfg.Codex; out.Claude = cfg.Claude; out.Agy = cfg.Agy })
 			t.Cleanup(r.Shutdown)
-			if r.checkPairingAssistant(t.Context(), "fixture-generation") != nil {
+			if r.checkPairingAssistant(t.Context(), "fixture-generation", passivePairing) == nil ||
+				r.claudeBridge.runningSince() != nil || r.agyAdapter.runningSince() != nil {
+				t.Fatal("automatic discovery started a resident adapter")
+			}
+			if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil {
 				t.Fatal("selected assistant with authenticated CLI and responding adapter rejected")
+			}
+			expirePairingAssistantEvidence(r)
+			if r.checkPairingAssistant(t.Context(), "fixture-generation", passivePairing) != nil {
+				t.Fatal("discovery rejected a running authenticated adapter")
 			}
 			if err := os.Remove(cli + ".account"); err != nil {
 				t.Fatal(err)
 			}
 			expirePairingAssistantEvidence(r)
-			if r.checkPairingAssistant(t.Context(), "fixture-generation") == nil {
+			if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil {
 				t.Fatal("adapter alone must not retain lost account eligibility")
 			}
 		})
@@ -122,7 +177,13 @@ func TestPairingAssistantDeepSeekRequiresReadOnlyAuthenticatedNonemptyCatalog(t 
 	var models atomic.Bool
 	models.Store(true)
 	h := newFakeDeepSeekHarness(t)
+	slow := make(chan struct{})
+	defer close(slow)
+	var delayCatalog atomic.Bool
 	h.handle(harnessclient.MethodSessionModelCatalog, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		if delayCatalog.Swap(false) {
+			<-slow
+		}
 		if models.Load() {
 			return json.RawMessage("{\"groups\":[{\"models\":[{\"id\":\"fixture\"}]}]}"), nil
 		}
@@ -141,12 +202,20 @@ func TestPairingAssistantDeepSeekRequiresReadOnlyAuthenticatedNonemptyCatalog(t 
 		attemptedRenewal.Store(true)
 		return errors.New("unexpected pairing renewal")
 	}
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") != nil {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil {
 		t.Fatal("authenticated Harness with models rejected")
+	}
+	delayCatalog.Store(true)
+	expirePairingAssistantEvidence(r)
+	if f := r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing); f == nil || f.code != "probe_timeout" {
+		t.Fatalf("timed out model catalog: %v", f)
+	}
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil {
+		t.Fatal("timeout prevented an immediate retry")
 	}
 	models.Store(false)
 	expirePairingAssistantEvidence(r)
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") == nil {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil {
 		t.Fatal("empty catalog accepted")
 	}
 	models.Store(true)
@@ -154,7 +223,7 @@ func TestPairingAssistantDeepSeekRequiresReadOnlyAuthenticatedNonemptyCatalog(t 
 		t.Fatal(err)
 	}
 	expirePairingAssistantEvidence(r)
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") == nil || attemptedRenewal.Load() {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil || attemptedRenewal.Load() {
 		t.Fatal("rejected credential accepted or rotated")
 	}
 }
@@ -194,7 +263,7 @@ func TestPairingAssistantFreshnessAndCoalescedRefresh(t *testing.T) {
 	var group sync.WaitGroup
 	for range callers {
 		group.Go(func() {
-			if r.checkPairingAssistant(t.Context(), "fixture-generation") != nil {
+			if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil {
 				t.Error("fresh result rejected")
 			}
 		})
@@ -203,20 +272,20 @@ func TestPairingAssistantFreshnessAndCoalescedRefresh(t *testing.T) {
 	close(release)
 	group.Wait()
 	now.Add(int64(pairingEvidenceTTL))
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") != nil || calls.Load() != 1 {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil || calls.Load() != 1 {
 		t.Fatal("inclusive 15s freshness or coalescing failed")
 	}
 	now.Add(1)
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") != nil || calls.Load() != 2 {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) != nil || calls.Load() != 2 {
 		t.Fatal("stale evidence reused")
 	}
 	r.cfg.DeepSeek.Enabled = false
 	r.cfg.Claude.Enabled = true
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") == nil {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil {
 		t.Fatal("disabled working assistant admitted alongside unavailable enabled assistant")
 	}
 	r.cfg.Claude.Enabled = false
-	if r.checkPairingAssistant(t.Context(), "fixture-generation") == nil {
+	if r.checkPairingAssistant(t.Context(), "fixture-generation", explicitPairing) == nil {
 		t.Fatal("all assistants disabled yet gate succeeded")
 	}
 }
@@ -270,11 +339,11 @@ func TestPairingRefreshIsKeyedToAppliedGeneration(t *testing.T) {
 	}, func() runtimeStatusResponse { return runtimeStatusResponse{} })
 	defer c.Close()
 	first := make(chan struct{})
-	go func() { defer close(first); _ = c.pairingSnapshot(t.Context(), "old") }()
+	go func() { defer close(first); _ = c.pairingSnapshot(t.Context(), "old", explicitPairing) }()
 	<-entered
 	later := &waitingPairingContext{Context: t.Context(), waiting: make(chan struct{})}
 	second := make(chan runtimeStatusResponse, 1)
-	go func() { second <- c.pairingSnapshot(later, "current") }()
+	go func() { second <- c.pairingSnapshot(later, "current", explicitPairing) }()
 	<-later.waiting
 	close(release)
 	<-first
@@ -284,10 +353,10 @@ func TestPairingRefreshIsKeyedToAppliedGeneration(t *testing.T) {
 	if snapshot.CheckedAt == nil || len(snapshot.Runtimes) != 0 || calls.Load() != 2 {
 		t.Fatalf("current generation reused old evidence: %+v, probes=%d", snapshot, calls.Load())
 	}
-	if r := c.pairingSnapshot(t.Context(), "current"); r.CheckedAt == nil || len(r.Runtimes) != 0 || calls.Load() != 2 {
+	if r := c.pairingSnapshot(t.Context(), "current", explicitPairing); r.CheckedAt == nil || len(r.Runtimes) != 0 || calls.Load() != 2 {
 		t.Fatal("did not reuse fresh current-generation failure")
 	}
-	if r := c.pairingSnapshot(t.Context(), "after-hot-edit"); len(r.Runtimes) != 1 || calls.Load() != 3 {
+	if r := c.pairingSnapshot(t.Context(), "after-hot-edit", explicitPairing); len(r.Runtimes) != 1 || calls.Load() != 3 {
 		t.Fatal("previous generation's fresh failure reused after a hot change")
 	}
 }

@@ -43,7 +43,7 @@ func TestFivePairingRoutesNegotiateErrors(t *testing.T) {
 					t.Fatal("missing Bearer challenge")
 				}
 				if accept != pairingErrorMediaType {
-					if strings.TrimSpace(rec.Body.String()) != tc.legacy || rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+					if rec.Body.String() != tc.legacy+"\n" || rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
 						t.Fatalf("legacy response %q %s", rec.Header().Get("Content-Type"), rec.Body)
 					}
 					continue
@@ -114,6 +114,26 @@ func TestPairingNegotiationClassifiesAuthenticatedTimes(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedTicketTimeKeepsLegacyBody(t *testing.T) {
+	s := newPairingTestServer(t)
+	now := time.Now()
+	ticket := auth.NewPairingTicket(localPairingEndpoint, "unrecognized-key", now.Add(-time.Hour), now.Add(-time.Minute))
+	for _, accept := range []string{"application/json", pairingErrorMediaType} {
+		req := pairingClaimHTTPRequest(t, pairingClaimRequest{Endpoint: ticket.Endpoint, IssuedAt: ticket.IssuedAt, ExpiresAt: ticket.ExpiresAt, Signature: ticket.Signature})
+		req.Header.Set("Accept", accept)
+		rec := httptest.NewRecorder()
+		s.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status %d", rec.Code)
+		}
+		if accept == pairingErrorMediaType {
+			assertPairingDiagnostic(t, rec, "pair_ticket_invalid", "network_any")
+		} else if rec.Body.String() != "{\"error\":\"配对二维码已过期\"}\n" {
+			t.Fatalf("legacy body %q", rec.Body.String())
+		}
+	}
+}
+
 func TestPairingNegotiationCoversOuterBodyLimit(t *testing.T) {
 	s := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/pair/claim", nil)
@@ -125,4 +145,17 @@ func TestPairingNegotiationCoversOuterBodyLimit(t *testing.T) {
 		t.Fatalf("unexpected status %d", rec.Code)
 	}
 	assertPairingDiagnostic(t, rec, "invalid_request", "network_any")
+}
+
+func TestLegacyTailcatClaimPreservesPublicReasonAndRedactsPrivateDetail(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"pairing_grant_invalid", "pairing_grant_invalid"},
+		{"fixture-private-detail", "Tailcat 连接尚未就绪"},
+	} {
+		rec := httptest.NewRecorder()
+		writeTailcatClaimFailure(rec, &managedCloudError{Code: "pairing_grant_invalid", Message: tc.input})
+		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != "{\"error\":\""+tc.want+"\"}\n" {
+			t.Fatalf("unexpected legacy response %d %q", rec.Code, rec.Body.String())
+		}
+	}
 }

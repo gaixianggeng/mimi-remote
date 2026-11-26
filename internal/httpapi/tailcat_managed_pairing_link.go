@@ -113,7 +113,7 @@ func (r *Router) createTailcatManagedPairingLink(
 	if status.Mode != config.TailcatModeManaged {
 		return fail(http.StatusServiceUnavailable, "tailcat_pair_failed", "Tailcat 托管配对节点尚未就绪，请稍后重试")
 	}
-	pair, failure := r.signTailcatPair(ctx, status)
+	pair, failure := r.signTailcatPair(ctx, status, "")
 	if failure != nil {
 		return tailcatManagedPairingLinkResponse{}, failure
 	}
@@ -164,13 +164,19 @@ func (r *Router) pairTailcat(ctx context.Context) (tailcatStatus, *tailcatAction
 	return r.decorateTailcatStatus(status), nil
 }
 
-func (r *Router) signTailcatPair(ctx context.Context, status tailcatStatus) (agentsetup.Result, *tailcatActionFailure) {
+func (r *Router) signTailcatPair(ctx context.Context, status tailcatStatus, generation string) (agentsetup.Result, *tailcatActionFailure) {
 	nodeExpiry, err := time.Parse(time.RFC3339Nano, status.PairExpiresAt)
 	if err != nil || !nodeExpiry.After(time.Now()) {
 		return agentsetup.Result{}, &tailcatActionFailure{http.StatusServiceUnavailable, "tailcat_pair_failed", errors.New("Tailcat 配对节点已失效，请重新生成")}
 	}
 	// 与 agentd tailcat pair 共用二维码构造函数，字段及签名语义保持一致。
-	if failure := r.pairingGate(ctx, func(ctx context.Context) *tailcatActionFailure {
+	if generation == "" {
+		generation = r.currentPairingGeneration(ctx)
+		if generation == "" {
+			return agentsetup.Result{}, pairingFailure("service_version_mismatch", "service_daemon")
+		}
+	}
+	if failure := r.pairingGateFor(ctx, func(ctx context.Context) *tailcatActionFailure {
 		current := r.tailcat.Status(ctx)
 		if !current.Enabled || !current.Running || current.Error != "" || status.Error != "" || current.Mode != status.Mode ||
 			current.PairAddress == "" || current.PairAddress != status.PairAddress || current.PairPublicKey != status.PairPublicKey ||
@@ -179,17 +185,18 @@ func (r *Router) signTailcatPair(ctx context.Context, status tailcatStatus) (age
 			return &tailcatActionFailure{http.StatusServiceUnavailable, "tailcat_pair_failed", errors.New("Tailcat 配对节点尚未就绪，请重新生成")}
 		}
 		return nil
-	}); failure != nil {
+	}, explicitPairing, generation); failure != nil {
 		return agentsetup.Result{}, failure
 	}
-	generation := r.pairingGeneration()
 	if status.Mode != config.TailcatModeManaged {
 		status.MacInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress = "", "", "", ""
 	}
-	pair, err := agentsetup.TailcatPairWithManagedHost(
-		r.configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey,
-		status.FreePairAddress, nodeExpiry,
-	)
+	pair, err := pairingFileRead(ctx, func() (agentsetup.Result, error) {
+		return agentsetup.TailcatPairWithManagedHost(
+			r.configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey,
+			status.FreePairAddress, nodeExpiry,
+		)
+	})
 	if err != nil {
 		return agentsetup.Result{}, &tailcatActionFailure{http.StatusInternalServerError, "tailcat_pair_link_failed", errors.New("生成 Tailcat 配对链接失败，请在电脑上检查配置")}
 	}
@@ -202,8 +209,11 @@ func (r *Router) signTailcatPair(ctx context.Context, status tailcatStatus) (age
 	}, time.Now()) != nil {
 		return agentsetup.Result{}, &tailcatActionFailure{http.StatusInternalServerError, "tailcat_pair_link_failed", errors.New("配对签名与当前服务不一致，请在电脑上检查配置并重启服务")}
 	}
-	if generation == "" || generation != r.pairingGeneration() {
+	if generation != r.currentPairingGeneration(ctx) {
 		return agentsetup.Result{}, pairingFailure("service_version_mismatch", "service_daemon")
+	}
+	if !time.Now().Before(nodeExpiry) || !r.pairingStatus.stillFreshForPairing(generation) {
+		return agentsetup.Result{}, pairingFailure("probe_timeout", "network_tailcat")
 	}
 	return pair, nil
 }

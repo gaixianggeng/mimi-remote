@@ -43,6 +43,7 @@ func newPairingTestServer(t *testing.T) testServer {
 		now := time.Now()
 		return runtimeStatusResponse{CheckedAt: &now, Runtimes: []runtimeAccountStatus{{ID: "codex", Enabled: true, State: runtimeStateAvailable}}}
 	}
+	r.pairingStatus.passivePairingProbe = r.pairingStatus.probe
 	t.Cleanup(r.Shutdown)
 	return server
 }
@@ -260,5 +261,30 @@ func TestPendingWorkspaceDisclosedOnlyAfterAuthentication(t *testing.T) {
 				t.Fatal("unexpected disclosure")
 			}
 		}
+	}
+}
+
+func TestPairingGateReleasesBlockedFileReadOnCancellation(t *testing.T) {
+	r := newPairingTestServer(t).router
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	r.pairingGeneration = func() string {
+		close(entered)
+		<-release
+		return "fixture-generation"
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan *tailcatActionFailure, 1)
+	go func() { done <- r.pairingGate(ctx, nil) }()
+	<-entered
+	cancel()
+	select {
+	case f := <-done:
+		if f == nil {
+			t.Fatal("cancelled file check admitted pairing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pairing remained blocked on the filesystem after cancellation")
 	}
 }

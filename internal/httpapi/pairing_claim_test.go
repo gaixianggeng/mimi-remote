@@ -123,6 +123,10 @@ func TestPairingClaimAddsCurrentMagicDNSMetadataOnlyForTailscaleTicket(t *testin
 
 func TestLocalPairingClaimOnlyReturnsTokenToNativeLoopbackRequest(t *testing.T) {
 	server := newPairingTestServer(t)
+	server.router.pairingStatus.probe = func(context.Context) runtimeStatusResponse {
+		t.Error("automatic discovery requested an active assistant probe")
+		return runtimeStatusResponse{}
+	}
 
 	validRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/pair/local", nil)
 	validRequest.RemoteAddr = "127.0.0.1:54321"

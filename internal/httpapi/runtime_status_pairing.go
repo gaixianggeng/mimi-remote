@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
@@ -14,14 +15,22 @@ const (
 	pairingRefreshTimeout = 20 * time.Second
 )
 
+type pairingProbeMode int
+
+const (
+	explicitPairing pairingProbeMode = iota
+	passivePairing
+)
+
 // Pairing joins a probe already in flight. The menu's manual Refresh requests
 // a subsequent generation, which can exceed the entire pairing budget.
-func (c *runtimeStatusSnapshotCache) pairingSnapshot(ctx context.Context, generation string) runtimeStatusResponse {
+func (c *runtimeStatusSnapshotCache) pairingSnapshot(ctx context.Context, generation string, mode pairingProbeMode) runtimeStatusResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for generation != "" && !c.closed && ctx.Err() == nil {
 		if generation == c.pairingGeneration {
-			if snapshot, ok := c.freshPairingSnapshotLocked(); ok {
+			snapshot, fresh := c.freshPairingSnapshotLocked()
+			if fresh && !c.needsExplicitRefresh(mode, snapshot) {
 				return snapshot
 			}
 		}
@@ -30,7 +39,12 @@ func (c *runtimeStatusSnapshotCache) pairingSnapshot(ctx context.Context, genera
 			// probe or its evidence when another configuration becomes live.
 			c.hasResult = false
 			c.pairingGeneration = generation
-			c.startRefreshLocked()
+			c.pairingMode = mode
+			probe := c.probe
+			if mode == passivePairing {
+				probe = c.passivePairingProbe
+			}
+			c.startProbeLocked(probe)
 		}
 		joined := c.pairingGeneration == generation
 		target := c.refreshGen
@@ -43,16 +57,24 @@ func (c *runtimeStatusSnapshotCache) pairingSnapshot(ctx context.Context, genera
 		c.mu.Lock()
 		// A waiter for another generation may start or join its refresh using
 		// the time remaining from its original 20-second budget.
-		if !joined {
+		if !joined || (c.refreshing && c.refreshGen != target) {
 			continue
 		}
 		if c.closed || ctx.Err() != nil || c.publishedGen < target || c.pairingGeneration != generation {
 			return runtimeStatusResponse{}
 		}
-		snapshot, _ := c.freshPairingSnapshotLocked()
+		snapshot, fresh := c.freshPairingSnapshotLocked()
+		if fresh && c.needsExplicitRefresh(mode, snapshot) {
+			continue
+		}
 		return snapshot
 	}
 	return runtimeStatusResponse{}
+}
+
+// An explicit action can start an adapter that passive discovery found offline.
+func (c *runtimeStatusSnapshotCache) needsExplicitRefresh(mode pairingProbeMode, snapshot runtimeStatusResponse) bool {
+	return mode == explicitPairing && c.pairingMode == passivePairing && len(snapshot.Runtimes) == 0
 }
 
 func (c *runtimeStatusSnapshotCache) freshPairingSnapshotLocked() (runtimeStatusResponse, bool) {
@@ -72,13 +94,13 @@ func (c *runtimeStatusSnapshotCache) stillFreshForPairing(generation string) boo
 	return !c.closed && c.pairingGeneration == generation && fresh && len(snapshot.Runtimes) > 0
 }
 
-func (r *Router) checkPairingAssistant(ctx context.Context, generation string) *tailcatActionFailure {
+func (r *Router) checkPairingAssistant(ctx context.Context, generation string, mode pairingProbeMode) *tailcatActionFailure {
 	if r.pairingStatus == nil || !r.cfg.HasEnabledAgent() {
 		return pairingFailure("no_enabled_assistant", "assistant_any")
 	}
 	ctx, cancel := context.WithTimeout(ctx, pairingRefreshTimeout)
 	defer cancel()
-	snapshot := r.pairingStatus.pairingSnapshot(ctx, generation)
+	snapshot := r.pairingStatus.pairingSnapshot(ctx, generation, mode)
 	if ctx.Err() != nil || snapshot.CheckedAt == nil {
 		return pairingFailure("probe_timeout", "assistant_any")
 	}
@@ -106,35 +128,42 @@ func (r *Router) pairingAssistantEnabled(id string) bool {
 
 // Publish the first usable assistant as soon as its account and handshake are
 // known. Waiting for a slow sibling could age an otherwise current observation.
-func (r *Router) refreshPairingAssistants(ctx context.Context) runtimeStatusResponse {
+func (r *Router) refreshPairingAssistants(ctx context.Context, mode pairingProbeMode) runtimeStatusResponse {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	probes := [...]struct {
-		id  string
-		run func(context.Context) bool
+		id      string
+		timeout time.Duration
+		run     func(context.Context, pairingProbeMode) bool
 	}{
-		{"codex", r.pairingCodex},
-		{"claude", r.pairingClaude},
-		{"agy", r.pairingAgy},
-		{"deepseek", r.pairingDeepSeek},
+		{"codex", codexRuntimeProbeTimeout, r.pairingCodex},
+		{"claude", 8 * time.Second, r.pairingClaude},
+		{"agy", pairingRefreshTimeout, r.pairingAgy},
+		{"deepseek", 4 * time.Second, r.pairingDeepSeek},
 	}
 	results := make(chan runtimeAccountStatus, len(probes))
 	pending := 0
+	timedOut := false
 	for i, probe := range probes {
 		if !r.pairingAssistantEnabled(probe.id) {
 			continue
 		}
 		slot := &r.pairingWorkers.slots[i]
 		if !slot.TryLock() {
+			timedOut = true
 			continue
 		}
 		pending++
 		r.pairingWorkers.wg.Go(func() {
-			defer slot.Unlock()
+			probeCtx, stop := context.WithTimeout(ctx, probe.timeout)
 			status := runtimeAccountStatus{ID: probe.id, Enabled: true, State: runtimeStateUnavailable}
-			if probe.run(ctx) && ctx.Err() == nil {
+			if probe.run(probeCtx, mode) && probeCtx.Err() == nil {
 				status.State = runtimeStateAvailable
+			} else if probeCtx.Err() != nil {
+				status.Reason = "probe_timeout"
 			}
+			stop()
+			slot.Unlock()
 			results <- status
 		})
 	}
@@ -143,40 +172,77 @@ func (r *Router) refreshPairingAssistants(ctx context.Context) runtimeStatusResp
 		case <-ctx.Done():
 			return runtimeStatusResponse{}
 		case row := <-results:
+			timedOut = timedOut || row.Reason == "probe_timeout"
 			if row.State == runtimeStateAvailable {
 				now := time.Now().UTC()
 				return runtimeStatusResponse{CheckedAt: &now, Runtimes: []runtimeAccountStatus{row}}
 			}
 		}
 	}
+	if timedOut {
+		return runtimeStatusResponse{}
+	}
 	now := time.Now().UTC()
 	return runtimeStatusResponse{CheckedAt: &now}
 }
 
-func (r *Router) pairingCodex(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, codexRuntimeProbeTimeout)
-	defer cancel()
+func (r *Router) pairingCodex(ctx context.Context, mode pairingProbeMode) bool {
+	// A local or SSH connection can activate the Mac launchd front door.
+	// Discovery can reuse an account observed by a host status request.
+	if mode == passivePairing && !strings.EqualFold(r.cfg.AppServer.Transport, "ws") {
+		return false
+	}
 	status := r.readCodexRuntime(ctx, false)
+	if mode == explicitPairing && status.Reason == "upstream_unavailable" && ctx.Err() == nil && r.appServerSSH != nil {
+		if r.appServerSSH.EnsureReady(ctx) == nil {
+			status = r.readCodexRuntime(ctx, false)
+		}
+	}
+	return codexPairingAccount(status)
+}
+
+func codexPairingAccount(status runtimeAccountStatus) bool {
 	// A supported account selected by the running upstream is sufficient.
 	// Spend-based provider accounts do not have a non-billable turn probe.
 	return status.Version != "" && (status.State == runtimeStateConnected || status.State == runtimeStateAvailable &&
 		(status.AuthMode == "api_key" || status.AuthMode == "bedrock"))
 }
 
-func (r *Router) pairingDeepSeek(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
+// Publish the account observation before the optional quota request. A passive
+// discovery request may use it for 15 seconds without dialing an activation socket.
+func (c *runtimeStatusSnapshotCache) observeCodexAccount(generation string, status runtimeAccountStatus) {
+	if c == nil || generation == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.refreshing || (c.pairingGeneration != "" && c.pairingGeneration != generation) {
+		return
+	}
+	if !codexPairingAccount(status) {
+		if len(c.snapshot.Runtimes) == 1 && c.snapshot.Runtimes[0].ID == "codex" {
+			c.hasResult = false
+		}
+		return
+	}
+	now := c.now()
+	c.snapshot = runtimeStatusResponse{CheckedAt: &now, Runtimes: []runtimeAccountStatus{{ID: "codex", Enabled: true, State: runtimeStateAvailable}}}
+	c.pairingGeneration, c.hasResult = generation, true
+}
+
+func (r *Router) pairingDeepSeek(ctx context.Context, _ pairingProbeMode) bool {
 	status := r.readDeepSeekRuntime(ctx, false)
 	return status.State == runtimeStateAvailable && status.Reason == "ready"
 }
 
-func (r *Router) pairingClaude(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
+func (r *Router) pairingClaude(ctx context.Context, mode pairingProbeMode) bool {
+	if mode == passivePairing && r.claudeBridge.runningSince() == nil {
+		return false
+	}
 	r.refreshClaudeBridgeProbeIfStale()
 	probe := r.claudeBridgeProbe()
 	env := probe.launchEnv(r.cfg.Claude)
-	if !probe.Healthy || probe.cliPath == "" || !r.pairingAdapterHandshake(ctx, r.claudeBridge, probe.Path, r.cfg.Claude.Args, env) {
+	if !probe.Healthy || probe.cliPath == "" || !r.pairingAdapterHandshake(ctx, mode, r.claudeBridge, probe.Path, r.cfg.Claude.Args, env) {
 		return false
 	}
 	// Supported Claude authentication is reported by the selected CLI in the
@@ -188,18 +254,21 @@ func (r *Router) pairingClaude(ctx context.Context) bool {
 	return err == nil && json.Unmarshal(raw, &account) == nil && account.LoggedIn
 }
 
-func (r *Router) pairingAgy(ctx context.Context) bool {
+func (r *Router) pairingAgy(ctx context.Context, mode pairingProbeMode) bool {
+	if mode == passivePairing && r.agyAdapter.runningSince() == nil {
+		return false
+	}
 	probe := r.inspectAgyAdapter(ctx, func(path string, env []string) (agybridge.AgyAuthState, string) {
 		return agybridge.CheckAgyAuthStatus(ctx, path, env)
 	})
-	return probe.Healthy && r.pairingAdapterHandshake(ctx, r.agyAdapter, probe.Path, r.cfg.Agy.Args, probe.launchEnv(r.cfg.Agy))
+	return probe.Healthy && r.pairingAdapterHandshake(ctx, mode, r.agyAdapter, probe.Path, r.cfg.Agy.Args, probe.launchEnv(r.cfg.Agy))
 }
 
-func (r *Router) pairingAdapterHandshake(ctx context.Context, supervisor *claudeBridgeSupervisor, path string, args []string, env map[string]string) bool {
+func (r *Router) pairingAdapterHandshake(ctx context.Context, mode pairingProbeMode, supervisor *claudeBridgeSupervisor, path string, args []string, env map[string]string) bool {
 	if supervisor == nil || ctx.Err() != nil {
 		return false
 	}
-	if _, err := supervisor.ensure(path, args, env); err != nil || ctx.Err() != nil {
+	if _, err := supervisor.ensureRunning(path, args, env, mode == explicitPairing); err != nil || ctx.Err() != nil {
 		return false
 	}
 	rpc, err := dialResidentAdapterRPC(ctx, supervisor, "pairing")

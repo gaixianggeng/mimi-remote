@@ -286,7 +286,12 @@ func NewRouterWithInstallationIDAndOptions(
 	}
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
-	r.pairingStatus = newRuntimeStatusSnapshotCache(r.refreshPairingAssistants, func() runtimeStatusResponse { return runtimeStatusResponse{} })
+	r.pairingStatus = newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		return r.refreshPairingAssistants(ctx, explicitPairing)
+	}, func() runtimeStatusResponse { return runtimeStatusResponse{} })
+	r.pairingStatus.passivePairingProbe = func(ctx context.Context) runtimeStatusResponse {
+		return r.refreshPairingAssistants(ctx, passivePairing)
+	}
 	r.pairingStatus.timeout = pairingRefreshTimeout
 	if cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "local") {
 		if home, ok := cfg.EffectiveLocalCodexHome(); ok {
