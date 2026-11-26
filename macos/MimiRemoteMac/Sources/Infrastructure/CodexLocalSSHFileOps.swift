@@ -1417,7 +1417,7 @@ extension CodexLocalSSHConfigurator {
     }
 
     func decodeUTF8(_ data: Data, label: String) throws -> String {
-        guard let text = String(data: data, encoding: .utf8) else {
+        guard let text = String(validating: data, as: UTF8.self) else {
             throw ConfigError.fileOperationFailed("\(label) 不是有效的 UTF-8 文本。")
         }
         return text
@@ -1516,7 +1516,7 @@ extension CodexLocalSSHConfigurator {
         do {
             var counter = 0
             var activeStack: Set<String> = []
-            var seenIgnoreUnknownPatterns: [[String]] = []
+            var ignoreUnknownTracker = IgnoreUnknownTracker()
             var materializedUserText = try rewriteSSHConfigIncludes(
                 text: userConfigText,
                 baseDirectory: sshDirectory,
@@ -1525,7 +1525,7 @@ extension CodexLocalSSHConfigurator {
                 counter: &counter,
                 depth: 0,
                 activeStack: &activeStack,
-                seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
+                ignoreUnknownTracker: &ignoreUnknownTracker
             )
 
             if includeSystemConfig,
@@ -1533,7 +1533,7 @@ extension CodexLocalSSHConfigurator {
                !sysPath.isEmpty {
                 let sysURL = URL(fileURLWithPath: sysPath)
                 if let sysData = try readEvaluationRegularFileIfPresent(at: sysURL) {
-                    guard let sysText = String(data: sysData, encoding: .utf8) else {
+                    guard let sysText = String(validating: sysData, as: UTF8.self) else {
                         throw ConfigError.effectiveConfigConflict("系统 SSH 配置 \(sysPath) 不是有效的 UTF-8 文本，无法忠实冻结。")
                     }
                     let sysBaseDir = sysURL.deletingLastPathComponent()
@@ -1547,7 +1547,7 @@ extension CodexLocalSSHConfigurator {
                         counter: &counter,
                         depth: 1,
                         activeStack: &sysStack,
-                        seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
+                        ignoreUnknownTracker: &ignoreUnknownTracker
                     )
                     counter += 1
                     let sysSnapshotURL = tempDir.appendingPathComponent("system-\(counter).conf")
@@ -1568,6 +1568,32 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
+    /// 对 `IgnoreUnknown` 模式列表做去重并按关键字缓存匹配结果，避免含大量重复规则的配置退化为二次复杂度。
+    private struct IgnoreUnknownTracker {
+        private var seenRuleKeys: Set<String> = []
+        private var uniquePatternLists: [[String]] = []
+        private var matchCache: [String: Bool] = [:]
+
+        mutating func record(_ patterns: [String]) {
+            let key = patterns.joined(separator: ",")
+            guard seenRuleKeys.insert(key).inserted else { return }
+            uniquePatternLists.append(patterns)
+            // 已命中 true 的关键字恒为 true；仅清除先前未命中的缓存项以纳入新规则。
+            matchCache = matchCache.filter { $0.value }
+        }
+
+        mutating func matches(keyword: String) -> Bool {
+            if let cached = matchCache[keyword] {
+                return cached
+            }
+            let matched = uniquePatternLists.contains {
+                CodexLocalSSHConfigurator.matchesIgnoreUnknown(keyword: keyword, patterns: $0)
+            }
+            matchCache[keyword] = matched
+            return matched
+        }
+    }
+
     private func rewriteSSHConfigIncludes(
         text: String,
         baseDirectory: URL,
@@ -1576,7 +1602,7 @@ extension CodexLocalSSHConfigurator {
         counter: inout Int,
         depth: Int,
         activeStack: inout Set<String>,
-        seenIgnoreUnknownPatterns: inout [[String]]
+        ignoreUnknownTracker: inout IgnoreUnknownTracker
     ) throws -> String {
         guard depth <= 16 else {
             throw ConfigError.effectiveConfigConflict("SSH 配置 Include 嵌套层级超过 16 层，无法忠实冻结。")
@@ -1599,7 +1625,7 @@ extension CodexLocalSSHConfigurator {
             }
             let keyword = firstToken.lowercased()
             if !Self.recognizedSSHConfigKeywords.contains(keyword) {
-                if seenIgnoreUnknownPatterns.contains(where: { Self.matchesIgnoreUnknown(keyword: keyword, patterns: $0) }) {
+                if ignoreUnknownTracker.matches(keyword: keyword) {
                     // 原样保留未知指令交由真实 `/usr/bin/ssh -G` 按 OpenSSH `Host`/`Match` 作用域与通配符规则裁决，绝不私自注释。
                     output.append(rawLine)
                     output.append("\n")
@@ -1619,7 +1645,7 @@ extension CodexLocalSSHConfigurator {
                 guard let parsedPatterns = Self.parseIgnoreUnknownPatterns(from: tokens) else {
                     throw ConfigError.effectiveConfigConflict("SSH 配置 IgnoreUnknown 指令语法无效，拒绝冻结并停止只读评估。")
                 }
-                seenIgnoreUnknownPatterns.append(parsedPatterns)
+                ignoreUnknownTracker.record(parsedPatterns)
                 output.append(rawLine)
                 output.append("\n")
             } else if keyword == "include" {
@@ -1676,7 +1702,7 @@ extension CodexLocalSSHConfigurator {
                             counter: &counter,
                             depth: depth + 1,
                             activeStack: &activeStack,
-                            seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
+                            ignoreUnknownTracker: &ignoreUnknownTracker
                         )
                         counter += 1
                         let childURL = tempDirectory.appendingPathComponent("inc-\(counter).conf")

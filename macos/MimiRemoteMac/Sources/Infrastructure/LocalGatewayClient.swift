@@ -269,6 +269,7 @@ struct LocalGatewayClient: DesktopSessionSource {
         endpoint: LoopbackEndpoint,
         expectedPID: Int32,
         bearerToken: String,
+        peerVerificationTimeout: TimeInterval? = nil,
         verifyPeerPID: @escaping TCPPeerPIDVerifier = LocalGatewayClient.defaultVerifyTCPPeerPID
     ) async throws -> PeerVerifiedCodexProbeChannel {
         guard !bearerToken.isEmpty else {
@@ -283,7 +284,21 @@ struct LocalGatewayClient: DesktopSessionSource {
             try Self.connectLoopbackTCPSocket(endpoint: endpoint, timeout: timeout)
         }.value
 
-        let peerMatches = await verifyPeerPID(expectedPID, localEndpoint, endpoint)
+        // macOS 上 connect() 可能早于服务端 accept() 完成，因此在同一已打开 fd 上按有界截止时间轮询核验对端 PID；
+        // 核验未通过前绝不写出任何字节或 Bearer 凭据。
+        let verifyBudget = max(0.05, peerVerificationTimeout ?? min(timeout, 2.0))
+        let verifyDeadline = ContinuousClock.now + .milliseconds(Int(verifyBudget * 1000))
+        var peerMatches = false
+        while true {
+            if await verifyPeerPID(expectedPID, localEndpoint, endpoint) {
+                peerMatches = true
+                break
+            }
+            if Self.isSocketDisconnectedOrErrored(fd: fd) || ContinuousClock.now >= verifyDeadline {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(35))
+        }
         guard peerMatches else {
             _ = Darwin.shutdown(fd, SHUT_RDWR)
             Darwin.close(fd)
@@ -305,6 +320,23 @@ struct LocalGatewayClient: DesktopSessionSource {
             Darwin.close(fd)
             throw error
         }
+    }
+
+    private static func isSocketDisconnectedOrErrored(fd: Int32) -> Bool {
+        var pfd = pollfd(fd: fd, events: Int16(POLLIN | POLLERR | POLLHUP), revents: 0)
+        let rc = Darwin.poll(&pfd, 1, 0)
+        guard rc > 0 else { return false }
+        if (pfd.revents & Int16(POLLERR | POLLHUP | POLLNVAL)) != 0 {
+            return true
+        }
+        if (pfd.revents & Int16(POLLIN)) != 0 {
+            var peekByte: UInt8 = 0
+            let peek = Darwin.recv(fd, &peekByte, 1, MSG_PEEK)
+            if peek == 0 {
+                return true
+            }
+        }
+        return false
     }
 
     private static func connectLoopbackTCPSocket(

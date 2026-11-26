@@ -1926,6 +1926,7 @@ final class CodexSharedSetupStatusTests: XCTestCase {
                 endpoint: decoyEndpoint,
                 expectedPID: 999_999,
                 bearerToken: "dummy-never-leak-token",
+                peerVerificationTimeout: 0.25,
                 verifyPeerPID: { _, _, _ in false }
             )
             ch.close()
@@ -2008,6 +2009,80 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         Darwin.shutdown(ipv6ListenFD, SHUT_RDWR)
         await v6Server.value
         XCTAssertTrue(v6HostHeaderMatched.withLock { $0 }, "IPv6 回环探针必须发送正确的 Host: [::1]:<port> 头")
+    }
+
+    func testR4_P1_DelayedAcceptSucceedsViaBoundedPeerVerificationRetry() async throws {
+        // 真实回环监听套接字在 connect() 后延迟 350ms 才调用 accept()，验证有界重试在同一打开的 fd 上完成内核 lsof 对端 PID 核验并成功握手。
+        let listenFD = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listenFD, 0)
+        defer { Darwin.close(listenFD) }
+        var reuse: Int32 = 1
+        _ = Darwin.setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindRC = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(listenFD, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bindRC, 0)
+        XCTAssertEqual(Darwin.listen(listenFD, 4), 0)
+        var bound = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bound) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.getsockname(listenFD, sa, &len)
+            }
+        }
+        let port = UInt16(bigEndian: bound.sin_port)
+
+        let handshakeCompleted = OSAllocatedUnfairLock(initialState: false)
+        let delayedServer = Task.detached {
+            // 故意延迟 350ms 才 accept()，模拟 macOS 上 connect() 先于守护进程 accept() 完成的竞态窗口。
+            try? await Task.sleep(for: .milliseconds(350))
+            let clientFD = Darwin.accept(listenFD, nil, nil)
+            guard clientFD >= 0 else { return }
+            defer { Darwin.close(clientFD) }
+            var reqBuf = [UInt8](repeating: 0, count: 4096)
+            let n = Darwin.read(clientFD, &reqBuf, reqBuf.count)
+            guard n > 0 else { return }
+            let reqText = String(decoding: reqBuf.prefix(n), as: UTF8.self)
+            var wsKey = ""
+            for line in reqText.components(separatedBy: "\r\n").dropFirst() {
+                if let colon = line.firstIndex(of: ":") {
+                    let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                    let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                    if k == "sec-websocket-key" { wsKey = v }
+                }
+            }
+            guard !wsKey.isEmpty else { return }
+            let acceptVal = Data(Insecure.SHA1.hash(data: Data((wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
+            let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(acceptVal)\r\n\r\n"
+            _ = resp.withCString { Darwin.write(clientFD, $0, strlen($0)) }
+            var frameBuf = [UInt8](repeating: 0, count: 4096)
+            _ = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+            let replyJSON = Data(#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-delayed"}}"#.utf8)
+            var outFrame: [UInt8] = [0x81, UInt8(replyJSON.count)]
+            outFrame.append(contentsOf: replyJSON)
+            _ = outFrame.withUnsafeBytes { Darwin.write(clientFD, $0.baseAddress, $0.count) }
+            _ = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+            handshakeCompleted.withLock { $0 = true }
+        }
+
+        let client = LocalGatewayClient(requestTimeout: 5)
+        let endpoint = LoopbackEndpoint(host: "127.0.0.1", port: port, family: AF_INET)
+        let channel = try await client.openPeerVerifiedCodexProbeChannel(
+            endpoint: endpoint,
+            expectedPID: Darwin.getpid(),
+            bearerToken: "dummy-delayed-accept-token"
+        )
+        channel.close()
+        Darwin.shutdown(listenFD, SHUT_RDWR)
+        await delayedServer.value
+        XCTAssertTrue(handshakeCompleted.withLock { $0 }, "延迟 350ms accept() 时有界重试必须在核验通过后顺利完成探针握手")
     }
 }
 

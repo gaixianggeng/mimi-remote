@@ -2230,7 +2230,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertEqual(Darwin.lstat(authURL.path, &st), 0)
         XCTAssertEqual(st.st_mode & 0o777, 0o640, "外部修改的 0640 权限必须被保留")
 
-        // 2. 原有 authorized_keys 与 config 含 UTF-8 BOM 和尾 CR：验连失败回滚后必须逐字节还原！
+        // 2. 原有 authorized_keys 含 UTF-8 BOM 与尾裸 CR，且外部仅改权为 0640：回滚必须同时保留 0640 与逐字节原始 BOM + 尾裸 CR！
         let bomHome = FileManager.default.temporaryDirectory
             .appendingPathComponent("mimi-r3-bom-cr-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: bomHome.appendingPathComponent(".ssh", isDirectory: true), withIntermediateDirectories: true)
@@ -2238,7 +2238,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: bomHome) }
 
         let origAuthBytes = Data([0xEF, 0xBB, 0xBF]) + Data("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockExistingUserKey123456789012345678901234567890 user@mac\r".utf8)
-        let origConfigBytes = Data([0xEF, 0xBB, 0xBF]) + Data("Host prod\r\n    HostName 10.0.0.5\r".utf8)
+        let origConfigBytes = Data("Host prod\r\n    HostName 10.0.0.5\r".utf8)
         let bomAuthURL = bomHome.appendingPathComponent(".ssh/authorized_keys")
         let bomConfigURL = bomHome.appendingPathComponent(".ssh/config")
         try origAuthBytes.write(to: bomAuthURL)
@@ -2252,6 +2252,9 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             systemSSHConfigPath: nil,
             runCommand: { executable, arguments, timeout, stdinData in
                 if executable.path == "/usr/bin/ssh", arguments.first != "-G" {
+                    // 外部仅修改权限为 0640（字节未变）
+                    _ = Darwin.chmod(bomAuthURL.path, 0o640)
+                    _ = Darwin.chmod(bomConfigURL.path, 0o640)
                     return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
                 }
                 return try await CodexLocalSSHConfigurator.defaultCommandRunner(
@@ -2266,8 +2269,85 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             try await bomCfg.configure(verifyConnection: true)
             XCTFail("验连失败必须回滚")
         } catch CodexLocalSSHConfigurator.ConfigError.verificationFailed {}
-        XCTAssertEqual(try Data(contentsOf: bomAuthURL), origAuthBytes, "含 UTF-8 BOM 与尾 CR 的 authorized_keys 回滚后必须逐字节还原")
-        XCTAssertEqual(try Data(contentsOf: bomConfigURL), origConfigBytes, "含 UTF-8 BOM 与尾 CR 的 ~/.ssh/config 回滚后必须逐字节还原")
+        XCTAssertEqual(try Data(contentsOf: bomAuthURL), origAuthBytes, "仅外部改权 0640 时，含 UTF-8 BOM 与尾裸 CR 的 authorized_keys 必须逐字节还原")
+        XCTAssertEqual(try Data(contentsOf: bomConfigURL), origConfigBytes, "仅外部改权 0640 时，含尾裸 CR 的 ~/.ssh/config 必须逐字节还原")
+        var bomAuthSt = stat()
+        XCTAssertEqual(Darwin.lstat(bomAuthURL.path, &bomAuthSt), 0)
+        XCTAssertEqual(bomAuthSt.st_mode & 0o777, 0o640, "外部改权 0640 必须在逐字节还原时一并保留")
+
+        // 3. 并发内容编辑（在托管行前插入用户新行）+ UTF-8 BOM + 尾裸 CR + 改权 0640：回滚必须只剥离托管行，保留 BOM、尾裸 CR、新增行与 0640！
+        let concurrentAddedLine = Data("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockConcurrentKey12345678901234567890123456789012 concurrent@mac\n".utf8)
+        let bomConcurrentCfg = CodexLocalSSHConfigurator(
+            homeDirectory: bomHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, stdinData in
+                if executable.path == "/usr/bin/ssh", arguments.first != "-G" {
+                    let current = try Data(contentsOf: bomAuthURL)
+                    var edited = Data([0xEF, 0xBB, 0xBF])
+                    edited.append(concurrentAddedLine)
+                    edited.append(current.dropFirst(3))
+                    try edited.write(to: bomAuthURL)
+                    _ = Darwin.chmod(bomAuthURL.path, 0o640)
+                    return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+                }
+                return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    standardInput: stdinData
+                )
+            }
+        )
+        do {
+            try await bomConcurrentCfg.configure(verifyConnection: true)
+            XCTFail("验连失败必须回滚")
+        } catch CodexLocalSSHConfigurator.ConfigError.verificationFailed {}
+        let expectedConcurrent = Data([0xEF, 0xBB, 0xBF]) + concurrentAddedLine + origAuthBytes.dropFirst(3)
+        XCTAssertEqual(try Data(contentsOf: bomAuthURL), expectedConcurrent, "并发内容改动 + 0640 时回滚必须保留 BOM、尾裸 CR 与并发新增行")
+        XCTAssertEqual(Darwin.lstat(bomAuthURL.path, &bomAuthSt), 0)
+        XCTAssertEqual(bomAuthSt.st_mode & 0o777, 0o640)
+    }
+
+    func testR4_P1_SymlinkedHomeDirectorySucceedsWhileManagedPathSymlinksStayBlocked() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-r4-symhome-\(UUID().uuidString)", isDirectory: true)
+        let realHome = root.appendingPathComponent("real-home", isDirectory: true)
+        let symHome = root.appendingPathComponent("sym-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: realHome, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: symHome, withDestinationURL: realHome)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cfg = CodexLocalSSHConfigurator(
+            homeDirectory: symHome,
+            username: "alice",
+            systemSSHConfigPath: nil
+        )
+        try await cfg.configure(verifyConnection: false)
+        try await cfg.configure(verifyConnection: false) // 只读复验路径同样通过
+        try await cfg.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.stateFileURL.path))
+
+        // 受管路径 ~/.ssh 为符号链接时必须依然严格拒绝！
+        try? FileManager.default.removeItem(at: cfg.sshDirectory)
+        let externalDir = root.appendingPathComponent("ext-ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalDir, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: cfg.sshDirectory, withDestinationURL: externalDir)
+        do {
+            try await cfg.configure(verifyConnection: false)
+            XCTFail("受管路径 ~/.ssh 为符号链接时必须继续被拒绝")
+        } catch CodexLocalSSHConfigurator.ConfigError.unsafeFileSystemTarget {}
+    }
+
+    func testR4_P2_FreezerDeduplicatesRepeatedIgnoreUnknownInLinearTime() throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        let chunk = "IgnoreUnknown CustomLinuxOpt,AnotherPortableOpt\nCustomLinuxOpt enabled\nAnotherPortableOpt yes\n"
+        let repeatedConfig = String(repeating: chunk, count: 4_500) // ~427 KB
+        let start = ContinuousClock.now
+        let frozen = try cfg.materializeEvaluationSSHConfig(userConfigText: repeatedConfig, includeSystemConfig: false)
+        let elapsed = start.duration(to: .now)
+        frozen.cleanup()
+        XCTAssertLessThan(elapsed, .seconds(1), "含大量重复 IgnoreUnknown 规则的 ~450 KB 配置冻结必须在 1 秒内线性完成")
     }
 
     func testR3_P1_RejectsMisplacedMarkedIncludeBeforeWriting() async throws {

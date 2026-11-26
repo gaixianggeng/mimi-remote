@@ -386,11 +386,12 @@ extension CodexLocalSSHConfigurator {
         return residuals
     }
 
-    /// 仅移除与记录完全匹配且带有 Mimi 标记与 `restrict,from="127.0.0.1,::1"` 的托管授权行，绝不动其他任何行（含用户同公钥行、CRLF、空行）。
+    /// 仅移除与记录完全匹配且带有 Mimi 标记与 `restrict,from="127.0.0.1,::1"` 的托管授权行，绝不动其他任何行（含用户同公钥行、UTF-8 BOM、CRLF、空行）。
     static func removeExactAuthorizedKeyEntry(
         _ recordedEntry: String,
         expectedKeyBody: String,
         addedLeadingNewline: Bool,
+        originalEndedWithCR: Bool = false,
         from content: String
     ) -> (text: String, removed: Bool) {
         let slices = rawLineSlices(in: content)
@@ -422,8 +423,8 @@ extension CodexLocalSSHConfigurator {
             bytes.removeSubrange(startOffset..<endOffset)
         }
         if addedLeadingNewline && removedTrailingLineAtEOF {
-            // 仅在末尾确认为 Mimi 追加时插入的独立 LF（非已被外部转为 CRLF 的 \r\n）时才移除，避免残留裸 CR。
-            if bytes.last == 0x0A && (bytes.count < 2 || bytes[bytes.count - 2] != 0x0D) {
+            // 仅在末尾确认为 Mimi 追加时插入的 LF（原始文件本就以裸 CR 结尾，或非外部 CRLF 转换）时才移除，避免外部 CRLF 转换场景残留裸 CR。
+            if bytes.last == 0x0A && (originalEndedWithCR || bytes.count < 2 || bytes[bytes.count - 2] != 0x0D) {
                 bytes.removeLast()
             }
         }
