@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
+	"github.com/google/uuid"
 )
 
 const (
@@ -54,8 +56,8 @@ func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
 		return
 	}
-	if !r.cfg.HasEnabledAgent() {
-		writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
+	if failure := r.pairingGate(req.Context(), nil); failure != nil {
+		writePairingFailure(w, failure)
 		return
 	}
 	writeJSON(w, http.StatusOK, pairingClaimResponse{
@@ -100,16 +102,12 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	now := time.Now().UTC()
 	if err := auth.ValidatePairingTicket(r.cfg.Auth.Token, ticket, now); err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		writeTicketError(w, err)
 		return
 	}
 	token := strings.TrimSpace(r.cfg.Auth.Token)
 	if token == "" {
 		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
-		return
-	}
-	if !r.cfg.HasEnabledAgent() {
-		writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
 		return
 	}
 	// 配对票据在签名覆盖的 expires_at 之前可重复兑换，便于同一二维码或复制链接
@@ -119,17 +117,20 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
 	}
-	if strings.TrimSpace(payload.TailcatClientKey) != "" {
+	publicKey := strings.TrimSpace(payload.TailcatClientKey)
+	managedSessionID := strings.TrimSpace(payload.ManagedSessionID)
+	managedGrant := strings.TrimSpace(payload.ManagedGrant)
+	if publicKey != "" {
 		// 自建白名单写入不能越过远程升级的设备数检查。
 		r.tailcatControlMu.Lock()
 		defer r.tailcatControlMu.Unlock()
 	}
-	if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
+	if managedSessionID != "" || managedGrant != "" {
 		if r.tailcat == nil || r.tailcat.Status(req.Context()).Mode != config.TailcatModeManaged {
 			writeManagedModeRequired(w)
 			return
 		}
-	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil {
+	} else if publicKey != "" && r.tailcat != nil {
 		// 不带托管授权的设备走免费节点，托管节点不会放行它。免费节点还没就绪时不能写白名单，
 		// 否则设备拿不到能用的地址。
 		if status := r.tailcat.Status(req.Context()); status.Mode == config.TailcatModeManaged && status.FreeAddress == "" {
@@ -137,17 +138,49 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
-		if r.tailcat == nil {
-			writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
+	if (managedSessionID == "") != (managedGrant == "") {
+		writeError(w, http.StatusBadRequest, "托管配对会话和授权必须同时提供")
+		return
+	}
+	if publicKey == "" && managedGrant != "" {
+		writeError(w, http.StatusBadRequest, "托管配对必须提供 Tailcat 客户端公钥")
+		return
+	}
+	if managedGrant != "" {
+		session, parseErr := uuid.Parse(managedSessionID)
+		_, grantErr := decodeManagedDeviceToken(managedGrant)
+		if parseErr != nil || session.Version() != 4 || grantErr != nil || !validManagedTailcatPublicKey(publicKey) {
+			writeError(w, http.StatusBadRequest, "托管配对信息无效")
 			return
 		}
-		managedSessionID := strings.TrimSpace(payload.ManagedSessionID)
-		managedGrant := strings.TrimSpace(payload.ManagedGrant)
-		if (managedSessionID == "") != (managedGrant == "") {
-			writeError(w, http.StatusBadRequest, "托管配对会话和授权必须同时提供")
-			return
+	}
+	if publicKey != "" && (ticket.Endpoint != localPairingEndpoint || !validManagedTailcatPublicKey(publicKey)) {
+		writeError(w, http.StatusBadRequest, "Tailcat 配对信息无效")
+		return
+	}
+	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
+	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。
+	if tailscaleinfo.IsTailscaleEndpoint(response.Endpoint) && r.tailscaleHostLookup != nil {
+		host := r.tailscaleHostLookup(req.Context())
+		response.TailscaleDNSName = host.DNSName
+		response.TailscaleDeviceName = host.DeviceName
+	}
+	failure := r.pairingGate(req.Context(), func(ctx context.Context) *tailcatActionFailure {
+		if publicKey != "" {
+			return r.tailcatRoute(ctx)
 		}
+		return r.directRoute(ctx, ticket.Endpoint)
+	})
+	if err := auth.ValidatePairingTicket(token, ticket, time.Now()); err != nil {
+		writeTicketError(w, err)
+		return
+	}
+	if failure != nil {
+		writePairingFailure(w, failure)
+		return
+	}
+	if publicKey != "" {
+		generation := r.pairingGeneration()
 		var status tailcatStatus
 		var err error
 		if managedSessionID != "" {
@@ -174,10 +207,18 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		}
 		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
 			if err != nil {
-				writeError(w, http.StatusServiceUnavailable, err.Error())
+				writeTailcatClaimFailure(w, err)
 			} else {
 				writeError(w, http.StatusServiceUnavailable, "Tailcat 稳定连接尚未就绪")
 			}
+			return
+		}
+		if err := auth.ValidatePairingTicket(token, ticket, time.Now()); err != nil {
+			writeTicketError(w, err)
+			return
+		}
+		if generation == "" || r.pairingGeneration() != generation {
+			writePairingFailure(w, pairingFailure("service_version_mismatch", "service_daemon"))
 			return
 		}
 		response.TailcatAddress = status.Address
@@ -188,16 +229,6 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			writeManagedGrantRequired(w)
 			return
 		}
-	} else if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
-		writeError(w, http.StatusBadRequest, "托管配对必须提供 Tailcat 客户端公钥")
-		return
-	}
-	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
-	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。
-	if tailscaleinfo.IsTailscaleEndpoint(response.Endpoint) && r.tailscaleHostLookup != nil {
-		host := r.tailscaleHostLookup(req.Context())
-		response.TailscaleDNSName = host.DNSName
-		response.TailscaleDeviceName = host.DeviceName
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -208,4 +239,22 @@ func writeManagedModeRequired(w http.ResponseWriter) {
 
 func writeManagedGrantRequired(w http.ResponseWriter) {
 	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_grant_required", "error": errTailcatManagedGrantRequired.Error()})
+}
+
+func writeTailcatClaimFailure(w http.ResponseWriter, err error) {
+	var cloud *managedCloudError
+	_, negotiated := w.(*pairingErrorWriter)
+	if negotiated && errors.As(err, &cloud) {
+		switch cloud.Code {
+		case "no_current_entitlement", "subscription_required":
+			markPairingFailure(w, "pair_managed_entitlement_required", "network_tailcat")
+			writeError(w, http.StatusForbidden, "此托管连接需要有效的订阅权益")
+			return
+		case "pairing_grant_invalid", "pairing_session_expired", "pairing_not_authorized":
+			writeManagedGrantRequired(w)
+			return
+		}
+	}
+	markPairingFailure(w, "tailcat_relay_unreachable", "network_tailcat")
+	writeError(w, http.StatusServiceUnavailable, "Tailcat 连接尚未就绪")
 }

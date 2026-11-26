@@ -58,17 +58,18 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	hasResult    bool
-	snapshot     runtimeStatusResponse
-	refreshing   bool
-	refreshGen   uint64
-	publishedGen uint64
-	refreshDone  map[uint64]chan struct{}
-	forceNext    bool
-	closed       bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	hasResult         bool
+	snapshot          runtimeStatusResponse
+	refreshing        bool
+	pairingGeneration string // Guarded by mu; identifies both the running probe and its published result.
+	refreshGen        uint64
+	publishedGen      uint64
+	refreshDone       map[uint64]chan struct{}
+	forceNext         bool
+	closed            bool
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -561,7 +562,11 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
+	return r.readCodexRuntime(ctx, true)
+}
+
+func (r *Router) readCodexRuntime(ctx context.Context, includeQuota bool) (status runtimeAccountStatus) {
 	// 登录指引只依赖已加载配置，未登录或后端不可用时也必须指向同一目录。
 	defer func() { status.LoginCommand = r.codexRuntimeLoginCommand() }()
 	if !r.cfg.Codex.IsEnabled() {
@@ -615,6 +620,10 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		status.Reason = "account_unavailable"
 	} else {
 		applyCodexAccount(&status, account)
+	}
+
+	if !includeQuota {
+		return status
 	}
 
 	var limits runtimeRateLimitsEnvelope

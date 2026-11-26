@@ -223,7 +223,7 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !*noPair {
-		pair, err := agentsetup.Pair(context.Background(), result.ConfigPath)
+		pair, err := requestPairIssue(context.Background(), result.ConfigPath, agentsetup.PairingNetworkAuto)
 		if err != nil {
 			return err
 		}
@@ -370,7 +370,7 @@ func runManagedServiceCommand(args []string, stdout, stderr io.Writer, copy mana
 		return err
 	}
 	if !*noPair {
-		result, err = agentsetup.Pair(context.Background(), *configPath)
+		result, err = requestPairIssue(context.Background(), *configPath, agentsetup.PairingNetworkAuto)
 		if err != nil {
 			return err
 		}
@@ -706,7 +706,7 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 	if err := prepareRequiredConfig(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	result, err := agentsetup.PairForNetwork(context.Background(), *configPath, network)
+	result, err := requestPairIssue(context.Background(), *configPath, network)
 	if err != nil {
 		return err
 	}
@@ -714,7 +714,10 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 		if *qrOnly {
 			return printJSONTo(stdout, qrOnlyPairResult(result))
 		}
-		return printJSONTo(stdout, result)
+		return printJSONTo(stdout, struct {
+			OK bool `json:"ok"`
+			agentsetup.Result
+		}{true, result})
 	}
 	if *qrOnly {
 		printQROnlyPairResult(stdout, result)
@@ -976,7 +979,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}
 	}()
 	checker.StartFileAccessPreflight()
-	routerOptions := httpapi.RouterOptions{EnableHostMetadata: true}
+	routerOptions := httpapi.RouterOptions{EnableHostMetadata: true, BoundListeners: listeners}
 	if gate != nil {
 		routerOptions.NetworkAvailability = gate.Availability
 		routerOptions.ConfirmLANPolicy = gate.Confirm
@@ -1022,8 +1025,10 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		log.Print(staleTailscaleListenWarning)
 	} else if isTerminalOutput(os.Stdout) {
 		go func() {
-			result := agentsetup.ResultFromConfig(serviceCtx, checker.ConfigPath(), cfg)
-			if serviceCtx.Err() == nil {
+			// The foreground serve process owns these listeners, even when its
+			// config has the default system-manager path. Verify the foreground peer.
+			result, err := requestPairIssueWithDial(serviceCtx, checker.ConfigPath(), agentsetup.PairingNetworkAuto, coreDialForOwner(false))
+			if err == nil && serviceCtx.Err() == nil {
 				maybePrintServeConnection(os.Stdout, result)
 			}
 		}()

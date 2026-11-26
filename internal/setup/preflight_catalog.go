@@ -131,6 +131,7 @@ var preflightDiagnostics = map[string]diagnosticSpec{
 	"permission_unobserved":             {"optional", "skip", "", "{title}：尚未获得此权限的状态。可以跳过此项。"},
 	"pair_host_unreachable":             {"error", "retry", "", "无法连接电脑后台服务。请检查连接后重试。"},
 	"pair_token_mismatch":               {"error", "run_fix", "restart_service", "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。"},
+	"pair_local_forbidden":              {"", "retry", "", "此请求无法在本机认领。请使用手机扫描电脑上的二维码。"},
 	"pair_ticket_expired":               {"", "retry", "", "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。"},
 	"pair_ticket_invalid":               {"", "retry", "", "配对链接无效。请在电脑上刷新二维码后重扫。"},
 	"pair_clock_skew":                   {"", "open_settings", "date_time", "设备时间不一致。请检查系统日期与时间后重新配对。"},

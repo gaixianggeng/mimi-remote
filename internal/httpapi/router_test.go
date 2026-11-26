@@ -190,7 +190,7 @@ func TestLoggingRedactsQueryTokens(t *testing.T) {
 }
 
 func TestPairingClaimExchangesValidTicketWithoutBearerToken(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	issuedAt := time.Now().UTC().Add(-time.Minute)
 	expiresAt := time.Now().UTC().Add(9 * time.Minute)
 	req := authedRequest(t, http.MethodPost, "/api/pair/claim", pairingClaimRequest{
@@ -217,7 +217,7 @@ func TestPairingClaimExchangesValidTicketWithoutBearerToken(t *testing.T) {
 }
 
 func TestPairingClaimRejectsExpiredTicket(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	issuedAt := time.Now().UTC().Add(-20 * time.Minute)
 	expiresAt := time.Now().UTC().Add(-10 * time.Minute)
 	req := authedRequest(t, http.MethodPost, "/api/pair/claim", pairingClaimRequest{

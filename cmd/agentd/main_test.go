@@ -282,17 +282,11 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 
 func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
-	const longLivedToken = "0123456789abcdef0123456789abcdef"
-	configPath := filepath.Join(t.TempDir(), "config.json")
-	cfg := config.Config{
-		Listen: "127.0.0.1:8787",
-		Auth:   config.AuthConfig{Token: longLivedToken},
-	}
-	rawConfig, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configtest.CreatePrivateFile(t, configPath, rawConfig)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeIssuedFixture(t, w, r, "192.168.50.2", false, false)
+	}))
+	defer server.Close()
+	configPath := issueClientConfig(t, server)
 
 	for _, testCase := range []struct {
 		name string
@@ -307,12 +301,12 @@ func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 				t.Fatalf("pair --qr-only 失败：%v stderr=%s", err, stderr.String())
 			}
 			output := stdout.String()
-			for _, want := range []string{"127.0.0.1:8787", "mimiremote://pair", "pair_sig"} {
+			for _, want := range []string{"192.168.50.2:", "mimiremote://pair", "pair_sig"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("安全配对输出缺少 %q：%s", want, output)
 				}
 			}
-			for _, forbidden := range []string{longLivedToken, "Token：", "connect_url", "mimiremote://connect"} {
+			for _, forbidden := range []string{issueTestToken, "Token：", "connect_url", "mimiremote://connect"} {
 				if strings.Contains(output, forbidden) {
 					t.Fatalf("安全配对输出泄漏长期凭据 %q：%s", forbidden, output)
 				}
@@ -349,12 +343,15 @@ func TestRunSetupQROnlyNeverReturnsLongLivedCredentials(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout.String()), &payload); err != nil {
 		t.Fatalf("setup 安全 JSON 无法解析：%v output=%s", err, stdout.String())
 	}
-	for _, key := range []string{"endpoint", "pair_url", "pair_expires_at"} {
+	if payload["ok"] != true || payload["configured"] != true || payload["pairing_deferred"] != true {
+		t.Fatalf("expected a deferred setup receipt, got %v", payload)
+	}
+	for _, key := range []string{"config_path", "created", "scan_root", "browse_root"} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("setup 安全 JSON 缺少 %s：%v", key, payload)
 		}
 	}
-	for _, forbiddenKey := range []string{"token", "connect_url", "app_server_token_file"} {
+	for _, forbiddenKey := range []string{"token", "connect_url", "app_server_token_file", "pair_url", "pair_expires_at"} {
 		if _, ok := payload[forbiddenKey]; ok {
 			t.Fatalf("setup 安全 JSON 不应包含 %s：%v", forbiddenKey, payload)
 		}
@@ -788,8 +785,16 @@ func TestDefaultPathCommandsReuseLegacyConfigWithoutRotatingToken(t *testing.T) 
 			stdout, stderr, err := captureMainCommandOutput(t, func() error {
 				return testCase.run(t, fixture)
 			})
-			if err != nil {
-				t.Fatalf("默认路径命令应直接复用迁移配置：%v stdout=%s stderr=%s", err, stdout, stderr)
+			switch testCase.name {
+			case "pair", "up", "start", "restart":
+				var issue *onboardingCommandError
+				if !errors.As(err, &issue) || issue.code != "service_not_running" {
+					t.Fatalf("expected pairing to require a live daemon after migration: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("默认路径命令应直接复用迁移配置：%v stdout=%s stderr=%s", err, stdout, stderr)
+				}
 			}
 			if count := strings.Count(stderr, "已复用旧版配置并迁移到新目录"); count != 1 {
 				t.Fatalf("成功迁移只应提示一次：count=%d stderr=%q", count, stderr)
@@ -2319,7 +2324,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("新版配置必须是 0600 普通文件：%v", info.Mode())
 	}
-	result, err := agentsetup.Pair(context.Background(), fixture.destination)
+	result, err := agentsetup.LocalServiceAccess(fixture.destination)
 	if err != nil {
 		t.Fatal(err)
 	}

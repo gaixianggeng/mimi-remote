@@ -172,7 +172,7 @@ func TestTailcatLocalStatusRequiresLoopbackAndLocalToken(t *testing.T) {
 }
 
 func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true,
 		Running: true,
@@ -186,7 +186,7 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 		IssuedAt:         ticket.IssuedAt,
 		ExpiresAt:        ticket.ExpiresAt,
 		Signature:        ticket.Signature,
-		TailcatClientKey: "nodekey:client-public-key",
+		TailcatClientKey: testManagedMobileKey,
 	}
 	response := performPairingClaim(t, server.handler, payload)
 	if response.Code != http.StatusOK {
@@ -215,8 +215,8 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 }
 
 func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *testing.T) {
-	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
+	server := newPairingTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Enabled: true, Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{status: tailcatStatus{
 		Enabled: true, Running: true, Address: "tailcat-managed-address",
 	}}
@@ -248,8 +248,8 @@ func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *te
 }
 
 func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testing.T) {
-	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
+	server := newPairingTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Enabled: true, Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{}
 	server.router.tailcat = fakeTailcat
 	server.router.managedPairing = fakeManaged

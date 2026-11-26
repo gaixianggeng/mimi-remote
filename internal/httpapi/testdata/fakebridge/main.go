@@ -46,6 +46,17 @@ func main() {
 		return
 	}
 
+	// Pairing probes use the selected command's non-billable account report.
+	if len(os.Args) == 3 && os.Args[1] == "auth" && os.Args[2] == "status" ||
+		len(os.Args) == 2 && os.Args[1] == "models" {
+		raw, err := os.ReadFile(executable + ".account")
+		if err != nil {
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(raw)
+		return
+	}
+
 	body := flag.String("body", "", "path to the shell script serving one connection")
 	socket := flag.String("socket", "", "unix socket to listen on")
 	tcpListen := flag.String("tcp-listen", "", "loopback TCP address to listen on")

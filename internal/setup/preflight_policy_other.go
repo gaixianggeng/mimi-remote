@@ -2,11 +2,6 @@
 
 package setup
 
-import (
-	"context"
-	"github.com/gaixianggeng/mimi-remote/internal/config"
-)
+import "context"
 
 func preflightLANPolicy(context.Context, bool) string { return "" }
-
-func confirmPlatformPairingLAN(context.Context, config.Config) error { return nil }

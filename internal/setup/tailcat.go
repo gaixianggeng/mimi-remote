@@ -156,6 +156,7 @@ func TailcatPairWithManagedHost(
 	macTailcatPublicKey string,
 	pairTailcatPublicKey string,
 	freePairAddress string,
+	nodeExpiry time.Time,
 ) (Result, error) {
 	pairAddress = strings.TrimSpace(pairAddress)
 	if pairAddress == "" {
@@ -165,12 +166,18 @@ func TailcatPairWithManagedHost(
 	if err != nil {
 		return Result{}, err
 	}
-	cfg, err := config.LoadForDoctor(cfgPath)
+	cfg, err := config.LoadForLocalControl(cfgPath)
 	if err != nil {
 		return Result{}, err
 	}
 	now := time.Now().UTC()
+	if !nodeExpiry.After(now) {
+		return Result{}, fmt.Errorf("Tailcat 配对节点已过期")
+	}
 	expiresAt := now.Add(defaultPairingURLTTL)
+	if nodeExpiry.Before(expiresAt) {
+		expiresAt = nodeExpiry.UTC()
+	}
 	endpoint := "http://127.0.0.1:8787"
 	rawPairURL := pairingURL(endpoint, cfg.Auth.Token, now, expiresAt)
 	parsed, err := url.Parse(rawPairURL)
@@ -212,7 +219,7 @@ func TailcatPairWithManagedHost(
 		PairIssuedAt:  now.Format(time.RFC3339Nano),
 		PairExpiresAt: expiresAt.Format(time.RFC3339Nano),
 		Warnings: []string{
-			"Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。",
+			"Tailcat 是邀请实验；二维码在所示时间前有效，且不会包含长期访问码。",
 		},
 	}, nil
 }

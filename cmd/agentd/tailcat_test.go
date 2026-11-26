@@ -132,25 +132,9 @@ func TestTailcatPairOnlyAdvertisesManagedFieldsInManagedMode(t *testing.T) {
 		{mode: "managed", wantManaged: true},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"enabled": true, "running": true, "mode": tc.mode,
-				"public_key":          "nodekey:" + strings.Repeat("a", 64),
-				"mac_installation_id": "test-installation",
-				"pair_address":        "tailcat-test-pair-address",
-				"pair_public_key":     "nodekey:" + strings.Repeat("b", 64),
-			})
+			writeIssuedFixture(t, w, r, "", true, tc.wantManaged)
 		}))
-		dir := t.TempDir()
-		path := filepath.Join(dir, "config.json")
-		data, _ := json.Marshal(map[string]any{
-			"listen": strings.TrimPrefix(server.URL, "http://"), "auth": map[string]string{"token": "0123456789abcdef0123456789abcdef"},
-			"codex": map[string]bool{"enabled": false}, "claude": map[string]bool{"enabled": false},
-		})
-		configtest.CreatePrivateFile(t, path, data)
-		if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		configtest.CreatePrivateFile(t, filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"))
+		path := issueClientConfig(t, server)
 		var stdout, stderr bytes.Buffer
 		err := runTailcatWithWriters([]string{"tailcat", "pair", "--config", path, "--qr-only", "--json"}, &stdout, &stderr)
 		server.Close()

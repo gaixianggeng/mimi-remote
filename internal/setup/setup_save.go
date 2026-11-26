@@ -171,12 +171,6 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		return Result{}, err
 	}
 	r := localServiceResult(path, cfg)
-	if !o.SaveOnly && !o.LocalServiceOnly {
-		r, err = ResultFromConfigForNetwork(ctx, path, cfg, PairingNetworkAuto)
-		if err != nil {
-			return Result{}, err
-		}
-	}
 	r.Created = !p.source.exists
 	r.Migrated = p.source.exists && !p.dest.exists
 	if len(cfg.ScanRoots) > 0 {
