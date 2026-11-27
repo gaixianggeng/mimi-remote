@@ -200,6 +200,7 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			"id", "sessionId", "threadId", "parentThreadId", "cwd", "path",
 			"name", "preview", "status", "modelProvider", "source", "threadSource",
 			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
+			"cliVersion",
 			"canAcceptDirectInput", "cwdMissing",
 			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
 			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
@@ -313,7 +314,7 @@ func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Con
 func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) (map[string]projects.Project, bool) {
 	grouped := map[string][]projects.Project{}
 	out := map[string]projects.Project{}
-	registered := p.router.projects.List()
+	registered := p.router.projects.ListCached()
 	paths := make([]string, 0, len(registered))
 	for _, project := range registered {
 		paths = append(paths, project.RealPath)

@@ -50,7 +50,13 @@ func (p *appServerGatewayPolicy) rememberPendingThreadRequest(id *json.RawMessag
 	if p.closed {
 		return fmt.Errorf("app-server gateway 连接已关闭")
 	}
-	now := time.Now()
+	if p.currentSinkGen != nil && pending.method == "thread/list" {
+		activeGen := p.currentSinkGen()
+		if pending.clientSinkGen == 0 || activeGen == 0 || pending.clientSinkGen != activeGen {
+			return fmt.Errorf("app-server gateway 连接已切换，请重试")
+		}
+	}
+	now := p.now()
 	p.prunePendingThreadsLocked(now)
 	if _, exists := p.pendingThreads[key]; !exists && len(p.pendingThreads) >= appServerGatewayPendingThreadMax {
 		return p.pendingTrackingFullErrorLocked("gateway pending thread 请求过多")
@@ -58,6 +64,8 @@ func (p *appServerGatewayPolicy) rememberPendingThreadRequest(id *json.RawMessag
 	if _, exists := p.pendingThreads[key]; exists {
 		return fmt.Errorf("gateway pending thread 请求 id 重复")
 	}
+	p.nextPendingSeq++
+	pending.pendingSeq = p.nextPendingSeq
 	pending.createdAt = now
 	p.pendingThreads[key] = pending
 	return nil
@@ -94,7 +102,7 @@ func (p *appServerGatewayPolicy) requestIDInFlight(id *json.RawMessage) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := time.Now()
+	now := p.now()
 	p.prunePendingThreadsLocked(now)
 	p.prunePendingClientRequestsLocked(now)
 	return p.requestIDInFlightLocked(key)
@@ -118,7 +126,7 @@ func (p *appServerGatewayPolicy) admitClientRequest(id *json.RawMessage) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := time.Now()
+	now := p.now()
 	p.prunePendingThreadsLocked(now)
 	p.prunePendingClientRequestsLocked(now)
 	if p.requestIDInFlightLocked(key) {
@@ -209,16 +217,51 @@ func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewa
 	if threadID == "" {
 		return appServerGatewayAllowedThread{}, false
 	}
+	now := p.now()
 	p.mu.Lock()
-	thread, ok := p.allowedThreads[threadID]
-	p.mu.Unlock()
-	if ok {
-		return thread, true
-	}
+	defer p.mu.Unlock()
 	if p.router == nil {
+		thread, ok := p.allowedThreads[threadID]
+		if !ok {
+			return appServerGatewayAllowedThread{}, false
+		}
+		return normalizeAllowedThreadRestrictionBits(thread), true
+	}
+	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+	if runtimeID == "" {
+		runtimeID = "codex"
+	}
+	key := gatewayThreadCacheKey(runtimeID, threadID)
+	p.router.gatewayThreadsMu.Lock()
+	p.syncRestrictionEvictionEpochLocked(now)
+	connThread, hasConn := p.allowedThreads[threadID]
+	globalThread, hasMain, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
+	if hasMain {
+		if mainEntry, ok := p.router.gatewayThreads[key]; ok {
+			mainEntry.lastSeen = now
+			p.router.gatewayThreads[key] = mainEntry
+		}
+	}
+	p.router.gatewayThreadsMu.Unlock()
+	if !hasConn && !hasMain {
 		return appServerGatewayAllowedThread{}, false
 	}
-	return p.router.gatewayThread(p.runtimeID, threadID)
+	if !hasAnyGlobal {
+		return normalizeAllowedThreadRestrictionBits(connThread), true
+	}
+	merged, ok := mergeHistoricalBaseline(connThread, hasConn, globalThread, hasAnyGlobal)
+	if !ok {
+		return appServerGatewayAllowedThread{}, false
+	}
+	if hasConn && !hasMain {
+		merged.id = connThread.id
+		merged.runtimeID = connThread.runtimeID
+		merged.cwd = connThread.cwd
+		merged.scopeID = connThread.scopeID
+		merged.pushSeededOnly = connThread.pushSeededOnly
+		merged.autoTitleEligible = connThread.autoTitleEligible
+	}
+	return merged, true
 }
 
 func (r *Router) gatewayThread(runtimeID string, threadID string) (appServerGatewayAllowedThread, bool) {
@@ -227,77 +270,99 @@ func (r *Router) gatewayThread(runtimeID string, threadID string) (appServerGate
 		runtimeID = "codex"
 	}
 	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
+	if threadID == "" || r == nil {
 		return appServerGatewayAllowedThread{}, false
 	}
 	key := gatewayThreadCacheKey(runtimeID, threadID)
 	now := time.Now()
 	r.gatewayThreadsMu.Lock()
 	defer r.gatewayThreadsMu.Unlock()
-	thread, ok := r.gatewayThreads[key]
-	if !ok {
-		return appServerGatewayAllowedThread{}, false
-	}
-	if gatewayThreadCacheExpired(thread, now) {
-		delete(r.gatewayThreads, key)
+	eff, hasMain, _ := r.effectiveGatewayThreadLocked(key, now)
+	if !hasMain {
 		return appServerGatewayAllowedThread{}, false
 	}
 	// 全局授权表只服务断线重连的短期恢复；命中时刷新 lastSeen，让活跃 thread 不被容量裁剪误删。
-	thread.lastSeen = now
-	r.gatewayThreads[key] = thread
-	return thread, ok
+	if mainEntry, ok := r.gatewayThreads[key]; ok {
+		mainEntry.lastSeen = now
+		r.gatewayThreads[key] = mainEntry
+	}
+	return eff, true
 }
 
 func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload []byte) ([]byte, bool, *appServerGatewayPolicyError) {
+	decision := p.observeUpstreamFrameDecision(messageType, payload)
+	if decision.releasePins != nil {
+		if decision.forward && decision.policyErr == nil {
+			decision.releasePins(appServerHistoryMediaReadGrace)
+		} else {
+			decision.releasePins(0)
+		}
+	}
+	return decision.forwardPayload, decision.forward, decision.policyErr
+}
+
+func (p *appServerGatewayPolicy) observeUpstreamFrameDecision(messageType int, payload []byte) upstreamFrameDecision {
 	if messageType != websocket.TextMessage {
-		return payload, true, nil
+		return upstreamFrameDecision{forwardPayload: payload, forward: true}
 	}
 	var frame appServerGatewayFrame
 	if err := json.Unmarshal(payload, &frame); err != nil {
-		return payload, true, nil
+		return upstreamFrameDecision{forwardPayload: payload, forward: true}
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if !appServerServerRequestAllowed(p.runtimeID, frame.Method) {
 			// 共享 App Server 可能产生 Desktop 私有反向请求。Mimi 不是该
 			// 能力的 owner；保持沉默，由其他订阅入口处理，不向上游代替拒绝。
-			return payload, false, nil
+			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
 		if p.enforcesInboundThreadAuthorization() && !p.inboundServerRequestAllowed(frame.Params) {
-			return payload, false, nil
+			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
 		if strings.TrimSpace(frame.Method) == "item/tool/call" {
 			claimKey, err := p.validateAndClaimMimiTaskCall(frame.Params)
 			if err != nil {
 				if err == errMimiTaskDynamicCallAbandoned {
-					return payload, false, &appServerGatewayPolicyError{
-						id:      frame.ID,
-						message: "dynamic task execution was interrupted before a response was available",
-						data:    map[string]any{"reason": "mimi_task_owner_disconnected"},
+					return upstreamFrameDecision{
+						forwardPayload: payload,
+						forward:        false,
+						policyErr: &appServerGatewayPolicyError{
+							id:      frame.ID,
+							message: "dynamic task execution was interrupted before a response was available",
+							data:    map[string]any{"reason": "mimi_task_owner_disconnected"},
+						},
 					}
 				}
-				return payload, false, nil
+				return upstreamFrameDecision{forwardPayload: payload, forward: false}
 			}
 			if claimKey == "" {
-				return payload, false, nil
+				return upstreamFrameDecision{forwardPayload: payload, forward: false}
 			}
 			if err := p.rememberPendingServerRequestWithClaim(frame.ID, frame.Method, frame.Params, claimKey); err != nil {
 				p.router.releaseMimiTaskDynamicClaim(claimKey, p)
-				return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+				return upstreamFrameDecision{
+					forwardPayload: payload,
+					forward:        false,
+					policyErr:      &appServerGatewayPolicyError{id: frame.ID, message: err.Error()},
+				}
 			}
-			return payload, true, nil
+			return upstreamFrameDecision{forwardPayload: payload, forward: true}
 		}
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
-			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+			return upstreamFrameDecision{
+				forwardPayload: payload,
+				forward:        false,
+				policyErr:      &appServerGatewayPolicyError{id: frame.ID, message: err.Error()},
+			}
 		}
 		p.observeLiveActivityServerRequest(&frame)
-		return payload, true, nil
+		return upstreamFrameDecision{forwardPayload: payload, forward: true}
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
-			return payload, false, nil
+			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
 		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
-			return payload, false, nil
+			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
 		p.notifyMessage(&frame)
 		p.observeLiveActivityNotification(&frame)
@@ -317,68 +382,89 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			p.router.observeAgentProducedFiles(payload)
 		}
 		p.allowRelatedThreadsFromNotification(frame.Params)
-		return payload, true, nil
+		return upstreamFrameDecision{forwardPayload: payload, forward: true}
 	}
 	observeHistoryGrants := false
-	if gatewayFrameIsResponse(&frame) {
-		clientRequest, tracked := p.consumePendingClientRequest(frame.ID)
-		if reason, pending := p.unroutableResponseReason(&frame, clientRequest, tracked); reason != "" {
-			p.cancelPendingHistoryRequest(frame.ID)
-			logGatewayDroppedResponse(p.runtimeID, reason, frame.ID, clientRequest.method, pending)
-			return payload, false, nil
+	if strings.TrimSpace(frame.Method) == "" && frame.ID != nil {
+		claim := p.claimUpstreamResponse(payload, &frame)
+		if claim.dropReason != "" {
+			logGatewayDroppedResponse(p.runtimeID, claim.dropReason, frame.ID, claim.clientRequest.method, claim.droppedPending)
+			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
-		if clientRequest.expired {
-			clientRequest.method = ""
+		if claim.validThreadListRPCError {
+			return upstreamFrameDecision{
+				forwardPayload: payload,
+				forward:        true,
+				targetSinkGen:  claim.targetSinkGen,
+			}
 		}
-		p.rememberAccountTokenUsageResponse(&frame, clientRequest.method, time.Now())
-		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
-			if len(frame.Error) == 0 && len(frame.Result) > 0 {
-				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
-					payload = redacted
-				}
-				overHardCap := appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
-				if !pending.redactOnly && (overHardCap || len(payload) > appServerHistoryInlinePageBytes) {
-					// 按回合分页仍会携带很大的工具输出；在耗尽网络与手机解析预算前，
-					// 复用按需读取。问答正文保持完整，不等到 5 MiB 硬上限才减负。
-					minimumItemBytes := appServerHistoryInlineOutputBytes
-					if overHardCap {
-						minimumItemBytes = appServerHistoryOutputMinItemBytes
-					}
-					if dehydrated, changed := p.router.dehydrateHistoryOutputs(payload, minimumItemBytes); changed {
-						payload = dehydrated
-					}
-				}
+		if claim.threadListBinding != nil {
+			decision := p.processPendingThreadListResponse(payload, frame, *claim.threadListBinding)
+			if decision.forward && decision.policyErr == nil && p.enforcesInboundThreadAuthorization() {
+				p.router.observeAgentProducedFiles(decision.forwardPayload)
 			}
-			blocked := !pending.redactOnly && len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
-			p.recordHistoryResponseMetrics(pending.method, len(payload), blocked)
-			if !pending.redactOnly {
-				if blocked {
-					// 被 cap 阻断的响应从未写回 iPad，不能计入保护下行链路的历史预算：
-					// 否则这次未转发的大 full（如 9.78MB）会打满全局/本 key 响应预算，
-					// 让紧随其后的小 summary 回退被 history_budget_limited 饿死，也会挡住
-					// 后续 full 自适应缩页重试。这里只保留诊断指标，不消耗下载预算。
-					p.forgetPending(frame.ID)
-					return payload, false, &appServerGatewayPolicyError{
-						id:      frame.ID,
-						message: fmt.Sprintf("%s history response 过大（%d bytes > %d bytes），gateway 已阻断；请降低 limit/itemsView 或改用分页读取", pending.method, len(payload), appServerGatewayHistoryResponseCapBytes),
-						data: gatewayPolicyErrorData("history_response_too_large", appServerGatewayHistoryBudgetWindow, map[string]any{
-							"method":           pending.method,
-							"threadId":         pending.threadID,
-							"cwd":              pending.cwd,
-							"itemsView":        pending.itemsView,
-							"responseBytes":    len(payload),
-							"maxResponseBytes": appServerGatewayHistoryResponseCapBytes,
-						}),
-						target:                 "client",
-						historyResponseBlocked: true,
+			return decision
+		}
+		if gatewayFrameIsResponse(&frame) {
+			clientRequest := claim.clientRequest
+			if clientRequest.expired {
+				clientRequest.method = ""
+			}
+			p.rememberAccountTokenUsageResponse(&frame, clientRequest.method, p.now())
+			if claim.hasPendingHistory {
+				pending := claim.pendingHistory
+				if len(frame.Error) == 0 && len(frame.Result) > 0 {
+					if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
+						payload = redacted
+					}
+					overHardCap := appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
+					if !pending.redactOnly && (overHardCap || len(payload) > appServerHistoryInlinePageBytes) {
+						// 按回合分页仍会携带很大的工具输出；在耗尽网络与手机解析预算前，
+						// 复用按需读取。问答正文保持完整，不等到 5 MiB 硬上限才减负。
+						minimumItemBytes := appServerHistoryInlineOutputBytes
+						if overHardCap {
+							minimumItemBytes = appServerHistoryOutputMinItemBytes
+						}
+						if dehydrated, changed := p.router.dehydrateHistoryOutputs(payload, minimumItemBytes); changed {
+							payload = dehydrated
+						}
 					}
 				}
-				p.recordHistoryResponseBudget(pending, len(payload))
-				if len(frame.Error) == 0 {
-					p.rememberHistoryContinuation(pending, frame.Result)
+				blocked := !pending.redactOnly && len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
+				p.recordHistoryResponseMetrics(pending.method, len(payload), blocked)
+				if !pending.redactOnly {
+					if blocked {
+						// 被 cap 阻断的响应从未写回 iPad，不能计入保护下行链路的历史预算：
+						// 否则这次未转发的大 full（如 9.78MB）会打满全局/本 key 响应预算，
+						// 让紧随其后的小 summary 回退被 history_budget_limited 饿死，也会挡住
+						// 后续 full 自适应缩页重试。这里只保留诊断指标，不消耗下载预算。
+						p.forgetPending(frame.ID)
+						return upstreamFrameDecision{
+							forwardPayload: payload,
+							forward:        false,
+							policyErr: &appServerGatewayPolicyError{
+								id:      frame.ID,
+								message: fmt.Sprintf("%s history response 过大（%d bytes > %d bytes），gateway 已阻断；请降低 limit/itemsView 或改用分页读取", pending.method, len(payload), appServerGatewayHistoryResponseCapBytes),
+								data: gatewayPolicyErrorData("history_response_too_large", appServerGatewayHistoryBudgetWindow, map[string]any{
+									"method":           pending.method,
+									"threadId":         pending.threadID,
+									"cwd":              pending.cwd,
+									"itemsView":        pending.itemsView,
+									"responseBytes":    len(payload),
+									"maxResponseBytes": appServerGatewayHistoryResponseCapBytes,
+								}),
+								target:                 "client",
+								historyResponseBlocked: true,
+							},
+						}
+					}
+					p.recordHistoryResponseBudget(pending, len(payload))
+					if len(frame.Error) == 0 {
+						p.rememberHistoryContinuation(pending, frame.Result)
+					}
 				}
+				observeHistoryGrants = len(frame.Error) == 0 && p.enforcesInboundThreadAuthorization()
 			}
-			observeHistoryGrants = len(frame.Error) == 0 && p.enforcesInboundThreadAuthorization()
 		}
 	}
 	forwardPayload, forward, policyErr := p.finishUpstreamThreadResponse(payload, frame)
@@ -387,7 +473,11 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	if observeHistoryGrants && forward && policyErr == nil {
 		p.router.observeAgentProducedFiles(forwardPayload)
 	}
-	return forwardPayload, forward, policyErr
+	return upstreamFrameDecision{
+		forwardPayload: forwardPayload,
+		forward:        forward,
+		policyErr:      policyErr,
+	}
 }
 
 // finishUpstreamThreadResponse 处理 thread 类响应的授权校验与裁剪，返回最终转发的 payload。
@@ -417,24 +507,25 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 				id: frame.ID, message: err.Error(), target: "client",
 			}
 		}
-		p.completePendingThreadResponse(key, pending, threads)
+		if !p.completePendingThreadResponse(key, pending, threads) {
+			return payload, false, nil
+		}
 		return rewritten, true, nil
 	}
-	if pending.method == "thread/list" && pending.globalDiscovery {
-		rewritten, threads, err := p.sanitizeGlobalThreadListResponse(payload, pending)
-		if err != nil {
-			p.forgetPending(frame.ID)
-			return payload, false, &appServerGatewayPolicyError{
-				id: frame.ID, message: err.Error(), target: "client",
+	if pending.method == "thread/list" {
+		decision := p.processPendingThreadListResponse(payload, frame, threadListRequestBinding{
+			key:           key,
+			frameID:       frame.ID,
+			pendingThread: pending,
+		})
+		if decision.releasePins != nil {
+			if decision.forward && decision.policyErr == nil {
+				decision.releasePins(appServerHistoryMediaReadGrace)
+			} else {
+				decision.releasePins(0)
 			}
 		}
-		p.completePendingThreadResponse(key, pending, threads)
-		return p.annotateWriterHolders(rewritten), true, nil
-	}
-	if pending.method == "thread/list" {
-		threads := p.threadsFromResult(frame.Result, pending)
-		p.completePendingThreadResponse(key, pending, threads)
-		return p.annotateWriterHolders(dropUnauthorizedScopedThreads(payload, threads)), true, nil
+		return decision.forwardPayload, decision.forward, decision.policyErr
 	}
 	if pending.method == "thread/turns/list" {
 		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))
@@ -718,7 +809,8 @@ func gatewayResolutionRequestKeys(rawParams json.RawMessage) []string {
 
 func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, threadID string) []byte {
 	allowed, ok := p.allowedThread(threadID)
-	if !ok || !allowed.readOnly {
+	denyDirectInput := ok && (allowed.readOnly || allowed.explicitDirectInputDenied || (allowed.directInputKnown && !allowed.canAcceptDirectInput))
+	if !denyDirectInput {
 		return payload
 	}
 	var response map[string]any
@@ -743,16 +835,18 @@ func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, t
 		return payload
 	}
 	thread["canAcceptDirectInput"] = false
-	annotation, _ := thread["mimiRemote"].(map[string]any)
-	if annotation == nil {
-		annotation = map[string]any{}
+	if allowed.readOnly {
+		annotation, _ := thread["mimiRemote"].(map[string]any)
+		if annotation == nil {
+			annotation = map[string]any{}
+		}
+		annotation["readOnly"] = true
+		if allowed.cwdMissing {
+			thread["cwdMissing"] = true
+			annotation["cwdMissing"] = true
+		}
+		thread["mimiRemote"] = annotation
 	}
-	annotation["readOnly"] = true
-	if allowed.cwdMissing {
-		thread["cwdMissing"] = true
-		annotation["cwdMissing"] = true
-	}
-	thread["mimiRemote"] = annotation
 	rewritten, err := json.Marshal(response)
 	if err != nil {
 		return payload
@@ -969,7 +1063,7 @@ func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessag
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := time.Now()
+	now := p.now()
 	p.prunePendingClientRequestsLocked(now)
 	if p.pendingClientRequests == nil {
 		p.pendingClientRequests = map[string]appServerGatewayPendingClientRequest{}
@@ -985,7 +1079,7 @@ func (p *appServerGatewayPolicy) consumePendingClientRequest(id *json.RawMessage
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.prunePendingClientRequestsLocked(time.Now())
+	p.prunePendingClientRequestsLocked(p.now())
 	request, ok := p.pendingClientRequests[key]
 	if ok {
 		delete(p.pendingClientRequests, key)
@@ -1405,36 +1499,52 @@ func (p *appServerGatewayPolicy) close() {
 }
 
 func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending appServerGatewayPendingThreadRequest) []appServerGatewayAllowedThread {
-	var threads []appServerGatewayThreadWire
+	type parsedThreadWire struct {
+		wire   appServerGatewayThreadWire
+		fields map[string]json.RawMessage
+	}
+	var threads []parsedThreadWire
+	appendRawThread := func(value json.RawMessage) {
+		trimmed := bytes.TrimSpace(value)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+			return
+		}
+		var thread appServerGatewayThreadWire
+		if json.Unmarshal(trimmed, &thread) != nil {
+			return
+		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(trimmed, &fields)
+		threads = append(threads, parsedThreadWire{wire: thread, fields: fields})
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err == nil {
-		appendThreadWire := func(value json.RawMessage) {
-			var thread appServerGatewayThreadWire
-			if len(value) > 0 && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) && json.Unmarshal(value, &thread) == nil {
-				threads = append(threads, thread)
-			}
-		}
-		appendThreadWire(object["thread"])
+		appendRawThread(object["thread"])
 		for _, key := range []string{"data", "threads"} {
 			if value := object[key]; len(value) > 0 {
-				var list []appServerGatewayThreadWire
+				var list []json.RawMessage
 				if err := json.Unmarshal(value, &list); err == nil {
-					threads = append(threads, list...)
+					for _, rawItem := range list {
+						appendRawThread(rawItem)
+					}
 				}
 			}
 		}
 	}
 	if len(threads) == 0 {
-		var list []appServerGatewayThreadWire
+		var list []json.RawMessage
 		if err := json.Unmarshal(raw, &list); err == nil {
-			threads = append(threads, list...)
+			for _, rawItem := range list {
+				appendRawThread(rawItem)
+			}
 		}
 	}
 
 	out := make([]appServerGatewayAllowedThread, 0, len(threads))
 	var sameRepository *gatewaySameRepository
 	defer func() { sameRepository.close() }()
-	for _, item := range threads {
+	for _, parsed := range threads {
+		item := parsed.wire
 		id := firstNonEmpty(item.ID, item.ThreadID, item.SessionID)
 		if strings.TrimSpace(id) == "" {
 			continue
@@ -1470,21 +1580,18 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			// 与全局发现一致：只在 browse_roots 内可见或目录已缺失的会话只读。
 			readOnlyBrowseScope = scope.browse
 		}
-		readOnly := isSubagent || readOnlyBrowseScope || scope.missing
-		out = append(out, appServerGatewayAllowedThread{
-			id:                   strings.TrimSpace(id),
-			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
-			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput && !readOnly,
-			directInputKnown:     item.CanAcceptDirectInput != nil || readOnly,
-			readOnly:             readOnly,
-			readOnlySubagent:     isSubagent,
-			readOnlyBrowseScope:  readOnlyBrowseScope,
-			cwdMissing:           scope.missing,
-			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
-			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
-			cwd:     scope.realPath,
-			scopeID: scope.id,
-		})
+		out = append(out, buildAllowedThreadFromWire(
+			strings.TrimSpace(id),
+			normalizeAppServerRuntimeID(p.runtimeID),
+			scope.realPath,
+			scope.id,
+			parsed.fields,
+			item,
+			isSubagent,
+			readOnlyBrowseScope,
+			scope.missing,
+			pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
+		))
 		out = append(out, relatedThreadsForParent(
 			receiverThreadIDsFromWireTurns(item.Turns),
 			normalizeAppServerRuntimeID(p.runtimeID),
@@ -1631,39 +1738,9 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 	return out
 }
 
-// mergeGatewayAllowedThread 合并连接级/全局授权记录：
-// 目录从缺失恢复为可用时仅清除 cwdMissing 导致的瞬态只读，
-// 子会话（readOnlySubagent）、browse_roots 只读（readOnlyBrowseScope）与其他永久只读原因一律保留（C14/C15）。
+// mergeGatewayAllowedThread 保留兼容入口，委托给带正交限制位与版本仲裁的统一合并函数。
 func mergeGatewayAllowedThread(existing, incoming appServerGatewayAllowedThread) appServerGatewayAllowedThread {
-	pathRestored := existing.cwdMissing && !incoming.cwdMissing
-	existingPermanentReadOnly := existing.readOnlySubagent || existing.readOnlyBrowseScope || (existing.readOnly && !existing.cwdMissing)
-	incomingPermanentReadOnly := incoming.readOnlySubagent || incoming.readOnlyBrowseScope || (incoming.readOnly && !incoming.cwdMissing)
-	incoming.readOnlySubagent = incoming.readOnlySubagent || existing.readOnlySubagent
-	incoming.readOnlyBrowseScope = incoming.readOnlyBrowseScope || existing.readOnlyBrowseScope
-	if existing.cwdMissing && !pathRestored {
-		incoming.cwdMissing = true
-	}
-	permanentReadOnly := existingPermanentReadOnly || incomingPermanentReadOnly
-	incoming.readOnly = permanentReadOnly || incoming.cwdMissing
-	if incoming.readOnly {
-		incoming.directInputKnown = true
-		incoming.canAcceptDirectInput = false
-	} else if !pathRestored && !incoming.directInputKnown && existing.directInputKnown {
-		incoming.directInputKnown = true
-		incoming.canAcceptDirectInput = existing.canAcceptDirectInput
-	}
-	return incoming
-}
-
-func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThread) {
-	thread, ok := p.normalizeAllowedThread(thread)
-	if !ok {
-		return
-	}
-	p.mu.Lock()
-	p.allowedThreads[thread.id] = thread
-	p.mu.Unlock()
-	p.router.allowGatewayThread(thread)
+	return mergeGatewayAllowedThreadWithVersion(existing, true, incoming, nil)
 }
 
 func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayAllowedThread) (appServerGatewayAllowedThread, bool) {
@@ -1671,37 +1748,94 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 		return appServerGatewayAllowedThread{}, false
 	}
 	if existing, ok := p.allowedThread(thread.id); ok {
-		thread = mergeGatewayAllowedThread(existing, thread)
+		thread = mergeGatewayAllowedThreadWithVersion(existing, true, thread, nil)
+	} else {
+		thread = mergeGatewayAllowedThreadWithVersion(appServerGatewayAllowedThread{}, false, thread, nil)
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
 	}
-	thread.lastSeen = time.Now()
+	thread.lastSeen = p.now()
 	return thread, true
 }
 
-func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pending appServerGatewayPendingThreadRequest, threads []appServerGatewayAllowedThread) {
-	normalized := make([]appServerGatewayAllowedThread, 0, len(threads))
-	for _, thread := range threads {
-		if item, ok := p.normalizeAllowedThread(thread); ok {
-			normalized = append(normalized, item)
-		}
+func (p *appServerGatewayPolicy) commitAllowedThreadsLocked(threads []appServerGatewayAllowedThread, now time.Time) {
+	if len(threads) == 0 {
+		return
 	}
+	if p.router == nil {
+		for _, incoming := range threads {
+			if strings.TrimSpace(incoming.id) == "" || strings.TrimSpace(incoming.scopeID) == "" {
+				continue
+			}
+			if strings.TrimSpace(incoming.runtimeID) == "" {
+				incoming.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
+			}
+			existing, ok := p.allowedThreads[incoming.id]
+			merged := mergeGatewayAllowedThreadWithVersion(existing, ok, incoming, nil)
+			merged.lastSeen = now
+			p.allowedThreads[merged.id] = merged
+		}
+		return
+	}
+	p.router.gatewayThreadsMu.Lock()
+	defer p.router.gatewayThreadsMu.Unlock()
+	p.syncRestrictionEvictionEpochLocked(now)
+	allocVersion := func() uint64 {
+		p.router.nextGatewayThreadDirectInputVersion++
+		return p.router.nextGatewayThreadDirectInputVersion
+	}
+	for _, incoming := range threads {
+		if strings.TrimSpace(incoming.id) == "" || strings.TrimSpace(incoming.scopeID) == "" {
+			continue
+		}
+		if strings.TrimSpace(incoming.runtimeID) == "" {
+			incoming.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
+		}
+		incoming.runtimeID = normalizeAppServerRuntimeID(incoming.runtimeID)
+		key := gatewayThreadCacheKey(incoming.runtimeID, incoming.id)
+		connOld, hasConn := p.allowedThreads[incoming.id]
+		globalOld, _, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
+		historical, hasHist := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal)
+		merged := mergeGatewayAllowedThreadWithVersion(historical, hasHist, incoming, allocVersion)
+		merged.lastSeen = now
+		p.allowedThreads[merged.id] = merged
 
+		globalEntry := merged
+		globalEntry.autoTitleEligible = false
+		p.router.gatewayThreads[key] = globalEntry
+		p.router.recordGatewayThreadRestrictionLocked(key, globalEntry, now)
+		p.router.gatewayThreadsMutationEpoch++
+	}
+	p.router.pruneGatewayThreadsLocked(now)
+}
+
+func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThread) {
+	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.scopeID) == "" {
+		return
+	}
+	p.mu.Lock()
+	p.commitAllowedThreadsLocked([]appServerGatewayAllowedThread{thread}, p.now())
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pending appServerGatewayPendingThreadRequest, threads []appServerGatewayAllowedThread) bool {
 	if pending.managedWorktreePath == "" {
 		p.mu.Lock()
+		now := p.now()
+		p.prunePendingThreadsLocked(now)
 		current, ok := p.pendingThreads[key]
-		if p.closed || !ok || current.createdAt != pending.createdAt {
+		if p.closed || !ok || current.createdAt != pending.createdAt || current.pendingSeq != pending.pendingSeq || current.expired {
+			if ok && current.createdAt == pending.createdAt && current.pendingSeq == pending.pendingSeq && current.expired {
+				delete(p.pendingThreads, key)
+			}
 			p.mu.Unlock()
-			return
+			return false
 		}
 		delete(p.pendingThreads, key)
-		for _, thread := range normalized {
-			p.allowedThreads[thread.id] = thread
-			p.router.allowGatewayThread(thread)
-		}
+		p.commitAllowedThreadsLocked(threads, now)
 		p.mu.Unlock()
-		return
+		return true
 	}
 
 	// 固定锁顺序 cleanupMu -> policy.mu -> gatewayThreadsMu。policy.mu 与
@@ -1710,27 +1844,26 @@ func (p *appServerGatewayPolicy) completePendingThreadResponse(key string, pendi
 	// 临界区内完成全局授权与 lease 释放。
 	p.router.managedWorktreeCleanupMu.Lock()
 	p.mu.Lock()
+	now := p.now()
 	current, ok := p.pendingThreads[key]
-	if p.closed || !ok || current.managedWorktreePath != pending.managedWorktreePath || current.createdAt != pending.createdAt {
+	if p.closed || !ok || current.managedWorktreePath != pending.managedWorktreePath || current.createdAt != pending.createdAt || current.pendingSeq != pending.pendingSeq {
 		p.mu.Unlock()
 		p.router.managedWorktreeCleanupMu.Unlock()
-		return
+		return false
 	}
 	if p.beforeManagedComplete != nil {
 		p.beforeManagedComplete()
 	}
 	delete(p.pendingThreads, key)
-	for _, thread := range normalized {
-		p.allowedThreads[thread.id] = thread
-		p.router.allowGatewayThread(thread)
-	}
+	p.commitAllowedThreadsLocked(threads, now)
 	p.router.releaseManagedWorktreePendingUseLocked(pending.managedWorktreePath)
 	p.mu.Unlock()
 	p.router.managedWorktreeCleanupMu.Unlock()
+	return true
 }
 
 func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
-	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.scopeID) == "" {
+	if r == nil || strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.scopeID) == "" {
 		return
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
@@ -1741,12 +1874,19 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	// 不能让一次 resume 在重连后把历史线程误判成新会话。
 	thread.autoTitleEligible = false
 	now := time.Now()
-	thread.lastSeen = now
+	key := gatewayThreadCacheKey(thread.runtimeID, thread.id)
 	r.gatewayThreadsMu.Lock()
-	if existing, ok := r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)]; ok {
-		thread = mergeGatewayAllowedThread(existing, thread)
+	globalOld, _, hasAnyGlobal := r.effectiveGatewayThreadLocked(key, now)
+	allocVersion := func() uint64 {
+		r.nextGatewayThreadDirectInputVersion++
+		return r.nextGatewayThreadDirectInputVersion
 	}
-	r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)] = thread
+	merged := mergeGatewayAllowedThreadWithVersion(globalOld, hasAnyGlobal, thread, allocVersion)
+	merged.lastSeen = now
+	merged.autoTitleEligible = false
+	r.gatewayThreads[key] = merged
+	r.recordGatewayThreadRestrictionLocked(key, merged, now)
+	r.gatewayThreadsMutationEpoch++
 	r.pruneGatewayThreadsLocked(now)
 	r.gatewayThreadsMu.Unlock()
 }

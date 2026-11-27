@@ -19,10 +19,14 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 Your active mode changes only when new developer instructions with a different <collaboration_mode> change it; user requests or tool descriptions do not change mode by themselves.`
 
 func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
-	return p.validateClientFrameContext(context.Background(), messageType, payload)
+	return p.validateClientFrameForSink(context.Background(), messageType, payload, 0)
 }
 
 func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context, messageType int, payload []byte) ([]byte, *appServerGatewayPolicyError) {
+	return p.validateClientFrameForSink(ctx, messageType, payload, 0)
+}
+
+func (p *appServerGatewayPolicy) validateClientFrameForSink(ctx context.Context, messageType int, payload []byte, clientSinkGen uint64) ([]byte, *appServerGatewayPolicyError) {
 	if p.isClosed() {
 		return nil, &appServerGatewayPolicyError{message: "app-server gateway 连接已关闭"}
 	}
@@ -71,7 +75,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
+	if err := p.validateThreadCapability(&frame, method, params, validated, clientSinkGen); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
 		return nil, gatewayPolicyErrorFromAdmission(frame.ID, err)
 	}
@@ -118,7 +122,7 @@ func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
 	return ok
 }
 
-func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any, validated appServerGatewayValidatedParams) error {
+func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any, validated appServerGatewayValidatedParams, clientSinkGen uint64) error {
 	cwd := validated.cwd
 	scope := validated.cwdScope
 	scopeOK := validated.cwdScopeOK
@@ -135,7 +139,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				if !ok || normalizeAppServerRuntimeID(parent.runtimeID) != appServerRuntimeClaudeID {
 					return fmt.Errorf("thread/start.mimiTaskProposal.parentThreadId 未由当前 Claude gateway 连接授权")
 				}
-				if parent.readOnly {
+				if parent.readOnly || parent.pushSeededOnly {
 					return fmt.Errorf("thread/start.mimiTaskProposal.parentThreadId 是只读子会话")
 				}
 				// proposal 在 adapter 内还会按随机 ID 与原 cwd 复验；gateway 先把它绑定到
@@ -168,10 +172,17 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 					responseLimitSet: true,
 					globalDiscovery:  true,
 					upstreamCursor:   upstreamCursor,
+					clientSinkGen:    clientSinkGen,
 				})
 			}
 		}
-		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
+		if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
+			method:              method,
+			cwd:                 cwd,
+			scopeID:             scope.id,
+			managedWorktreePath: validated.pendingManagedWorktreePath,
+			clientSinkGen:       clientSinkGen,
+		}); err != nil {
 			return err
 		}
 	case "thread/search":
@@ -215,9 +226,13 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		// 接管的对象恰好是 canAcceptDirectInput=false 的会话，所以不套
-		// gatewayThreadRejectsWrites；但 browse / 子会话这类协议只读线程仍不能接管。
+		// gatewayThreadRejectsWrites；但 browse / 子会话这类协议只读线程，以及仅靠推送定位补种的
+		// pushSeededOnly 会话（缺少当前运行时写权限证据）均不能接管。
 		if thread.readOnly {
 			return fmt.Errorf("%s.threadId 是只读子会话，不能接管", method)
+		}
+		if thread.pushSeededOnly {
+			return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先刷新会话列表或读取会话后再接管", method)
 		}
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
@@ -426,16 +441,20 @@ func gatewayMimiTaskProposalParam(runtimeID string, method string, params map[st
 }
 
 func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
-	return thread.readOnly || (thread.directInputKnown && !thread.canAcceptDirectInput)
+	return thread.readOnly || thread.pushSeededOnly || (thread.directInputKnown && !thread.canAcceptDirectInput)
 }
 
-// gatewayWriteRejectionError 区分三类只读拒绝原因（C11/C14）：
+// gatewayWriteRejectionError 区分四类只读/禁写拒绝原因（C11/C14）：
 // 1) 原工作目录已移动或删除（cwdMissing）；
-// 2) 结构性只读子会话 / browse 只读（readOnly）；
-// 3) 电脑端其他进程正在持有或运行该会话（!readOnly && directInputKnown && !canAcceptDirectInput）。
+// 2) 仅由推送定位补种、缺少当前运行时写权限证据（pushSeededOnly）；
+// 3) 结构性只读子会话 / browse 只读（readOnly）；
+// 4) 电脑端其他进程正在持有或运行该会话（!readOnly && directInputKnown && !canAcceptDirectInput）。
 func gatewayWriteRejectionError(method string, thread appServerGatewayAllowedThread, action string) error {
 	if thread.cwdMissing {
 		return fmt.Errorf("%s.threadId 原工作目录已移动或删除，当前仅支持只读查看，%s", method, action)
+	}
+	if thread.pushSeededOnly {
+		return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先读取会话或刷新列表后再尝试，%s", method, action)
 	}
 	if thread.readOnly {
 		return fmt.Errorf("%s.threadId 是只读子会话，%s", method, action)

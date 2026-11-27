@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -105,9 +106,13 @@ type Router struct {
 	accountTokenUsageResult   json.RawMessage
 	accountTokenUsageCachedAt time.Time
 	accountTokenUsageCacheTTL time.Duration
-	gatewayThreadsMu          sync.Mutex
-	gatewayThreads            map[string]appServerGatewayAllowedThread
-	gatewayGitOwnership       gatewayGitOwnershipCache
+	gatewayThreadsMu                    sync.Mutex
+	gatewayThreads                      map[string]appServerGatewayAllowedThread
+	gatewayThreadsMutationEpoch         uint64
+	nextGatewayThreadDirectInputVersion uint64
+	gatewayThreadRestrictions           map[string]gatewayThreadRestrictionFloor
+	gatewayRestrictionEvictionEpoch     uint64
+	gatewayGitOwnership                 gatewayGitOwnershipCache
 	mimiTaskClaimsMu          sync.Mutex
 	mimiTaskClaims            map[string]mimiTaskDynamicClaim
 	codexGatewayMu            sync.Mutex
@@ -159,13 +164,19 @@ type Router struct {
 	// 覆盖一次远程升级的完整流程，防止本机控制或自建 claim 在确认检查后插队。
 	tailcatControlMu              sync.Mutex
 	tailcatActivation             tailcatActivationStore
-	managedWorktreesMu            sync.Mutex
-	managedWorktrees              map[string]managedWorktree
-	managedWorktreeCleanupMu      sync.Mutex
-	managedWorktreeCleanupPlans   map[string]worktreeCleanupPlan
-	managedWorktreeCleanupDelete  managedWorktreeCleanupDeleteFunc
-	managedWorktreePendingUses    map[string]int
-	managedWorktreeRegistryRemove func(string) error
+	managedWorktreesMu                   sync.Mutex
+	managedWorktrees                     map[string]managedWorktree
+	managedWorktreeColdCache             map[string]managedWorktree
+	managedWorktreePendingRegistryDelete map[string]pendingRegistryDeleteEntry
+	managedWorktreeRecentDeletions       []deletedManagedWorktreeRecord
+	managedWorktreeDeletionFloorEpoch    uint64
+	managedWorktreeNextGen               uint64
+	managedWorktreeLifecycleEpoch        atomic.Uint64
+	managedWorktreeCleanupMu             sync.Mutex
+	managedWorktreeCleanupPlans          map[string]worktreeCleanupPlan
+	managedWorktreeCleanupDelete         managedWorktreeCleanupDeleteFunc
+	managedWorktreePendingUses           map[string]int
+	managedWorktreeRegistryRemove        func(string) error
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob

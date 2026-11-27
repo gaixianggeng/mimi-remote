@@ -66,7 +66,7 @@ while IFS= read -r line; do
   printf '%%s\n' "$line" >> %q
   case "$line" in
   *'"method":"thread/list"'*)
-    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[{"id":"thr-held","canAcceptDirectInput":false,"claudeOwner":{"entrypoint":"cli","kind":"interactive","status":"busy","pid":4242}}]}}\n'
+    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[{"id":"thr-held","canAcceptDirectInput":false,"claudeOwner":{"entrypoint":"cli","kind":"interactive","status":"busy","pid":4242}}],"nextCursor":null}}\n'
     ;;
   *'"method":"thread/takeover"'*)
     printf '{"jsonrpc":"2.0","id":84,"result":{"thread":{"id":"thr-held","canAcceptDirectInput":true},"model":"claude-opus-5","modelProvider":"anthropic","takeover":{"released":true,"holder":{"entrypoint":"cli","pid":4242},"signal":"SIGINT"}}}\n'

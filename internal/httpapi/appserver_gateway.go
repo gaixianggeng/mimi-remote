@@ -277,19 +277,20 @@ type appServerBridgeMetadata struct {
 }
 
 type appServerChannelCapability struct {
-	IdleTakeover              bool `json:"idle_takeover,omitempty"`
-	PreserveThreadPermissions bool `json:"preserve_thread_permissions,omitempty"`
-	Streaming                 bool `json:"streaming"`
-	History                   bool `json:"history"`
-	ApprovalRequests          bool `json:"approval_requests"`
-	FileDiffs                 bool `json:"file_diffs"`
-	Goals                     bool `json:"goals"`
-	Archive                   bool `json:"archive"`
-	Fork                      bool `json:"fork"`
-	Rename                    bool `json:"rename"`
-	Compact                   bool `json:"compact"`
-	Review                    bool `json:"review"`
-	RateLimits                bool `json:"rate_limits"`
+	IdleTakeover                bool `json:"idle_takeover,omitempty"`
+	PreserveThreadPermissions   bool `json:"preserve_thread_permissions,omitempty"`
+	Streaming                   bool `json:"streaming"`
+	History                     bool `json:"history"`
+	ApprovalRequests            bool `json:"approval_requests"`
+	FileDiffs                   bool `json:"file_diffs"`
+	Goals                       bool `json:"goals"`
+	Archive                     bool `json:"archive"`
+	Fork                        bool `json:"fork"`
+	Rename                      bool `json:"rename"`
+	Compact                     bool `json:"compact"`
+	Review                      bool `json:"review"`
+	RateLimits                  bool `json:"rate_limits"`
+	GlobalListPageDispositionV1 bool `json:"global_list_page_disposition_v1,omitempty"`
 }
 
 type appServerChannelPolicy struct {
@@ -317,6 +318,7 @@ type appServerGatewayPolicyError struct {
 	message                string
 	data                   map[string]any
 	target                 string
+	targetSinkGen          uint64
 	historyResponseBlocked bool
 	historyBudgetRejected  bool
 	// resetConnection 表示写回错误后必须关闭连接（broker 连同上游一起关闭）。
@@ -329,23 +331,34 @@ type appServerGatewayPolicy struct {
 	mu        sync.Mutex
 	closed    bool
 
+	nextPendingSeq           uint64
+	restrictionEvictionEpoch uint64
+	currentSinkGen           func() uint64
+	nowFunc                  func() time.Time
+
 	pendingThreads        map[string]appServerGatewayPendingThreadRequest
 	pendingClientRequests map[string]appServerGatewayPendingClientRequest
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
 	// activeServerTurns 让 Claude 观察者在客户端断开时继承真实运行态，避免把仍在
 	// 执行、尚未产生审批的 turn 误判为空闲并提前关闭 bridge 读端。
-	activeServerTurns     map[string]struct{}
-	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
-	historyBudgets        map[string]appServerGatewayHistoryBudget
-	historyContinuations  map[string]time.Time
-	allowedThreads        map[string]appServerGatewayAllowedThread
-	globalListCursors     map[string]string
-	beforePendingRemember func()
-	beforeManagedComplete func()
-	mimiTaskToolsEnabled  bool
+	activeServerTurns             map[string]struct{}
+	pendingHistory                map[string]appServerGatewayPendingHistoryRequest
+	historyBudgets                map[string]appServerGatewayHistoryBudget
+	historyContinuations          map[string]time.Time
+	allowedThreads                map[string]appServerGatewayAllowedThread
+	globalListCursors             map[string]string
+	beforePendingRemember         func()
+	beforeManagedComplete         func()
+	onAfterResponseClaim          func()
+	onStageAAfterPathProbe        func(attempt int)
+	onStageBBeforeFinalCommitLock func(attempt int)
+	onStageBAfterFinalLockBeforeWrite func()
+	mimiTaskToolsEnabled          bool
 }
 
 type appServerGatewayPendingThreadRequest struct {
+	pendingSeq          uint64
+	clientSinkGen       uint64
 	method              string
 	cwd                 string
 	scopeID             string
@@ -433,6 +446,23 @@ type gatewayScope struct {
 	missing  bool
 }
 
+type rawDirectInputState uint8
+
+const (
+	rawDirectInputUnknown rawDirectInputState = iota
+	rawDirectInputAllow
+	rawDirectInputDeny
+)
+
+type gatewayThreadRestrictionFloor struct {
+	readOnlyPermanent          bool
+	readOnlySubagent           bool
+	readOnlyBrowseScope        bool
+	explicitDirectInputDenied  bool
+	explicitDirectInputVersion uint64
+	lastUpdated                time.Time
+}
+
 type appServerGatewayAllowedThread struct {
 	id                   string
 	runtimeID            string
@@ -441,13 +471,18 @@ type appServerGatewayAllowedThread struct {
 	canAcceptDirectInput bool
 	directInputKnown     bool
 	readOnly             bool
-	// 区分永久只读来源（子会话 / browse_roots 跨作用域）与瞬态目录缺失（cwdMissing），
-	// 确保目录恢复时只解除目录缺失限制，绝不丢失独立的子会话或浏览根只读约束（C14/C15）。
-	readOnlySubagent    bool
-	readOnlyBrowseScope bool
-	cwdMissing          bool
-	autoTitleEligible   bool
-	lastSeen            time.Time
+	// 区分永久只读来源（子会话 / browse_roots 跨作用域 / 其他非缺失只读）、
+	// 独立显式禁写约束与瞬态目录缺失（cwdMissing），确保目录恢复仅解除瞬态缺失。
+	readOnlySubagent           bool
+	readOnlyBrowseScope        bool
+	readOnlyPermanent          bool
+	explicitDirectInputDenied  bool
+	explicitDirectInputVersion uint64
+	pushSeededOnly             bool
+	rawDirectInput             rawDirectInputState
+	cwdMissing                 bool
+	autoTitleEligible          bool
+	lastSeen                   time.Time
 }
 
 type appServerGatewayThreadWire struct {
@@ -458,6 +493,7 @@ type appServerGatewayThreadWire struct {
 	Path                 string `json:"path"`
 	ParentThreadID       string `json:"parentThreadId"`
 	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+	CWDMissing           *bool  `json:"cwdMissing"`
 	Turns                []struct {
 		Items []struct {
 			Type              string         `json:"type"`

@@ -133,6 +133,9 @@ type managedWorktree struct {
 	// 必须 fail-closed，不能继续使用磁盘上的旧时间判断候选资格。
 	LastUsedPersistFailed bool      `json:"-"`
 	LastUsedPersistedAt   time.Time `json:"-"`
+	InstanceGen           uint64    `json:"-"`
+	CheckoutObjectID      string    `json:"-"`
+	WorkspaceObjectID     string    `json:"-"`
 }
 
 func (r *Router) worktreeListHandler(w http.ResponseWriter, req *http.Request) {
@@ -421,6 +424,30 @@ func (r *Router) pruneMissingManagedWorktrees() ([]string, map[string]string) {
 	r.managedWorktreeCleanupMu.Lock()
 	defer r.managedWorktreeCleanupMu.Unlock()
 
+	pruned := make([]string, 0)
+	failed := map[string]string{}
+	handled := map[string]bool{}
+
+	// 先处理物理 checkout 已确认删除、仅等待磁盘 registry 删除重试的待删条目，
+	// 避免旧记录缺 CheckoutPath 时再次卡在已消失路径的 Git 探测。
+	r.managedWorktreesMu.Lock()
+	pendingDeletes := make([]pendingRegistryDeleteEntry, 0, len(r.managedWorktreePendingRegistryDelete))
+	for _, entry := range r.managedWorktreePendingRegistryDelete {
+		pendingDeletes = append(pendingDeletes, entry)
+	}
+	r.managedWorktreesMu.Unlock()
+	for _, entry := range pendingDeletes {
+		path := entry.worktree.Path
+		handled[path] = true
+		if entry.checkoutConfirmedDeleted {
+			if err := r.unregisterManagedWorktreeLocked(entry.worktree, entry.checkoutPath, entry.checkoutObjectID, entry.workspaceObjectID); err != nil {
+				failed[path] = err.Error()
+				continue
+			}
+			pruned = append(pruned, path)
+		}
+	}
+
 	items := r.managedWorktreeMapFromRegistryRaw()
 	r.managedWorktreesMu.Lock()
 	for path, worktree := range r.managedWorktrees {
@@ -428,9 +455,10 @@ func (r *Router) pruneMissingManagedWorktrees() ([]string, map[string]string) {
 	}
 	r.managedWorktreesMu.Unlock()
 
-	pruned := make([]string, 0)
-	failed := map[string]string{}
 	for path, worktree := range items {
+		if handled[path] {
+			continue
+		}
 		checkoutPath, ok := storedManagedWorktreeCheckoutPath(worktree)
 		if !ok {
 			// 旧 registry 没有 checkout_path 时，只有 Git 仍能从 workspace
@@ -444,7 +472,7 @@ func (r *Router) pruneMissingManagedWorktrees() ([]string, map[string]string) {
 			continue
 		}
 		if _, err := os.Stat(checkoutPath); os.IsNotExist(err) {
-			if err := r.unregisterManagedWorktree(path); err != nil {
+			if err := r.unregisterManagedWorktreeLocked(worktree, checkoutPath, worktree.CheckoutObjectID, worktree.WorkspaceObjectID); err != nil {
 				failed[path] = err.Error()
 				continue
 			}
@@ -514,6 +542,15 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 	ctx, cancel := context.WithTimeout(ctx, worktreeCreateTimeout)
 	defer cancel()
 
+	// 优先命中物理 checkout 已确认删除、仅等待 registry 删盘重试的记录：
+	// 即使旧记录缺 CheckoutPath 且目录已不存在，也能跳过 Git 探测直接重试清理。
+	if pendingEntry, ok := r.pendingRegistryDeleteByExactPath(rawPath); ok && pendingEntry.checkoutConfirmedDeleted {
+		if err := r.unregisterManagedWorktreeLocked(pendingEntry.worktree, pendingEntry.checkoutPath, pendingEntry.checkoutObjectID, pendingEntry.workspaceObjectID); err != nil {
+			return pendingEntry.worktree, &managedWorktreeRegistryCleanupError{Path: pendingEntry.worktree.Path, Err: err}
+		}
+		return pendingEntry.worktree, nil
+	}
+
 	worktree, ok := r.managedWorktreeByExactPath(rawPath)
 	if !ok {
 		return managedWorktree{}, errManagedWorktreeNotFound
@@ -525,7 +562,7 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 	checkoutCandidate, hasStoredCheckout := storedManagedWorktreeCheckoutPath(worktree)
 	if hasStoredCheckout {
 		if _, err := os.Stat(checkoutCandidate); os.IsNotExist(err) {
-			if err := r.unregisterManagedWorktree(worktree.Path); err != nil {
+			if err := r.unregisterManagedWorktreeLocked(worktree, checkoutCandidate, worktree.CheckoutObjectID, worktree.WorkspaceObjectID); err != nil {
 				return worktree, &managedWorktreeRegistryCleanupError{Path: worktree.Path, Err: err}
 			}
 			return worktree, nil
@@ -556,8 +593,8 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 			return managedWorktree{}, fmt.Errorf("Worktree repository identity 已变化，拒绝删除")
 		}
 		// cleanup 的批量预检之后仍可能有直接 session 启动；Git remove
-		// 紧前再检查一次，与 managedWorktreeForPath 的 cleanup 锁共同缩小竞态窗口。
-		if r.managedWorktreeHasRunningSession(worktree) {
+		// 紧前再检查一次，并直接传入已验证的 checkoutRoot（即使旧记录迁移写盘失败也生效）。
+		if r.managedWorktreeHasRunningSessionForCheckout(worktree, checkoutRoot) {
 			return managedWorktree{}, fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
 		}
 		// session 检查期间外部 Git 仍可替换同路径 checkout；在真正
@@ -572,11 +609,22 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 	if _, err := os.Stat(commandDir); err != nil {
 		return managedWorktree{}, fmt.Errorf("原始仓库不可访问，无法安全删除 worktree：%w", err)
 	}
+	// 在物理删除前固化对象身份（Darwin/Linux Dev+Ino，Windows Volume+FileIndex），
+	// 供阶段 B 零系统调用精确比对。
+	checkoutObjID, _ := filesystemObjectIdentity(checkoutRoot)
+	if checkoutObjID == "" {
+		checkoutObjID = worktree.CheckoutObjectID
+	}
+	workspaceObjID, _ := filesystemObjectIdentity(worktree.Path)
+	if workspaceObjID == "" {
+		workspaceObjID = worktree.WorkspaceObjectID
+	}
+
 	args := []string{"worktree", "remove", checkoutRoot}
 	if _, _, err := runGitCommand(ctx, commandDir, 32*1024, args...); err != nil {
 		return managedWorktree{}, err
 	}
-	if err := r.unregisterManagedWorktree(worktree.Path); err != nil {
+	if err := r.unregisterManagedWorktreeLocked(worktree, checkoutRoot, checkoutObjID, workspaceObjID); err != nil {
 		return worktree, &managedWorktreeRegistryCleanupError{Path: worktree.Path, Err: err}
 	}
 	return worktree, nil
@@ -586,6 +634,9 @@ func (r *Router) registerManagedWorktree(worktree managedWorktree) error {
 	if strings.TrimSpace(worktree.Path) == "" || strings.TrimSpace(worktree.RootProject.ID) == "" {
 		return fmt.Errorf("worktree 元数据不完整")
 	}
+	r.managedWorktreeCleanupMu.Lock()
+	defer r.managedWorktreeCleanupMu.Unlock()
+
 	file, err := r.managedWorktreeRegistryFile(worktree.Path)
 	if err != nil {
 		return err
@@ -597,8 +648,20 @@ func (r *Router) registerManagedWorktree(worktree managedWorktree) error {
 	// 只有 registry 已经原子落盘后才能开放到内存 allowlist；否则 API 虽然
 	// 返回失败，当前进程却仍会把一个无法跨重启恢复的 checkout 当成已管理。
 	worktree.LastUsedPersistedAt = worktree.LastUsedAt
+	r.managedWorktreeNextGen++
+	worktree.InstanceGen = r.managedWorktreeNextGen
+	if checkoutRoot, ok := storedManagedWorktreeCheckoutPath(worktree); ok {
+		worktree.CheckoutObjectID, _ = filesystemObjectIdentity(checkoutRoot)
+	}
+	worktree.WorkspaceObjectID, _ = filesystemObjectIdentity(worktree.Path)
+
 	r.managedWorktreesMu.Lock()
+	if r.managedWorktrees == nil {
+		r.managedWorktrees = map[string]managedWorktree{}
+	}
 	r.managedWorktrees[worktree.Path] = worktree
+	delete(r.managedWorktreeColdCache, worktree.Path)
+	delete(r.managedWorktreePendingRegistryDelete, worktree.Path)
 	r.managedWorktreesMu.Unlock()
 	return nil
 }
@@ -685,14 +748,20 @@ func (r *Router) managedWorktreeForPath(realPath string) (managedWorktree, bool)
 // managedWorktreeForPathLocked 要求调用方已持有 managedWorktreeCleanupMu，
 // 便于 Gateway 在同一临界区内完成路径授权、LastUsedAt 更新和 pending-use 登记。
 func (r *Router) managedWorktreeForPathLocked(realPath string) (managedWorktree, bool) {
+	if r.isManagedWorktreeRevokedPath(realPath) {
+		return managedWorktree{}, false
+	}
 	if worktree, ok := r.managedWorktreeForPathFromMemory(realPath); ok {
 		worktree = r.touchManagedWorktreeAt(worktree, time.Now().UTC())
-		r.cacheManagedWorktree(worktree)
+		r.cacheManagedWorktreeLocked(worktree)
 		return worktree, true
 	}
 	if worktree, ok := r.managedWorktreeForPathFromRegistry(realPath); ok {
+		if r.isManagedWorktreeRevokedPath(worktree.Path) {
+			return managedWorktree{}, false
+		}
 		worktree = r.touchManagedWorktreeAt(worktree, time.Now().UTC())
-		r.cacheManagedWorktree(worktree)
+		r.cacheManagedWorktreeLocked(worktree)
 		return worktree, true
 	}
 	return managedWorktree{}, false
@@ -734,8 +803,42 @@ func (r *Router) managedWorktreeHasPendingUseLocked(worktree managedWorktree) bo
 
 func (r *Router) cacheManagedWorktree(worktree managedWorktree) {
 	r.managedWorktreesMu.Lock()
+	if r.managedWorktrees == nil {
+		r.managedWorktrees = map[string]managedWorktree{}
+	}
+	if existing, ok := r.managedWorktrees[worktree.Path]; ok && worktree.InstanceGen == 0 {
+		worktree.InstanceGen = existing.InstanceGen
+	}
 	r.managedWorktrees[worktree.Path] = worktree
+	delete(r.managedWorktreeColdCache, worktree.Path)
 	r.managedWorktreesMu.Unlock()
+}
+
+// cacheManagedWorktreeLocked 要求调用方已持有 managedWorktreeCleanupMu。
+func (r *Router) cacheManagedWorktreeLocked(worktree managedWorktree) {
+	if worktree.InstanceGen == 0 {
+		r.managedWorktreesMu.Lock()
+		existing, ok := r.managedWorktrees[worktree.Path]
+		if !ok {
+			existing, ok = r.managedWorktreeColdCache[worktree.Path]
+		}
+		r.managedWorktreesMu.Unlock()
+		if ok && existing.InstanceGen > 0 {
+			worktree.InstanceGen = existing.InstanceGen
+		} else {
+			r.managedWorktreeNextGen++
+			worktree.InstanceGen = r.managedWorktreeNextGen
+		}
+	}
+	if worktree.CheckoutObjectID == "" {
+		if checkoutRoot, ok := storedManagedWorktreeCheckoutPath(worktree); ok {
+			worktree.CheckoutObjectID, _ = filesystemObjectIdentity(checkoutRoot)
+		}
+	}
+	if worktree.WorkspaceObjectID == "" {
+		worktree.WorkspaceObjectID, _ = filesystemObjectIdentity(worktree.Path)
+	}
+	r.cacheManagedWorktree(worktree)
 }
 
 func (r *Router) touchManagedWorktreeAt(worktree managedWorktree, now time.Time) managedWorktree {
@@ -777,12 +880,26 @@ func (r *Router) touchManagedWorktreeAt(worktree managedWorktree, now time.Time)
 func (r *Router) managedWorktreeForPathFromMemory(realPath string) (managedWorktree, bool) {
 	r.managedWorktreesMu.Lock()
 	defer r.managedWorktreesMu.Unlock()
-	return managedWorktreeForPathInMap(r.managedWorktrees, realPath)
+	if r.isManagedWorktreeRevokedPathLocked(realPath) {
+		return managedWorktree{}, false
+	}
+	wt, ok := managedWorktreeForPathInMap(r.managedWorktrees, realPath)
+	if !ok || r.isManagedWorktreeRevokedPathLocked(wt.Path) {
+		return managedWorktree{}, false
+	}
+	return wt, true
 }
 
 func (r *Router) managedWorktreeForPathFromRegistry(realPath string) (managedWorktree, bool) {
+	if r.isManagedWorktreeRevokedPath(realPath) {
+		return managedWorktree{}, false
+	}
 	items := r.managedWorktreeMapFromRegistry(true)
-	return managedWorktreeForPathInMap(items, realPath)
+	wt, ok := managedWorktreeForPathInMap(items, realPath)
+	if !ok || r.isManagedWorktreeRevokedPath(wt.Path) {
+		return managedWorktree{}, false
+	}
+	return wt, true
 }
 
 func (r *Router) managedWorktreeByExactPath(rawPath string) (managedWorktree, bool) {
@@ -808,7 +925,11 @@ func (r *Router) managedWorktreeByExactPath(rawPath string) (managedWorktree, bo
 }
 
 func (r *Router) managedWorktreeListItems(ctx context.Context) []worktreeListItem {
+	// 快照阶段持 managedWorktreeCleanupMu 串行化 registry 读取与旧格式迁移，
+	// 释放后再运行 git status，避免并发迁移写回已被删除的 registry JSON。
+	r.managedWorktreeCleanupMu.Lock()
 	items := r.allManagedWorktreeMap(true)
+	r.managedWorktreeCleanupMu.Unlock()
 	worktrees := make([]managedWorktree, 0, len(items))
 	for _, worktree := range items {
 		worktrees = append(worktrees, worktree)
@@ -833,6 +954,13 @@ func (r *Router) allManagedWorktreeMap(existingOnly bool) map[string]managedWork
 	items := r.managedWorktreeMapFromRegistry(existingOnly)
 	r.managedWorktreesMu.Lock()
 	defer r.managedWorktreesMu.Unlock()
+	if !existingOnly {
+		for path, pending := range r.managedWorktreePendingRegistryDelete {
+			if _, exists := items[path]; !exists {
+				items[path] = pending.worktree
+			}
+		}
+	}
 	for path, worktree := range r.managedWorktrees {
 		if existingOnly {
 			if _, err := os.Stat(worktree.Path); err != nil {

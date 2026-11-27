@@ -148,10 +148,16 @@ func canonicalMissingProjectPath(abs string) (string, bool) {
 	}
 }
 
+// onRefreshProjectAvailabilityForTest 仅用于单测断言纯内存路径未触发任何磁盘可用性探测。
+var onRefreshProjectAvailabilityForTest func(Project)
+
 // refreshProjectAvailability 实时核对已登记项目目录当前是否存在于磁盘（C14）：
 // 目录在网关运行期间被移走或恢复后，`/api/projects` 与 `/api/app-server/config`
 // 立即反映最新 `Missing` 状态，无需等待下一次网关重启。
 func refreshProjectAvailability(project Project) Project {
+	if onRefreshProjectAvailabilityForTest != nil {
+		onRefreshProjectAvailabilityForTest(project)
+	}
 	if project.Path == "" {
 		return project
 	}
@@ -190,6 +196,43 @@ func (r *Registry) Get(id string) (Project, bool) {
 		return Project{}, false
 	}
 	return refreshProjectAvailability(project), true
+}
+
+// GetCached 纯内存按 ID 读取已登记项目，不触发 refreshProjectAvailability、
+// os.Lstat / os.Stat 或 filepath.EvalSymlinks。
+func (r *Registry) GetCached(id string) (Project, bool) {
+	if r == nil {
+		return Project{}, false
+	}
+	project, ok := r.projects[id]
+	return project, ok
+}
+
+// ListCached 纯内存返回已登记项目列表拷贝，不触碰文件系统。
+func (r *Registry) ListCached() []Project {
+	if r == nil {
+		return nil
+	}
+	out := make([]Project, len(r.list))
+	copy(out, r.list)
+	return out
+}
+
+// FindByCanonicalPathInMemory 对已规范化的绝对路径执行 100% 纯内存项目匹配：
+// 零磁盘 I/O（不调用 EvalSymlinks / Stat / Abs），也不写入或淘汰共享 pathMatchCache。
+func (r *Registry) FindByCanonicalPathInMemory(canonicalPath string) (Project, bool) {
+	if r == nil {
+		return Project{}, false
+	}
+	normalized, ok := pathForProjectMatch(canonicalPath)
+	if !ok {
+		return Project{}, false
+	}
+	clean := filepath.Clean(normalized)
+	if clean == "" || clean == "." || !filepath.IsAbs(clean) {
+		return Project{}, false
+	}
+	return r.findByCleanPath(clean)
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {

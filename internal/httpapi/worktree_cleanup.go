@@ -594,6 +594,17 @@ func (r *Router) managedWorktreeHasRunningSession(worktree managedWorktree) bool
 	if !ok {
 		return false
 	}
+	return r.managedWorktreeHasRunningSessionForCheckout(worktree, checkoutPath)
+}
+
+// managedWorktreeHasRunningSessionForCheckout 使用已验证的 checkoutRoot 检查该托管工作树是否仍有活跃会话；
+// 即使旧格式 registry 迁移写盘失败导致 worktree.CheckoutPath 为空，仍能凭已验 checkoutRoot 阻断删除；
+// 传入空 checkoutRoot 时 fail-closed 返回 true 拒绝删除。
+func (r *Router) managedWorktreeHasRunningSessionForCheckout(worktree managedWorktree, checkoutPath string) bool {
+	checkoutPath = filepath.Clean(strings.TrimSpace(checkoutPath))
+	if checkoutPath == "" || checkoutPath == "." || !filepath.IsAbs(checkoutPath) {
+		return true
+	}
 	workspaceID := workspaceIDForRealPath(worktree.Path)
 
 	// 生产主链路是 app-server gateway；它没有独立的运行态 REST 索引，因此

@@ -35,26 +35,31 @@ var (
 var appServerHistoryMediaMinRawBase64Chars = 16 << 10
 
 type appServerHistoryMediaStore struct {
-	mu             sync.Mutex
-	entries        map[string]appServerHistoryMediaEntry
-	idByHash       map[[32]byte]string
-	totalBytes     int64
-	accessSequence uint64
-	ttl            time.Duration
-	maxEntries     int
-	maxBytes       int64
-	maxItemBytes   int64
+	mu              sync.Mutex
+	entries         map[string]appServerHistoryMediaEntry
+	idByHash        map[[32]byte]string
+	totalBytes      int64
+	reservedEntries int
+	reservedBytes   int64
+	accessSequence  uint64
+	ttl             time.Duration
+	maxEntries      int
+	maxBytes        int64
+	maxItemBytes    int64
+	nowFunc         func() time.Time
 }
 
 type appServerHistoryMediaEntry struct {
-	id          string
-	contentType string
-	data        []byte
-	hash        [32]byte
-	derived     map[string]appServerHistoryMediaVariant
-	createdAt   time.Time
-	lastAccess  time.Time
-	accessOrder uint64
+	id               string
+	contentType      string
+	data             []byte
+	hash             [32]byte
+	derived          map[string]appServerHistoryMediaVariant
+	createdAt        time.Time
+	lastAccess       time.Time
+	accessOrder      uint64
+	activeWritePins  int
+	gracePinExpiries []time.Time
 }
 
 type appServerHistoryMediaVariant struct {
@@ -82,11 +87,47 @@ func newAppServerHistoryBlobStore(ttl time.Duration, maxEntries int, maxBytes in
 	}
 }
 
+func (s *appServerHistoryMediaStore) now() time.Time {
+	if s != nil && s.nowFunc != nil {
+		return s.nowFunc()
+	}
+	return time.Now()
+}
+
+func (e appServerHistoryMediaEntry) isEffectivelyPinned(now time.Time) bool {
+	if e.activeWritePins > 0 {
+		return true
+	}
+	for _, exp := range e.gracePinExpiries {
+		if exp.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *appServerHistoryMediaEntry) pruneExpiredGracePins(now time.Time) {
+	if len(e.gracePinExpiries) == 0 {
+		return
+	}
+	kept := e.gracePinExpiries[:0]
+	for _, exp := range e.gracePinExpiries {
+		if exp.After(now) {
+			kept = append(kept, exp)
+		}
+	}
+	if len(kept) == 0 {
+		e.gracePinExpiries = nil
+		return
+	}
+	e.gracePinExpiries = kept
+}
+
 func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (string, bool) {
 	if s == nil || len(data) == 0 || (s.maxItemBytes > 0 && int64(len(data)) > s.maxItemBytes) {
 		return "", false
 	}
-	now := time.Now()
+	now := s.now()
 	hash := sha256.Sum256(data)
 
 	s.mu.Lock()
@@ -102,6 +143,13 @@ func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (strin
 			return existingID, true
 		}
 		delete(s.idByHash, hash)
+	}
+	pinnedEntries, pinnedBytes := s.pinnedUsageLocked(now)
+	if s.maxEntries > 0 && pinnedEntries+s.reservedEntries+1 > s.maxEntries {
+		return "", false
+	}
+	if s.maxBytes > 0 && pinnedBytes+s.reservedBytes+int64(len(data)) > s.maxBytes {
+		return "", false
 	}
 	id, ok := randomHistoryMediaID()
 	if !ok {
@@ -120,6 +168,9 @@ func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (strin
 	s.idByHash[hash] = id
 	s.totalBytes += entry.totalBytes()
 	s.enforceLimitsLocked(now)
+	if _, stillPresent := s.entries[id]; !stillPresent {
+		return "", false
+	}
 	return id, true
 }
 
@@ -131,7 +182,7 @@ func (s *appServerHistoryMediaStore) get(id string) (appServerHistoryMediaEntry,
 	if id == "" {
 		return appServerHistoryMediaEntry{}, false
 	}
-	now := time.Now()
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
@@ -153,7 +204,7 @@ func (s *appServerHistoryMediaStore) getDerived(id string, key string) (appServe
 	if id == "" || key == "" {
 		return appServerHistoryMediaEntry{}, appServerHistoryMediaVariant{}, false
 	}
-	now := time.Now()
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
@@ -175,7 +226,7 @@ func (s *appServerHistoryMediaStore) storeDerived(id string, key string, variant
 	if s == nil || strings.TrimSpace(id) == "" || strings.TrimSpace(key) == "" || len(variant.data) == 0 {
 		return appServerHistoryMediaEntry{}, appServerHistoryMediaVariant{}, false
 	}
-	now := time.Now()
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
@@ -192,6 +243,20 @@ func (s *appServerHistoryMediaStore) storeDerived(id string, key string, variant
 		existing.data = append([]byte(nil), existing.data...)
 		return entry, existing, true
 	}
+	// 派生变体必须遵守预留字节与活跃 pin 上限：无法在不淘汰活跃 pin 或不超限的前提下容纳时放弃缓存。
+	deltaBytes := int64(len(variant.data))
+	if s.maxBytes > 0 {
+		_, pinnedBytes := s.pinnedUsageLocked(now)
+		requiredPinned := pinnedBytes
+		if !entry.isEffectivelyPinned(now) {
+			// 本条目若本身未被 pin，加入派生后仍受总上限约束（但绝不能挤掉活跃 pin + 预留）。
+			if pinnedBytes+s.reservedBytes+deltaBytes+entry.totalBytes() > s.maxBytes {
+				return appServerHistoryMediaEntry{}, appServerHistoryMediaVariant{}, false
+			}
+		} else if requiredPinned+s.reservedBytes+deltaBytes > s.maxBytes {
+			return appServerHistoryMediaEntry{}, appServerHistoryMediaVariant{}, false
+		}
+	}
 	copied := appServerHistoryMediaVariant{
 		contentType: variant.contentType,
 		data:        append([]byte(nil), variant.data...),
@@ -199,7 +264,7 @@ func (s *appServerHistoryMediaStore) storeDerived(id string, key string, variant
 	entry.derived[key] = copied
 	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
-	s.totalBytes += int64(len(copied.data))
+	s.totalBytes += deltaBytes
 	s.enforceLimitsLocked(now)
 	copied.data = append([]byte(nil), copied.data...)
 	return entry, copied, true
@@ -215,25 +280,42 @@ func (s *appServerHistoryMediaStore) totalBytesForTest() int64 {
 }
 
 func (s *appServerHistoryMediaStore) pruneLocked(now time.Time) {
-	if s.ttl <= 0 {
-		return
-	}
 	for id, entry := range s.entries {
-		if now.Sub(entry.createdAt) > s.ttl {
+		entry.pruneExpiredGracePins(now)
+		if s.ttl > 0 && now.Sub(entry.createdAt) > s.ttl && !entry.isEffectivelyPinned(now) {
 			s.deleteEntryLocked(id, entry)
+			continue
 		}
+		s.entries[id] = entry
 	}
 	if s.totalBytes < 0 {
 		s.totalBytes = 0
 	}
 }
 
+func (s *appServerHistoryMediaStore) pinnedUsageLocked(now time.Time) (int, int64) {
+	pinnedEntries := 0
+	pinnedBytes := int64(0)
+	for _, entry := range s.entries {
+		if entry.isEffectivelyPinned(now) {
+			pinnedEntries++
+			pinnedBytes += entry.totalBytes()
+		}
+	}
+	return pinnedEntries, pinnedBytes
+}
+
 func (s *appServerHistoryMediaStore) enforceLimitsLocked(now time.Time) {
-	for (s.maxEntries > 0 && len(s.entries) > s.maxEntries) ||
-		(s.maxBytes > 0 && s.totalBytes > s.maxBytes) {
+	for (s.maxEntries > 0 && len(s.entries)+s.reservedEntries > s.maxEntries) ||
+		(s.maxBytes > 0 && s.totalBytes+s.reservedBytes > s.maxBytes) {
 		oldestID := ""
 		var oldestOrder uint64
 		for id, entry := range s.entries {
+			entry.pruneExpiredGracePins(now)
+			s.entries[id] = entry
+			if entry.isEffectivelyPinned(now) {
+				continue
+			}
 			if oldestID == "" || entry.accessOrder < oldestOrder {
 				oldestID = id
 				oldestOrder = entry.accessOrder
