@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Catalog, HistoryStore, SessionRecord } from "../src/claude/catalog.ts";
-import { createThreadHandlers } from "../src/handlers/threads.ts";
+import { createThreadHandlers, findCursorStartIndex } from "../src/handlers/threads.ts";
 import { encodeCursor } from "../src/util/cursor.ts";
 
 function makeRecord(id: string, createdAt: number, updatedAt: number): SessionRecord {
@@ -70,9 +70,9 @@ describe("thread/list binary search cursor parity", () => {
       { v: 100, id: "a", incl: true },
       { v: 100, id: "b", incl: false },
       { v: 100, id: "b", incl: true },
-      { v: 100, id: "bb" }, // deleted anchor between ties
+      { v: 100, id: "bb" },
       { v: 100, id: "bb", incl: true },
-      { v: 125, id: "m" }, // deleted anchor between timestamps
+      { v: 125, id: "m" },
       { v: 200, id: "e" },
       { v: 200, id: "e", incl: true },
       { v: 300, id: "g" },
@@ -97,14 +97,31 @@ describe("thread/list binary search cursor parity", () => {
     }
   });
 
-  test("preserves full pagination traversal with deleted anchor and backwardsCursor incl", async () => {
-    const mutable = Array.from({ length: 25 }, (_, i) =>
+  test("performs O(log N) key evaluations without scanning all records", () => {
+    const records = Array.from({ length: 240 }, (_, i) =>
+      makeRecord(`s-${String(i).padStart(3, "0")}`, 1000 + i, 2000 + i),
+    ).reverse();
+    let reads = 0;
+    const key = (r: SessionRecord): [number, string] => {
+      reads += 1;
+      return [r.updatedAt, r.id];
+    };
+    const anchor = records[19]!;
+    const idx = findCursorStartIndex(records, key, -1, { v: anchor.updatedAt, id: anchor.id }, true);
+    expect(idx).toBe(20);
+    // ceil(log2(240)) === 8; must stay strictly O(log N), never O(N)
+    expect(reads).toBeLessThanOrEqual(10);
+  });
+
+  test("preserves full pagination traversal, deleted anchor continuation, and backwardsCursor incl", async () => {
+    const base = Array.from({ length: 25 }, (_, i) =>
       makeRecord(`s-${String(i).padStart(2, "0")}`, 1000 + Math.floor(i / 3), 2000 + Math.floor((24 - i) / 4)),
     );
-    const handlers = makeHandlers(mutable);
 
     for (const sortKey of ["created_at", "updated_at"] as const) {
       for (const sortDirection of ["asc", "desc"] as const) {
+        const mutable = [...base];
+        const handlers = makeHandlers(mutable);
         const seen: string[] = [];
         let cursor: string | null = null;
         while (true) {
@@ -113,18 +130,27 @@ describe("thread/list binary search cursor parity", () => {
           if (!page.nextCursor) break;
           cursor = page.nextCursor;
         }
-        expect(seen.length).toBe(mutable.length);
-        expect(new Set(seen).size).toBe(mutable.length);
+        expect(seen.length).toBe(base.length);
+        expect(new Set(seen).size).toBe(base.length);
 
         const page1 = await handlers.list({ sortKey, sortDirection, limit: 4 });
-        const page2 = await handlers.list({ sortKey, sortDirection, limit: 4, cursor: page1.nextCursor });
+        const page2BeforeDelete = await handlers.list({ sortKey, sortDirection, limit: 4, cursor: page1.nextCursor });
         const backFromPage2 = await handlers.list({
           sortKey,
           sortDirection,
           limit: 4,
-          cursor: page2.backwardsCursor,
+          cursor: page2BeforeDelete.backwardsCursor,
         });
-        expect(backFromPage2.data.map((t) => t.id)).toEqual(page2.data.map((t) => t.id));
+        expect(backFromPage2.data.map((t) => t.id)).toEqual(page2BeforeDelete.data.map((t) => t.id));
+
+        // Delete the anchor record (last item of page1) after obtaining nextCursor
+        const deletedAnchorId = page1.data[page1.data.length - 1]!.id;
+        const removeIdx = mutable.findIndex((r) => r.id === deletedAnchorId);
+        expect(removeIdx).toBeGreaterThanOrEqual(0);
+        mutable.splice(removeIdx, 1);
+
+        const page2AfterDelete = await handlers.list({ sortKey, sortDirection, limit: 4, cursor: page1.nextCursor });
+        expect(page2AfterDelete.data.map((t) => t.id)).toEqual(page2BeforeDelete.data.map((t) => t.id));
       }
     }
   });
@@ -140,10 +166,10 @@ describe("thread/list binary search cursor parity", () => {
     const weirdCursors: Record<string, unknown>[] = [
       { id: "m" }, // missing v -> non-monotonic predicate on asc [(1,"z"), (2,"a"), (3,"b")]
       { id: "m", incl: true },
-      { v: 2, id: "a", incl: 1 }, // truthy non-boolean incl
-      { v: 2, id: "a", incl: 0 }, // falsy non-boolean incl
-      { v: "2", id: "a" }, // non-number v
-      { v: 2, id: 123 }, // non-string id
+      { v: 2, id: "a", incl: 1 }, // finite v + string id -> takes binary path and preserves truthiness
+      { v: 2, id: "a", incl: 0 },
+      { v: "2", id: "a" },
+      { v: 2, id: 123 },
       { v: null, id: "a" },
       {},
     ];
@@ -178,24 +204,30 @@ describe("thread/list binary search cursor parity", () => {
       }
     }
 
-    // Non-finite record timestamp falls back to linear without breaking parity
+    // Non-finite record timestamp: ascending created_at with { v: 21, id: "0", incl: true }
+    // produces a non-monotonic predicate [true, false, false] that fails if binary search runs without finiteness guard.
     const nonFiniteRecords: SessionRecord[] = [
       makeRecord("a", Number.NaN, 10),
       makeRecord("b", 10, Number.POSITIVE_INFINITY),
       makeRecord("c", 20, 20),
     ];
     const nonFiniteHandlers = makeHandlers(nonFiniteRecords);
+    const nonFiniteCursors: Record<string, unknown>[] = [
+      { v: 21, id: "0", incl: true },
+      { v: 10, id: "b", incl: true },
+    ];
     for (const sortKey of ["created_at", "updated_at"] as const) {
       for (const sortDirection of ["asc", "desc"] as const) {
-        const cursorObj = { v: 10, id: "b", incl: true };
-        const expected = linearExpectedIds(nonFiniteRecords, sortKey, sortDirection, cursorObj, 10);
-        const actual = await nonFiniteHandlers.list({
-          sortKey,
-          sortDirection,
-          limit: 10,
-          cursor: encodeCursor(cursorObj),
-        });
-        expect(actual.data.map((t) => t.id)).toEqual(expected);
+        for (const cursorObj of nonFiniteCursors) {
+          const expected = linearExpectedIds(nonFiniteRecords, sortKey, sortDirection, cursorObj, 10);
+          const actual = await nonFiniteHandlers.list({
+            sortKey,
+            sortDirection,
+            limit: 10,
+            cursor: encodeCursor(cursorObj),
+          });
+          expect(actual.data.map((t) => t.id)).toEqual(expected);
+        }
       }
     }
   });

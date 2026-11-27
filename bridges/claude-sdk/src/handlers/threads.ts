@@ -92,21 +92,22 @@ function compare(a: [number, string], b: [number, string]): number {
   return a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
 }
 
-function findCursorStartIndex(
+export function findCursorStartIndex(
   records: readonly SessionRecord[],
   key: (record: SessionRecord) => [number, string],
   sign: 1 | -1,
   cursor: ListCursor,
+  allFiniteTimes: boolean,
 ): number {
   const matches = (record: SessionRecord): boolean => {
     const order = sign * compare(key(record), [cursor.v, cursor.id]);
     return cursor.incl ? order >= 0 : order > 0;
   };
   const monotonic =
+    allFiniteTimes &&
     typeof cursor.v === "number" &&
     Number.isFinite(cursor.v) &&
-    typeof cursor.id === "string" &&
-    records.every((record) => Number.isFinite(key(record)[0]));
+    typeof cursor.id === "string";
   if (!monotonic) {
     return records.findIndex(matches);
   }
@@ -163,12 +164,17 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
 
       const key = (record: SessionRecord): [number, string] => [byCreated ? record.createdAt : record.updatedAt, record.id];
       const sign = direction === "desc" ? -1 : 1;
-      const records = (await catalog.list(readDirs(params.cwd)))
-        .filter((record) => record.archived === archived)
-        .filter((record) => !search || `${record.name ?? ""}\n${record.preview}`.toLowerCase().includes(search))
-        .sort((a, b) => sign * compare(key(a), key(b)));
+      let allFiniteTimes = true;
+      const records: SessionRecord[] = [];
+      for (const record of await catalog.list(readDirs(params.cwd))) {
+        if (record.archived !== archived) continue;
+        if (search && !`${record.name ?? ""}\n${record.preview}`.toLowerCase().includes(search)) continue;
+        if (!Number.isFinite(byCreated ? record.createdAt : record.updatedAt)) allFiniteTimes = false;
+        records.push(record);
+      }
+      records.sort((a, b) => sign * compare(key(a), key(b)));
 
-      const start = cursor ? findCursorStartIndex(records, key, sign, cursor) : 0;
+      const start = cursor ? findCursorStartIndex(records, key, sign, cursor, allFiniteTimes) : 0;
       const page = start < 0 ? [] : records.slice(start, start + limit);
       logger.debug("thread.list", {
         cwd: typeof params.cwd === "string" ? params.cwd : null,
