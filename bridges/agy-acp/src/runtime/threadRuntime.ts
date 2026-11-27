@@ -682,7 +682,7 @@ export class ThreadRuntime {
     }
     if (open.modes?.currentModeId) {
       this.appliedMode = open.modes.currentModeId;
-      if (this.preserveExistingMode && this.baseMode === undefined && isAgyModeId(open.modes.currentModeId)) {
+      if (this.preserveExistingMode && !this.transientPlanMode && isAgyModeId(open.modes.currentModeId)) {
         this.baseMode = open.modes.currentModeId;
         this.settings = { ...this.settings, mode: open.modes.currentModeId };
       }

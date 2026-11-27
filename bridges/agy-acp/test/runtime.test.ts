@@ -1104,6 +1104,91 @@ test("#1177: preserving existing agy session permissions skips session/set_mode,
   expect(runtime.effectiveMode).toBe("auto");
 });
 
+test("#1177: reloading a detached external session refreshes preserved baseline before transient plan", async () => {
+  const setModeCalls: string[] = [];
+  let upstreamMode = "auto";
+  let closed = false;
+  const fakeClient = {
+    get isClosed() {
+      return closed;
+    },
+    onSession: () => () => {},
+    onPermission: () => () => {},
+    sessionLoadWithReplay: async () => {
+      closed = false;
+      return {
+        result: {
+          sessionId: "ext-reload",
+          modes: { currentModeId: upstreamMode, availableModes: [] },
+        },
+        updates: [],
+      };
+    },
+    sessionSetMode: async (_sessionId: string, modeId: string) => {
+      setModeCalls.push(modeId);
+    },
+    sessionSetConfigOption: async () => {},
+    sessionPrompt: async () => ({ stopReason: "end_turn" }),
+    sessionCancel: () => {},
+  } as unknown as AcpClient;
+
+  const host: RuntimeHost = {
+    publish: () => {},
+    request: async () => ({}),
+    acquireClient: async () => fakeClient,
+    idleCloseMs: 60_000,
+  };
+
+  const runtime = new ThreadRuntime(
+    "ext-reload",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    true,
+    null,
+    undefined,
+    undefined,
+    true,
+  );
+
+  // 1) Initial preserved turn loads upstream "auto".
+  await runtime.startTurn({
+    input: [{ type: "text", text: "first", text_elements: [] }],
+    clientUserMessageId: "r1",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual([]);
+  expect(runtime.effectiveMode).toBe("auto");
+
+  // 2) Simulate detach (e.g. idle close) and upstream mode change to "default".
+  closed = true;
+  upstreamMode = "default";
+
+  // 3) Reload on transient Plan turn must refresh baseMode to "default", then restore "default" on next normal turn.
+  await runtime.startTurn({
+    input: [{ type: "text", text: "plan after reload", text_elements: [] }],
+    clientUserMessageId: "r2",
+    preservePermissions: true,
+    planMode: true,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  await runtime.startTurn({
+    input: [{ type: "text", text: "normal after plan", text_elements: [] }],
+    clientUserMessageId: "r3",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual(["plan", "default"]);
+  expect(runtime.effectiveMode).toBe("default");
+});
+
 test("#1177: adapter advertises preserveThreadPermissions and overlay persists explicit session permissions", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agy-perm-overlay-"));
   try {
