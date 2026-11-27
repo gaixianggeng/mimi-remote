@@ -2186,8 +2186,10 @@ extension SessionStore {
         restartFromFirst: Bool = false,
         client fixedClient: (any SessionStoreAPIClient)? = nil,
         hostScope expectedHostScope: HostScope? = nil,
-        runtimeProvider requestedRuntimeProvider: String? = nil
+        runtimeProvider requestedRuntimeProvider: String? = nil,
+        fillsPresentationWindow: Bool? = nil
     ) async throws -> SessionListFirstPageResult {
+        let effectiveFillsPresentationWindow = fillsPresentationWindow ?? (consistency == .authoritative)
         let requestStartedAt = sessionListNow()
         let hostScope = expectedHostScope ?? appStore.activeHostScope
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
@@ -2209,7 +2211,9 @@ extension SessionStore {
             hostScope: hostScope,
             runtimeProvider: runtimeProvider
         )
-        let authoritativeProgress = consistency == .authoritative && !restartFromFirst
+        let authoritativeProgress = consistency == .authoritative
+            && !restartFromFirst
+            && effectiveFillsPresentationWindow
             ? authoritativeWorkspaceSessionFirstPageProgress(
                 workspace: workspace,
                 hostScope: hostScope,
@@ -2230,6 +2234,16 @@ extension SessionStore {
         while true {
             // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
             if let inFlight = sessionListFirstPageInFlightByKey[key] {
+                if effectiveFillsPresentationWindow && !inFlight.fillsPresentationWindow {
+                    // 单页预算请求不能替代完整展示窗补齐；先排空同工作区在途请求，避免 -32080 并发冲突。
+                    _ = try? await inFlight.task.value
+                    retireSessionListFirstPageInFlight(key: key, id: inFlight.id)
+                    guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                          !Task.isCancelled else {
+                        throw CancellationError()
+                    }
+                    continue
+                }
                 let page = try await inFlight.task.value
                 SessionListDiagnostics.completed(
                     source: source,
@@ -2330,6 +2344,7 @@ extension SessionStore {
                             || (key.consistency == .fastIndexed && entry.key.consistency == .authoritative)
                     )
                     && entry.key.limit >= key.limit
+                    && (!effectiveFillsPresentationWindow || entry.value.fillsPresentationWindow)
             })?.value {
                 let page = try await largerInFlight.task.value
                 SessionListDiagnostics.completed(
@@ -2434,7 +2449,7 @@ extension SessionStore {
                 source: source,
                 expectedHostScope: hostScope,
                 initialSessions: presentationSeedSessions,
-                fillsPresentationWindow: consistency == .authoritative,
+                fillsPresentationWindow: effectiveFillsPresentationWindow,
                 isRequestCurrent: { traversalControl.shouldContinue }
             )
         }
@@ -2442,7 +2457,8 @@ extension SessionStore {
             id: requestID,
             task: task,
             traversalControl: traversalControl,
-            requestLineage: requestLineage
+            requestLineage: requestLineage,
+            fillsPresentationWindow: effectiveFillsPresentationWindow
         )
         do {
             let page = try await task.value

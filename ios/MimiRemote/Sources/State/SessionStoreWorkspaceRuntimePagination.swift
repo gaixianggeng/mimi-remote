@@ -181,7 +181,6 @@ extension SessionStore {
         hostScope: HostScope
     ) -> [CanonicalSessionKey: SubagentOwnershipEvidence] {
         var map: [CanonicalSessionKey: SubagentOwnershipEvidence] = [:]
-        map.reserveCapacity(sessions.count)
         for item in sessions {
             let evidence = SubagentOwnershipEvidence(session: item)
             guard evidence.isSubagent else { continue }
@@ -319,7 +318,8 @@ extension SessionStore {
                 restartFromFirst: restartFromFirst,
                 client: lease.client,
                 hostScope: lease.scope,
-                runtimeProvider: normalizedRuntime
+                runtimeProvider: normalizedRuntime,
+                fillsPresentationWindow: fillsPresentationWindow
             )
             canonicalFirstPageResult = result
             page = result.page

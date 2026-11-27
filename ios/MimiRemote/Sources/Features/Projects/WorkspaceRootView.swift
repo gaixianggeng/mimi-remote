@@ -439,9 +439,6 @@ struct WorkspaceRootView: View {
             : nil
         let mergedRefreshScope = WorkspaceMergedSessionRefreshScope(
             key: selectedMergedKey,
-            needsInitialLoad: selectedMergedKey.map {
-                !mergedCoordinator.hasLoadedFirstPage(for: $0)
-            } ?? false,
             hasNoConfiguredHost: isInNoHostEmptyState
         )
         let mergedAvailabilityReconcileScope = WorkspaceMergedAvailabilityReconcileScope(
@@ -525,8 +522,8 @@ struct WorkspaceRootView: View {
         }
         .task(id: mergedRefreshScope) {
             guard !mergedRefreshScope.hasNoConfiguredHost,
-                  mergedRefreshScope.needsInitialLoad,
                   let mergedKey = mergedRefreshScope.key,
+                  !mergedCoordinator.hasLoadedFirstPage(for: mergedKey),
                   let project = sessionStore.sidebarProjects.first(where: {
                       $0.id == mergedKey.workspaceID && $0.path == mergedKey.workspacePath
                   })

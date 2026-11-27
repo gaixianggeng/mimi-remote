@@ -10,9 +10,9 @@ struct WorkspaceMergedPresentationKey: Hashable {
 }
 
 /// 合并浏览首屏任务触发键，供 `WorkspaceRootView` 的 `.task(id:)` 观察。
+/// 不包含会随首波返回而翻转的 `needsInitialLoad`，避免第一波完成后取消仍在执行的后续波次。
 struct WorkspaceMergedSessionRefreshScope: Equatable {
     let key: WorkspaceMergedPresentationKey?
-    let needsInitialLoad: Bool
     var hasNoConfiguredHost: Bool = false
 }
 
@@ -70,6 +70,9 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             cachedFallback,
             hostScope: key.hostScope
         )
+        let knownOwnership = sessionStore.knownSubagentOwnershipByCanonicalKey(
+            hostScope: key.hostScope
+        )
         let slot = slots[key]
         let archivedKeys = archivedCanonicalKeys(
             sessionStore: sessionStore,
@@ -88,6 +91,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 targetVisibleCount: slot.visibleLimit,
                 cachedFallbackSessions: cachedFallback,
                 canonicalByKey: canonicalByKey,
+                knownOwnership: knownOwnership,
                 archivedKeys: archivedKeys,
                 newlyCreatedSessions: createdSessions,
                 budgetExhausted: slot.budget.isTotalBudgetExhausted
@@ -102,6 +106,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             targetVisibleCount: SessionStore.initialSessionPageLimit,
             cachedFallbackSessions: cachedFallback,
             canonicalByKey: canonicalByKey,
+            knownOwnership: knownOwnership,
             archivedKeys: archivedKeys,
             newlyCreatedSessions: createdSessions
         )
@@ -255,6 +260,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             runtimeProviders: enabledProviders
         )
         let canonicalByKey = canonicalSessionMap(cachedFallback, hostScope: key.hostScope)
+        let knownOwnership = sessionStore.knownSubagentOwnershipByCanonicalKey(hostScope: key.hostScope)
         let archivedKeys = archivedCanonicalKeys(
             sessionStore: sessionStore,
             hostScope: key.hostScope,
@@ -270,6 +276,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             targetVisibleCount: updated.visibleLimit,
             cachedFallbackSessions: cachedFallback,
             canonicalByKey: canonicalByKey,
+            knownOwnership: knownOwnership,
             archivedKeys: archivedKeys,
             newlyCreatedSessions: createdSessions,
             budgetExhausted: updated.budget.isTotalBudgetExhausted
@@ -370,6 +377,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 runtimeProviders: enabledProviders
             )
             let canonicalByKey = canonicalSessionMap(cached, hostScope: key.hostScope)
+            let preWaveKnownOwnership = sessionStore.knownSubagentOwnershipByCanonicalKey(hostScope: key.hostScope)
             let archivedKeys = archivedCanonicalKeys(
                 sessionStore: sessionStore,
                 hostScope: key.hostScope,
@@ -381,6 +389,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 targetVisibleCount: slot.visibleLimit,
                 cachedFallbackSessions: cached,
                 canonicalByKey: canonicalByKey,
+                knownOwnership: preWaveKnownOwnership,
                 archivedKeys: archivedKeys
             )
             guard slot.engine.needsMorePages(

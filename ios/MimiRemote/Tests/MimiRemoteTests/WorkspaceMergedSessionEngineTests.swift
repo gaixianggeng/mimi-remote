@@ -803,6 +803,132 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
             "Earlier sub-page missing listMeta on agy must not be upgraded to trusted by later sub-page"
         )
     }
+
+    @MainActor
+    func testLiveProjectionHidesSessionNewlyMarkedAsSubagentInStore() async throws {
+        let project = AgentProject(id: "ws-child-live", name: "demo", path: "/Users/dev/demo")
+        let rootSession = makeSession(
+            id: "s-becomes-child",
+            projectID: project.id,
+            runtimeProvider: "codex",
+            updatedAtMs: 1_700_000_010_000
+        )
+        let siblingRoot = makeSession(
+            id: "s-stays-root",
+            projectID: project.id,
+            runtimeProvider: "codex",
+            updatedAtMs: 1_700_000_009_000
+        )
+        let client = MergedCoordinatorTestClient(projects: [project]) { _, _ in
+            .success(SessionsPage(
+                sessions: [rootSession, siblingRoot],
+                nextCursor: nil,
+                hasMore: false,
+                rawSortEvidenceBySessionID: [
+                    "s-becomes-child": .epochMs(1_700_000_010_000),
+                    "s-stays-root": .epochMs(1_700_000_009_000)
+                ]
+            ))
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.availableRuntimeProviders = ["codex"]
+
+        let coordinator = WorkspaceMergedSessionCoordinator()
+        let key = WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: [.codex]
+        )
+
+        await coordinator.refresh(project: project, key: key, sessionStore: store)
+        XCTAssertEqual(
+            coordinator.projection(for: key, sessionStore: store).visibleSessions.map(\.id),
+            ["s-becomes-child", "s-stays-root"]
+        )
+
+        // Store later learns s-becomes-child is a subagent; even though directoryScopedSessionsUnsorted
+        // filters it out via isListableSession, live projection must hide it immediately.
+        let markedChild = makeSession(
+            id: "s-becomes-child",
+            projectID: project.id,
+            runtimeProvider: "codex",
+            updatedAtMs: 1_700_000_010_000,
+            parentThreadID: "s-stays-root",
+            isSubagent: true
+        )
+        store.sessions = [markedChild, siblingRoot]
+
+        XCTAssertEqual(
+            coordinator.projection(for: key, sessionStore: store).visibleSessions.map(\.id),
+            ["s-stays-root"]
+        )
+    }
+
+    @MainActor
+    func testCodexMergedFirstPageHonorsSinglePageBudgetLimit() async throws {
+        let project = AgentProject(id: "ws-codex-budget", name: "demo", path: "/Users/dev/demo")
+        var pageIndex = 0
+        let client = MergedCoordinatorTestClient(projects: [project]) { _, cursor in
+            pageIndex += 1
+            let child = self.makeSession(
+                id: "child-\(pageIndex)",
+                projectID: project.id,
+                runtimeProvider: "codex",
+                updatedAtMs: 1_700_000_010_000 - Int64(pageIndex * 100),
+                parentThreadID: "root-parent",
+                isSubagent: true
+            )
+            return .success(SessionsPage(
+                sessions: [child],
+                nextCursor: "cursor-\(pageIndex)",
+                hasMore: true,
+                rawSortEvidenceBySessionID: [child.id: .epochMs(1_700_000_010_000 - Int64(pageIndex * 100))]
+            ))
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.availableRuntimeProviders = ["codex"]
+
+        // Single-page call for Codex with fillsPresentationWindow: false must make exactly 1 server RPC
+        // even when page 1 contains only subagents and hasMore == true.
+        let singlePage = try await store.workspaceRuntimeSessionsPage(
+            projectID: project.id,
+            runtimeProvider: "codex",
+            cursor: nil,
+            limit: 20,
+            fillsPresentationWindow: false,
+            preservesWireOrder: true
+        )
+        XCTAssertEqual(client.callCount(for: "codex"), 1)
+        XCTAssertEqual(singlePage.nextCursor, "cursor-1")
+        XCTAssertTrue(singlePage.hasMore)
+
+        // Full coordinator refresh must stay bounded by SessionListRPCBudgetLedger maxPerRuntimeRPCs (12),
+        // never multiplying 12 waves x 12 internal fill pages.
+        let coordinator = WorkspaceMergedSessionCoordinator()
+        let key = WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: [.codex]
+        )
+        await coordinator.refresh(project: project, key: key, sessionStore: store, restartFromFirst: true)
+        XCTAssertEqual(client.callCount(for: "codex"), 13, "1 standalone single-page call + at most 12 budgeted coordinator RPCs")
+    }
 }
 
 private final class MergedCoordinatorTestClient: SessionStoreAPIClient {

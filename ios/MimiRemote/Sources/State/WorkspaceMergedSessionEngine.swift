@@ -403,6 +403,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
         targetVisibleCount: Int,
         cachedFallbackSessions: [AgentSession] = [],
         canonicalByKey: [CanonicalSessionKey: AgentSession] = [:],
+        knownOwnership: [CanonicalSessionKey: SubagentOwnershipEvidence] = [:],
         archivedKeys: Set<CanonicalSessionKey> = [],
         newlyCreatedSessions: [AgentSession] = [],
         budgetExhausted: Bool = false
@@ -435,6 +436,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
             let preview = Self.deduplicatedAndSorted(
                 cachedFallbackSessions,
                 hostScope: hostScope,
+                knownOwnership: knownOwnership,
                 archivedKeys: archivedKeys
             )
             return WorkspaceMergedProjection(
@@ -504,6 +506,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
                 let canonical = canonicalByKey[raw.canonicalKey]
                 let mergedOwnership = raw.ownership
                     .merged(with: knownOwnershipByKey[raw.canonicalKey])
+                    .merged(with: knownOwnership[raw.canonicalKey])
                     .merged(with: canonical.map(SubagentOwnershipEvidence.init(session:)))
                 guard !mergedOwnership.isSubagent else { continue }
 
@@ -538,7 +541,10 @@ struct WorkspaceMergedSessionEngine: Equatable {
             let key = CanonicalSessionKey(session: created, hostScope: hostScope)
             guard !archivedKeys.contains(key),
                   rankedByKey[key] == nil,
-                  !SubagentOwnershipEvidence(session: created).isSubagent else {
+                  !SubagentOwnershipEvidence(session: created)
+                      .merged(with: knownOwnershipByKey[key])
+                      .merged(with: knownOwnership[key])
+                      .isSubagent else {
                 continue
             }
             let evidence = RawSortEvidence.fromSession(created)
@@ -708,6 +714,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
     private static func deduplicatedAndSorted(
         _ sessions: [AgentSession],
         hostScope: HostScope,
+        knownOwnership: [CanonicalSessionKey: SubagentOwnershipEvidence] = [:],
         archivedKeys: Set<CanonicalSessionKey>
     ) -> [AgentSession] {
         struct SortableCachedEntry {
@@ -723,7 +730,9 @@ struct WorkspaceMergedSessionEngine: Equatable {
         for item in sessions {
             let key = CanonicalSessionKey(session: item, hostScope: hostScope)
             guard !archivedKeys.contains(key),
-                  !SubagentOwnershipEvidence(session: item).isSubagent,
+                  !SubagentOwnershipEvidence(session: item)
+                      .merged(with: knownOwnership[key])
+                      .isSubagent,
                   seen.insert(key).inserted else {
                 continue
             }
