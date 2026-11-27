@@ -1027,10 +1027,12 @@ func sanitizedGatewayThreadTurnsListParams(runtimeID string, params map[string]a
 
 func sanitizedGatewayThreadListParams(runtimeID string, params map[string]any) map[string]any {
 	keys := []string{"cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly"}
-	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
-		// Claude bridge 没有独立的 thread/search，搜索走 thread/list 的 searchTerm。
-		// Codex 有 thread/search，这里不放行以免同一能力出现两条语义不同的入口。
-		keys = append(keys, "refreshHistory", "searchTerm")
+	spec, _ := appServerRuntimeSpecFor(runtimeID)
+	if spec.ThreadListSearch {
+		keys = append(keys, "searchTerm")
+	}
+	if spec.ID == appServerRuntimeClaudeID {
+		keys = append(keys, "refreshHistory")
 	}
 	return copyGatewayParams(params, keys...)
 }

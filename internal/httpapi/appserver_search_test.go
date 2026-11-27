@@ -12,6 +12,31 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestThreadListSearchForwardingByRuntime(t *testing.T) {
+	request := []byte(`{"id":1,"method":"thread/list","params":{"searchTerm":"Desktop","sortKey":"updated_at","sortDirection":"desc","archived":false,"limit":50,"useStateDbOnly":false}}`)
+	for _, runtimeID := range []string{"agy", "claude", "codex"} {
+		t.Run(runtimeID, func(t *testing.T) {
+			policy, _, _ := newThreadSearchPolicy(t)
+			policy.runtimeID = runtimeID
+			frame, err := policy.validateClientFrame(websocket.TextMessage, request)
+			if err != nil {
+				t.Fatal(err.message)
+			}
+			params := decodeGatewayParamsForTest(t, frame)
+			if runtimeID == "codex" {
+				if _, ok := params["searchTerm"]; ok {
+					t.Fatal("Codex has a dedicated thread/search method")
+				}
+			} else if params["searchTerm"] != "Desktop" {
+				t.Fatalf("thread/list lost the adapter search term: %v", params)
+			}
+			if params["sortKey"] != "updated_at" || params["sortDirection"] != "desc" || params["archived"] != false {
+				t.Fatalf("thread/list filters changed: %v", params)
+			}
+		})
+	}
+}
+
 func TestAppServerGatewayThreadSearchParamsAreStrictlyRebuilt(t *testing.T) {
 	if _, ok := appServerAllowedMethods["thread/search"]; !ok {
 		t.Fatal("Codex gateway allowlist 应包含 thread/search")
