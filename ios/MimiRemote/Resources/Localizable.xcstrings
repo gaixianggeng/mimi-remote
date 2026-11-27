@@ -12952,23 +12952,6 @@
         }
       }
     },
-    "ui.enable_tailcat_experiment": {
-      "comment": "Toggle label for the Tailcat transport experiment.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use Tailcat experimental mode"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "使用 Tailcat 实验模式"
-          }
-        }
-      }
-    },
     "ui.enabled_runtimes_footer": {
       "extractionState": "manual",
       "localizations": {
@@ -13835,24 +13818,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "预计 %@ 重置"
-          }
-        }
-      }
-    },
-    "ui.experimental_features": {
-      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental Features"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实验功能"
           }
         }
       }
@@ -39618,40 +39583,6 @@
         }
       }
     },
-    "ui.tailcat_experiment_enabled": {
-      "comment": "Settings summary when the Tailcat experiment is enabled.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tailcat mode on"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tailcat 模式已开启"
-          }
-        }
-      }
-    },
-    "ui.tailcat_experiment_summary": {
-      "comment": "Explains what the Tailcat experiment changes.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When on, all requests use Tailcat only. Your saved Tailscale connection remains unchanged and resumes when this switch is off."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开启后，所有请求只走 Tailcat。已保存的 Tailscale 连接不会被修改；关闭开关后恢复使用。"
-          }
-        }
-      }
-    },
     "ui.tailcat_failure_network_cellular": {
       "comment": "Device network type when the connection failed.",
       "localizations": {
@@ -40107,23 +40038,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "HTTP 请求：%@ ms"
-          }
-        }
-      }
-    },
-    "ui.tailcat_safety_note": {
-      "comment": "Safety warning for the experimental Tailcat transport.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental transport. Keep the existing Tailscale profile until real-device HTTP, WebSocket, file transfer, reconnect, and background recovery tests pass."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这是实验传输。在真机完成 HTTP、WebSocket、文件传输、重连和后台恢复验证前，请保留现有 Tailscale 连接档案。"
           }
         }
       }

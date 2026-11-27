@@ -22,7 +22,7 @@ var version = "devel"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "Tailcat 实验失败："+err.Error())
+		fmt.Fprintln(os.Stderr, "Tailcat 失败："+err.Error())
 		os.Exit(1)
 	}
 }
