@@ -250,10 +250,11 @@ extension ComposerView {
         .help(ComposerTurnSettingsPolicy.unavailableMenuNotice)
     }
 
-    /// 与 `composerInputRow` / `phoneComposerCardBox` 一致：只有 iPhone 悬浮输入卡启用透明玻璃，
-    /// iPad 常规宽档与分屏窄档输入卡均使用实色底板。
+    /// 会话输入卡、待发送预览、模型九宫格和「+」面板请求同一套悬浮玻璃。
+    /// iPhone 与 iPad、窄档与宽档都不在这里分叉；经典模式、降低透明度、增强对比度
+    /// 和 iOS 26 以下的回退由 `ComposerCardResolvedSurface` 统一决定。
     var composerUsesFloatingGlassSurface: Bool {
-        usesNarrowComposerLayout && phoneKeyboardVisible != nil
+        true
     }
 
     private var modelGridPickerPopoverContent: some View {

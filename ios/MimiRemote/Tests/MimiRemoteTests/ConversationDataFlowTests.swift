@@ -931,34 +931,23 @@ final class ConversationDataFlowTests: XCTestCase {
     }
 
     func testTranslucentComposerBackdropRequiresSystemSoftScrollEdge() {
-        // 半透明底衬最深只有 10–12%，真正虚化正文的是 soft scroll edge。紧凑宽度的
-        // composerBottomPadding 是 0，底衬又要盖到 home indicator，所以没有 soft edge
-        // 的 iOS 18–25 必须退回实色，否则正文会近乎全对比度地从输入卡下沿滚过去。
+        // 半透明底衬最深只有 10–12%，真正虚化正文的是 soft scroll edge。iPhone 与 iPad
+        // 共用这条规则，悬浮玻璃才有正文可折射。没有 soft edge 的 iOS 18–25 必须退回实色。
         XCTAssertTrue(
             ConversationView.usesTranslucentComposerBackdrop(
-                isPhone: true,
                 reduceTransparency: false,
                 hasSoftScrollEdge: true
             )
         )
         XCTAssertFalse(
             ConversationView.usesTranslucentComposerBackdrop(
-                isPhone: true,
                 reduceTransparency: false,
                 hasSoftScrollEdge: false
             )
         )
         XCTAssertFalse(
             ConversationView.usesTranslucentComposerBackdrop(
-                isPhone: true,
                 reduceTransparency: true,
-                hasSoftScrollEdge: true
-            )
-        )
-        XCTAssertFalse(
-            ConversationView.usesTranslucentComposerBackdrop(
-                isPhone: false,
-                reduceTransparency: false,
                 hasSoftScrollEdge: true
             )
         )

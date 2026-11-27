@@ -536,19 +536,7 @@ extension ComposerView {
         .padding(.horizontal, singleLine ? 6 : 8)
         .padding(.vertical, singleLine ? 4 : 8)
         .frame(maxWidth: .infinity)
-        .modifier(
-            ComposerCardSurfaceModifier(
-                shape: shape,
-                tokens: tokens,
-                colorScheme: colorScheme,
-                reduceTransparency: reduceTransparency,
-                increasedContrast: colorSchemeContrast == .increased,
-                usesFloatingGlass: true,
-                voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
-                solidBorderColor: composerCardBorderColor(tokens),
-                borderWidth: composerCardBorderWidth
-            )
-        )
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
@@ -733,12 +721,7 @@ extension ComposerView {
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .padding(8)
         .frame(maxWidth: .infinity)
-        .background {
-            composerContainerBackground(shape: shape, tokens: tokens)
-        }
-        .overlay {
-            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
-        }
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
         .accessibilityLabel(L10n.text("ui.expand_input_box"))
         .accessibilityValue(collapsedComposerText)

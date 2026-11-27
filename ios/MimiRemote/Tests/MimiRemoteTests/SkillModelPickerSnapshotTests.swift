@@ -808,43 +808,90 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             }
         }
 
-        // 2. 常规宽档 iPad Popover（输入卡为实色）：始终走 `.popoverContentSurface` + `.solidComposerCard`，
-        //    不请求手机悬浮玻璃，也不依赖宿主决定材质或回退。
+        // 2. 常规宽档 iPad Popover：与 iPhone 一样请求悬浮玻璃。玻璃模式走单层 Liquid Glass
+        //    或 ultraThinMaterial；经典模式、降低透明度、增强对比度回退实色。圆角仍跟宽档输入卡的 20pt。
         for interfaceStyle in ThemeInterfaceStyle.allCases {
             for reduceTransparency in [false, true] {
                 for increasedContrast in [false, true] {
                     for supportsLiquidGlass in [false, true] {
                         let policy = ModelReasoningGridPresentationChrome.resolvePolicy(
-                            surfaceMode: .presentation(container: .regularPopover, usesFloatingGlass: false),
+                            surfaceMode: .presentation(container: .regularPopover, usesFloatingGlass: true),
                             interfaceStyle: interfaceStyle,
                             reduceTransparency: reduceTransparency,
                             increasedContrast: increasedContrast,
                             supportsLiquidGlass: supportsLiquidGlass
                         )
-                        XCTAssertEqual(policy.surfaceStyle, .solidComposerCard)
-                        XCTAssertEqual(policy.surfaceStyle.composerCardSurface, .solidCard)
-                        XCTAssertEqual(policy.backgroundOwner, .popoverContentSurface)
-                        XCTAssertFalse(policy.usesFloatingGlass)
-                        XCTAssertFalse(policy.usesTranslucentInnerChrome)
+                        let expectsGlass = interfaceStyle == .glass
+                            && !reduceTransparency
+                            && !increasedContrast
+                        let expectedStyle: ModelReasoningGridSurfaceStyle = expectsGlass
+                            ? (supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial)
+                            : .solidComposerCard
+                        let expectedCardSurface = ComposerCardResolvedSurface.resolve(
+                            usesFloatingGlass: true,
+                            interfaceStyle: interfaceStyle,
+                            reduceTransparency: reduceTransparency,
+                            increasedContrast: increasedContrast,
+                            supportsLiquidGlass: supportsLiquidGlass
+                        )
+                        XCTAssertEqual(policy.surfaceStyle, expectedStyle)
+                        XCTAssertEqual(policy.surfaceStyle.composerCardSurface, expectedCardSurface)
+                        XCTAssertEqual(
+                            policy.backgroundOwner,
+                            expectsGlass ? .sheetPresentationBackground : .popoverContentSurface
+                        )
+                        XCTAssertTrue(policy.usesFloatingGlass)
+                        XCTAssertEqual(policy.usesTranslucentInnerChrome, expectsGlass)
                         XCTAssertEqual(policy.cornerRadius, 20)
                         XCTAssertEqual(policy.borderWidth, increasedContrast ? 1.25 : 0.75)
+                        XCTAssertEqual(
+                            expectedCardSurface,
+                            expectsGlass
+                                ? (supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial)
+                                : .solidCard,
+                            "iPad 宽档与 iPhone 共用 ComposerCardResolvedSurface"
+                        )
                     }
                 }
             }
         }
 
-        // 3. iPad 分屏窄档（输入卡为实色、容器适配为 Sheet）：走 `.sheetPresentationBackground` + `.solidComposerCard`。
-        let splitSheetPolicy = ModelReasoningGridPresentationChrome.resolvePolicy(
+        // 3. iPad 分屏窄档同样请求悬浮玻璃：标准字号是紧凑 Popover，不是实色 Sheet。
+        //    显式关闭悬浮玻璃的调用仍保持实色 Sheet，避免误改独立嵌入路径。
+        XCTAssertEqual(
+            ModelReasoningGridPresentationContainer.resolve(
+                horizontalSizeClass: .compact,
+                verticalSizeClass: .regular,
+                usesFloatingGlass: true,
+                isAccessibilitySize: false
+            ),
+            .compactPopover
+        )
+        let splitGlassPolicy = ModelReasoningGridPresentationChrome.resolvePolicy(
+            surfaceMode: .presentation(container: .compactPopover, usesFloatingGlass: true),
+            interfaceStyle: .glass,
+            reduceTransparency: false,
+            increasedContrast: false,
+            supportsLiquidGlass: true
+        )
+        XCTAssertEqual(splitGlassPolicy.surfaceStyle, .liquidGlass)
+        XCTAssertEqual(splitGlassPolicy.surfaceStyle.composerCardSurface, .liquidGlass)
+        XCTAssertEqual(splitGlassPolicy.backgroundOwner, .sheetPresentationBackground)
+        XCTAssertTrue(splitGlassPolicy.usesFloatingGlass)
+        XCTAssertTrue(splitGlassPolicy.usesTranslucentInnerChrome)
+
+        let splitOptOutPolicy = ModelReasoningGridPresentationChrome.resolvePolicy(
             surfaceMode: .presentation(container: .compactSheet, usesFloatingGlass: false),
             interfaceStyle: .glass,
             reduceTransparency: false,
             increasedContrast: false,
             supportsLiquidGlass: true
         )
-        XCTAssertEqual(splitSheetPolicy.surfaceStyle, .solidComposerCard)
-        XCTAssertEqual(splitSheetPolicy.backgroundOwner, .sheetPresentationBackground)
-        XCTAssertFalse(splitSheetPolicy.usesFloatingGlass)
-        XCTAssertFalse(splitSheetPolicy.usesTranslucentInnerChrome)
+        XCTAssertEqual(splitOptOutPolicy.surfaceStyle, .solidComposerCard)
+        XCTAssertEqual(splitOptOutPolicy.surfaceStyle.composerCardSurface, .solidCard)
+        XCTAssertEqual(splitOptOutPolicy.backgroundOwner, .sheetPresentationBackground)
+        XCTAssertFalse(splitOptOutPolicy.usesFloatingGlass)
+        XCTAssertFalse(splitOptOutPolicy.usesTranslucentInnerChrome)
 
         // 4. 独立嵌入默认模式保持实色 `tokens.surface`。
         let standalonePolicy = ModelReasoningGridPresentationChrome.resolvePolicy(
@@ -859,7 +906,7 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertFalse(standalonePolicy.usesTranslucentInnerChrome)
     }
 
-    /// 实色回退（降低透明度、增强对比度、经典模式、常规 iPad Popover）下，
+    /// 实色回退（降低透明度、增强对比度、经典模式）下，
     /// 所有主题的亮/暗色板小字对比度均必须 ≥ 4.5:1（含 GitHub 深色、Xcode 浅色、Gruvbox 浅色），
     /// 且选中带内联档位标签的格子（GPT-5.6 Luna `max`）时，选中圆点与光晕必须完全避开标签文字，
     /// 避免不透明覆盖层遮挡文字导致真实对比度失真。
@@ -911,11 +958,11 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         }
 
         let scenarios: [(String, ModelReasoningGridSurfaceMode, ThemeInterfaceStyle, Bool, Bool)] = [
-            ("regularPopover-glass", .presentation(container: .regularPopover, usesFloatingGlass: false), .glass, false, false),
+            ("regularPopover-classic", .presentation(container: .regularPopover, usesFloatingGlass: true), .classic, false, false),
             ("compactSheet-classic", .presentation(container: .compactSheet, usesFloatingGlass: true), .classic, false, false),
             ("compactSheet-reduceTransparency", .presentation(container: .compactSheet, usesFloatingGlass: true), .glass, true, false),
             ("compactSheet-increasedContrast", .presentation(container: .compactSheet, usesFloatingGlass: true), .glass, false, true),
-            ("regularPopover-increasedContrast", .presentation(container: .regularPopover, usesFloatingGlass: false), .glass, true, true),
+            ("regularPopover-increasedContrast", .presentation(container: .regularPopover, usesFloatingGlass: true), .glass, true, true),
         ]
 
         for preset in ThemePreset.allCases {
@@ -1227,8 +1274,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             options: codex56SnapshotModels
         )
 
-        // 1. 常规 iPad Popover（亮/暗）：从真实 `ComposerView` 的 `composer.model` 触发，
-        //    面板底色直接对照同一窗口内真实渲染的输入框底色，不依赖 Picker 自己的填色函数，并验证 20pt 圆角与关闭重开。
+        // 1. 常规 iPad Popover（亮/暗，含 iPad mini 竖屏宽档）：从真实 `ComposerView` 的 `composer.model` 触发。
+        //    玻璃模式与 iPhone 一样透出并柔化背后条纹；经典模式回退实色，并与同一窗口输入卡底色一致。
         for colorScheme in [ColorScheme.light, .dark] {
             let capture = try await captureRealComposerModelPicker(
                 label: "real-regular-popover-\(colorScheme)",
@@ -1245,33 +1292,52 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 capture.presentedController.presentationController is UIPopoverPresentationController,
                 "常规 iPad 宽档应保持 Popover 呈现 (\(colorScheme))"
             )
+            XCTAssertFalse(capture.isAdaptedSheet, "常规 iPad 宽档不应压成贴底 Sheet (\(colorScheme))")
             XCTAssertLessThan(
                 capture.presentedFrame.maxY,
                 700 - 20,
                 "常规 iPad Popover 应锚定在按钮上方而非贴底 Sheet (\(colorScheme))"
             )
-            XCTAssertLessThan(
+            XCTAssertGreaterThan(
+                capture.exposedStripeEdgeGradient,
+                0.55,
+                "常规 iPad 悬浮 Popover 不应叠加全屏压暗遮罩 (\(colorScheme))"
+            )
+            XCTAssertGreaterThan(
                 capture.panelAcrossStripeDelta,
                 0.04,
-                "常规 iPad Popover 应由自身共享实色表面遮盖背后锐利条纹 (\(colorScheme))"
+                "常规 iPad 玻璃 Popover 应对背后亮暗条纹产生清晰透光差异 (\(colorScheme))"
             )
             XCTAssertLessThan(
-                meanChannelDifference(capture.panelSampleRGB, capture.actualComposerCardRGB),
-                0.06,
-                "常规 iPad Popover 底色应与真实渲染的宽档输入卡底色一致 (\(colorScheme))"
+                capture.panelStripeEdgeGradient,
+                capture.exposedStripeEdgeGradient * 0.55,
+                "常规 iPad 玻璃 Popover 必须柔化背后锐利条纹边界 (\(colorScheme))"
             )
-            if let arrowRGB = capture.popoverArrowRGB {
-                // 深色模式下系统 Popover 箭头边缘带有轻微高光描边，允许 0.12 容差以区分真正的底色失配。
-                XCTAssertLessThan(
-                    meanChannelDifference(arrowRGB, capture.panelSampleRGB),
-                    0.12,
-                    "常规 iPad Popover 箭头与面板交界底色应保持一致 (\(colorScheme))"
-                )
-            } else {
-                XCTFail("未能采样到常规 iPad Popover 箭头像素 (\(colorScheme))")
-            }
             XCTAssertTrue(capture.reopenedAfterDismiss, "常规 iPad Popover 关闭后经真实入口必须可干净重开 (\(colorScheme))")
         }
+
+        let regularClassicCapture = try await captureRealComposerModelPicker(
+            label: "real-regular-popover-classic-light",
+            windowSize: CGSize(width: 900, height: 700),
+            horizontalSizeClass: .regular,
+            verticalSizeClass: .regular,
+            phoneKeyboardVisible: nil,
+            colorScheme: .light,
+            interfaceStyle: .classic,
+            increasedContrast: false,
+            dynamicTypeSize: .large
+        )
+        XCTAssertFalse(regularClassicCapture.isAdaptedSheet)
+        XCTAssertLessThan(
+            regularClassicCapture.panelAcrossStripeDelta,
+            0.03,
+            "经典模式下 iPad 宽档 Popover 应回退实色，不透出背后锐利条纹"
+        )
+        XCTAssertLessThan(
+            meanChannelDifference(regularClassicCapture.panelSampleRGB, regularClassicCapture.actualComposerCardRGB),
+            0.06,
+            "经典模式 iPad 宽档 Popover 底色应与同一窗口内真实输入卡一致"
+        )
 
         // 2. 紧凑悬浮玻璃 Popover（亮/暗）：从真实展开态 iPhone `ComposerView`（`phoneKeyboardVisible = true`）的 `composer.model` 触发，
         //    与「+」面板一样以无遮罩悬浮 Popover 呈现（单层原生 Liquid Glass，不再双层发雾或整屏压暗），
@@ -1364,10 +1430,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
         XCTAssertTrue(accessibleCapture.reopenedAfterDismiss)
 
-        // 4. iPad 分屏窄档（`phoneKeyboardVisible == nil`）：真实 `ComposerView` 使用实色输入卡，
-        //    打开的模型 Sheet 也跟随同一实色输入卡底板，不强套手机悬浮玻璃。
-        let splitSheetCapture = try await captureRealComposerModelPicker(
-            label: "real-compact-split-solid-light",
+        // 4. iPad 分屏窄档（`phoneKeyboardVisible == nil`，宽度仍是窄档）：与 iPhone 一样走悬浮玻璃 Popover，
+        //    不再因为缺少手机键盘环境而退回实色 Sheet。
+        let splitGlassCapture = try await captureRealComposerModelPicker(
+            label: "real-compact-split-glass-light",
             windowSize: CGSize(width: 390, height: 844),
             horizontalSizeClass: .compact,
             verticalSizeClass: .regular,
@@ -1377,18 +1443,22 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             increasedContrast: false,
             dynamicTypeSize: .large
         )
-        XCTAssertTrue(splitSheetCapture.isAdaptedSheet)
-        XCTAssertLessThan(splitSheetCapture.panelAcrossStripeDelta, 0.03)
+        XCTAssertFalse(splitGlassCapture.isAdaptedSheet, "iPad 分屏窄档标准字号应保持悬浮 Popover")
+        XCTAssertGreaterThan(
+            splitGlassCapture.panelAcrossStripeDelta,
+            0.04,
+            "iPad 分屏窄档玻璃 Popover 应对背后亮暗条纹产生清晰透光差异"
+        )
         XCTAssertLessThan(
-            meanChannelDifference(splitSheetCapture.panelSampleRGB, splitSheetCapture.actualComposerCardRGB),
-            0.06,
-            "iPad 分屏窄档 Sheet 应匹配同一窗口内真实实色输入卡底色"
+            splitGlassCapture.panelStripeEdgeGradient,
+            splitGlassCapture.exposedStripeEdgeGradient * 0.55,
+            "iPad 分屏窄档玻璃 Popover 必须柔化背后锐利条纹边界"
         )
     }
 
     /// 真实 `ComposerView` 的「+」按钮（`composer.addContent`）呈现验证：
     /// iPhone 玻璃模式下呈现与输入框、模型九宫格同源的单层原生 Liquid Glass Popover；
-    /// 经典模式、增强对比度及 iPad 实色输入卡下均回退为与真实输入卡一致的实色表面。
+    /// 经典模式与增强对比度下均回退为与真实输入卡一致的实色表面。
     func testAddContentPanelPresentationMatchesComposerGlassAndFallbacks() async throws {
         for colorScheme in [ColorScheme.light, .dark] {
             let glassCapture = try await captureRealComposerModelPicker(

@@ -912,7 +912,7 @@ struct ComposerView: View {
                 }
             }
             .padding(10)
-            // 待发送内容悬浮在正文上方，与当前输入卡保持同一套表面材质（iPhone 同步透明玻璃）。
+            // 待发送内容悬浮在正文上方，与当前输入卡保持同一套表面材质（iPhone 与 iPad 都是透明玻璃）。
             // 圆角略小于主输入框，保留二级浮层层级，不与主要输入操作争夺注意力。
             .modifier(
                 ComposerCardSurfaceModifier(
@@ -921,7 +921,7 @@ struct ComposerView: View {
                     colorScheme: colorScheme,
                     reduceTransparency: reduceTransparency,
                     increasedContrast: colorSchemeContrast == .increased,
-                    usesFloatingGlass: phoneKeyboardVisible != nil,
+                    usesFloatingGlass: composerUsesFloatingGlassSurface,
                     voiceAccentBorderColor: nil,
                     solidBorderColor: tokens.border.opacity(0.58),
                     borderWidth: 0.75
@@ -1117,12 +1117,7 @@ struct ComposerView: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity)
-        .background {
-            composerContainerBackground(shape: shape, tokens: tokens)
-        }
-        .overlay {
-            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
-        }
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
     }
 
@@ -1150,35 +1145,27 @@ struct ComposerView: View {
         }
         .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
-        .background {
-            composerContainerBackground(shape: shape, tokens: tokens)
-        }
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
-        .overlay {
-            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
-        }
     }
 
-    @ViewBuilder
-    func composerContainerBackground(
+    /// iPhone 与 iPad 的输入卡共用这一层表面。玻璃是否落地由 `ComposerCardResolvedSurface`
+    /// 决定；正文经半透明底衬延伸到卡片后方，玻璃才有内容可折射。
+    func composerCardSurfaceModifier(
         shape: RoundedRectangle,
         tokens: ThemeTokens
-    ) -> some View {
-        // 输入卡是实色面，不是材质层。
-        //
-        // 正文由 `safeAreaInset` 让位，卡片后方压根没有内容可供 Material 采样折射；
-        // 之前那层 Material + tint + 两道阴影只在暖白画布上折射出第三圈模糊白边，
-        // 花了成本却买不到任何虚化。参考实现（Claude iOS）同样是一块实色近白面，
-        // 只靠单层柔和阴影与画布分离，这里对齐同一档质感。
-        let fill = colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
-        // 增强对比度时边界交给描边，阴影再压一档，避免和实线描边叠成脏边。
-        let shadowOpacity: Double = colorSchemeContrast == .increased
-            ? 0.05
-            : (colorScheme == .light ? 0.06 : 0.22)
-
-        shape
-            .fill(fill)
-            .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
+    ) -> ComposerCardSurfaceModifier<RoundedRectangle> {
+        ComposerCardSurfaceModifier(
+            shape: shape,
+            tokens: tokens,
+            colorScheme: colorScheme,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased,
+            usesFloatingGlass: composerUsesFloatingGlassSurface,
+            voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
+            solidBorderColor: composerCardBorderColor(tokens),
+            borderWidth: composerCardBorderWidth
+        )
     }
 
     func composerTextArea(tokens: ThemeTokens, singleLine: Bool = false) -> some View {

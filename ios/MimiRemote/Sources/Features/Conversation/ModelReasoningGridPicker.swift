@@ -34,7 +34,7 @@ enum ModelReasoningGridMetrics {
     static let dragCancellationMargin: CGFloat = 12
     /// 与手机底部展开态输入卡保持一致的连续圆角半径。
     static let panelCornerRadius: CGFloat = 26
-    /// 与 iPad 常规宽档实色输入卡保持一致的连续圆角半径。
+    /// 与 iPad 宽档输入卡保持一致的连续圆角半径。
     static let regularPopoverCornerRadius: CGFloat = 20
 
     static func standardContentHeight(modelRowCount: Int) -> CGFloat {

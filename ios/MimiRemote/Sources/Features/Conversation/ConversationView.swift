@@ -188,15 +188,14 @@ struct ConversationView: View {
     }
 
     /// 半透明底衬只有在系统自带 soft scroll edge 时才成立：它最深也只有 10–12%，
-    /// 真正把正文虚化掉的是滚动边缘效果。紧凑宽度的 composerBottomPadding 是 0，
-    /// 底衬又要一路盖到 home indicator，没有 soft edge 的 iOS 18–25 会让正文
+    /// 真正把正文虚化掉的是滚动边缘效果。没有 soft edge 的 iOS 18–25 会让正文
     /// 以近乎全对比度从输入卡下沿滚过去，所以旧系统必须退回实色。
+    /// iPhone 与 iPad 共用这条规则，悬浮玻璃才有正文可折射；按设备分叉会让 iPad 玻璃发白。
     static func usesTranslucentComposerBackdrop(
-        isPhone: Bool,
         reduceTransparency: Bool,
         hasSoftScrollEdge: Bool
     ) -> Bool {
-        isPhone && !reduceTransparency && hasSoftScrollEdge
+        !reduceTransparency && hasSoftScrollEdge
     }
 
     static var systemProvidesSoftScrollEdge: Bool {
@@ -370,13 +369,12 @@ struct ConversationView: View {
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
         let usesTranslucentBackdrop = Self.usesTranslucentComposerBackdrop(
-            isPhone: UIDevice.current.userInterfaceIdiom == .phone,
             reduceTransparency: reduceTransparency,
             hasSoftScrollEdge: Self.systemProvidesSoftScrollEdge
         )
         return Group {
             if !usesTranslucentBackdrop {
-                // 辅助功能、iPad，以及没有 soft scroll edge 的旧系统都使用确定性实色。
+                // 降低透明度，以及没有 soft scroll edge 的旧系统，都使用确定性实色。
                 tokens.conversationCanvasBackground
             } else {
                 // 只保留一条连续衰减。此前在 inset 上沿额外拼接 28pt 渐变，交界处会从

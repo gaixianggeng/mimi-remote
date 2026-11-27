@@ -1116,7 +1116,7 @@ enum ComposerCardResolvedSurface: Equatable {
 /// - iOS 26+ 玻璃模式下直接复用系统原生单层 Liquid Glass Popover/Sheet，
 ///   避免在系统玻璃容器之上再叠第二层 `.glassEffect` 造成浅色发白、深色发雾或双重边框；
 /// - iOS 18–25 玻璃模式下使用 `.ultraThinMaterial`，与悬浮输入卡保持一致；
-/// - 经典风格、降低透明度、增强对比度以及 iPad 实色输入卡统一回退到与输入卡逐像素一致的实色底板。
+/// - 经典风格、降低透明度、增强对比度在 iPhone 与 iPad 上统一回退到与输入卡逐像素一致的实色底板。
 enum ComposerPopupPresentationSurface {
     static func solidFillColor(
         tokens: ThemeTokens,

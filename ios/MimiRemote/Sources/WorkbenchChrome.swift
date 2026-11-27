@@ -1623,7 +1623,7 @@ enum SessionNavigationTitlePresentation {
     }
 
     static func showsWorkspaceIcon(layout: WorkbenchLayout, projectID: String?) -> Bool {
-        guard layout.usesPhoneIntegratedBottomChrome,
+        guard PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: layout),
               let projectID = projectID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !projectID.isEmpty else {
             return false
@@ -1660,7 +1660,7 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// iPhone 会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
+/// 紧凑导航会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
 private struct WorkbenchUsesFloatingCapsuleHeaderKey: EnvironmentKey {
     static let defaultValue = false
 }

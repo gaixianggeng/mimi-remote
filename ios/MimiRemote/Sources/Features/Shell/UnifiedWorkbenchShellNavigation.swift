@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// iPhone 会话详情页三件式悬浮玻璃顶栏的度量与开关策略。
+/// 紧凑导航会话详情页三件式悬浮玻璃顶栏的度量与开关策略。iPhone 与 iPad 窄窗共用。
 /// 视觉结构为三块独立悬浮玻璃件：左侧圆形返回按钮、中间水平居中单行标题胶囊（工作区图标 + 标题）、
 /// 右侧圆形更多菜单按钮；三者高度一致、垂直居中对齐、视觉完全分离。
 enum PhoneSessionFloatingCapsuleMetrics {
@@ -31,9 +31,10 @@ enum PhoneSessionFloatingCapsuleMetrics {
     /// 中间胶囊内工作区图标尺寸。
     static let workspaceIconSize: CGFloat = 24
 
-    /// 仅对 iPhone 紧凑导航启用悬浮玻璃顶栏；iPad（窄窗、竖屏、横屏）保持原有系统导航栏不变。
+    /// 紧凑导航的会话详情（iPhone，以及 iPad mini 竖屏、窄窗、分屏）使用悬浮玻璃顶栏。
+    /// 宽屏侧栏 / 分栏仍留系统导航栏，检查器、刷新和侧栏入口不被这套三件式顶栏替换。
     static func isEnabled(layout: WorkbenchLayout) -> Bool {
-        layout.usesPhoneIntegratedBottomChrome
+        layout.usesCompactNavigation
     }
 
     /// 计算当前容器宽度下中间胶囊可用的最大空间（扣除左右屏边距、左右按钮及最小间距）。
@@ -77,7 +78,7 @@ struct SessionNavigationTitleDisplayData {
     let workspaceIcon: WorkspaceProjectIconContent?
 }
 
-/// iPhone 会话详情页三件式悬浮玻璃顶栏：
+/// 紧凑导航会话详情页三件式悬浮玻璃顶栏：
 /// 左侧独立圆形返回按钮、中间独立居中标题胶囊（仅含工作区图标 + 单行截断标题）、右侧独立圆形更多菜单按钮。
 /// 三者高度一致、垂直居中对齐，按系统版本自动采用 iOS 26 Liquid Glass、旧版 `.ultraThinMaterial` 或减少透明度实色。
 struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
