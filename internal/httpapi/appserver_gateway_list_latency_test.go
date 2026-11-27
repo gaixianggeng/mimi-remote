@@ -60,17 +60,41 @@ func TestGlobalThreadListDoesNotRepeatGitBeforeQueuedReply(t *testing.T) {
 	}
 }
 
+func observeGlobalListForLatencyTest(t *testing.T, policy *appServerGatewayPolicy, payload []byte) ([]map[string]any, error) {
+	t.Helper()
+	id := json.RawMessage(`1`)
+	if err := policy.rememberPendingThreadRequest(&id, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest: %v", err)
+	}
+	out, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if policyErr != nil {
+		return nil, fmt.Errorf("%s", policyErr.message)
+	}
+	if !forward {
+		return nil, fmt.Errorf("thread/list response dropped")
+	}
+	var decoded struct {
+		Result struct {
+			Data []map[string]any `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded.Result.Data, nil
+}
+
 func TestGlobalThreadListDoesNotProbeGitForKnownProjects(t *testing.T) {
 	projectDir := newCommittedGitRepo(t)
 	policy := globalListLatencyPolicy(t, projectDir, t.TempDir())
 	gitCalls := countGlobalListGitCalls(t)
 	for _, count := range []int{0, 30} {
-		_, allowed, err := policy.sanitizeGlobalThreadListResponse(
-			globalListLatencyPayload(t, projectDir, count),
-			appServerGatewayPendingThreadRequest{},
-		)
-		if err != nil || len(allowed) != count {
-			t.Fatalf("已配置项目的任务列表应完整保留：count=%d allowed=%d err=%v", count, len(allowed), err)
+		items, err := observeGlobalListForLatencyTest(t, policy, globalListLatencyPayload(t, projectDir, count))
+		if err != nil || len(items) != count {
+			t.Fatalf("已配置项目的任务列表应完整保留：count=%d items=%d err=%v", count, len(items), err)
 		}
 	}
 	if got := gitCalls(); got != 0 {
@@ -83,11 +107,9 @@ func TestGlobalThreadListDoesNotScanProjectsForNonRepository(t *testing.T) {
 	browseRoot := t.TempDir()
 	policy := globalListLatencyPolicy(t, projectDir, browseRoot)
 	gitCalls := countGlobalListGitCalls(t)
-	_, allowed, err := policy.sanitizeGlobalThreadListResponse(
-		globalListLatencyPayload(t, browseRoot, 30), appServerGatewayPendingThreadRequest{},
-	)
-	if err != nil || len(allowed) != 0 {
-		t.Fatalf("普通目录不能通过 Git 归属获得全局发现权限：allowed=%d err=%v", len(allowed), err)
+	items, err := observeGlobalListForLatencyTest(t, policy, globalListLatencyPayload(t, browseRoot, 30))
+	if err != nil || len(items) != 0 {
+		t.Fatalf("普通目录不能通过 Git 归属获得全局发现权限：items=%d err=%v", len(items), err)
 	}
 	if got := gitCalls(); got != 0 {
 		t.Fatalf("目录向上没有 .git 标记时不必调用 Git，也不应继续扫描项目：calls=%d", got)
@@ -103,14 +125,15 @@ func TestGlobalThreadListResolvesRepeatedWorkspaceOncePerPage(t *testing.T) {
 	gitCalls := countGlobalListGitCalls(t)
 	payload := globalListLatencyPayload(t, worktreeDir, 30)
 	started := time.Now()
-	_, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
+	items, err := observeGlobalListForLatencyTest(t, policy, payload)
 	t.Logf("30 条同目录任务的列表处理耗时：%s，Git 调用：%d", time.Since(started), gitCalls())
-	if err != nil || len(allowed) != 30 {
-		t.Fatalf("同仓外部 Worktree 的任务应完整保留：allowed=%d err=%v", len(allowed), err)
+	if err != nil || len(items) != 30 {
+		t.Fatalf("同仓外部 Worktree 的任务应完整保留：items=%d err=%v", len(items), err)
 	}
-	for _, thread := range allowed {
-		if !thread.readOnly || thread.canAcceptDirectInput {
-			t.Fatalf("外部 Worktree 仍必须只读：%+v", thread)
+	for i := 0; i < 30; i++ {
+		thread, ok := policy.allowedThread(fmt.Sprintf("thread-%d", i))
+		if !ok || !thread.readOnly || thread.canAcceptDirectInput {
+			t.Fatalf("外部 Worktree 仍必须只读：ok=%v %+v", ok, thread)
 		}
 	}
 	if got := gitCalls(); got != 2 {
@@ -122,9 +145,9 @@ func TestGlobalThreadListResolvesRepeatedWorkspaceOncePerPage(t *testing.T) {
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
-	_, allowed, err = policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
-	if err != nil || len(allowed) != 0 {
-		t.Fatalf("下一次响应不能沿用失效的仓库归属：allowed=%d err=%v", len(allowed), err)
+	items, err = observeGlobalListForLatencyTest(t, policy, payload)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("下一次响应不能沿用失效的仓库归属：items=%d err=%v", len(items), err)
 	}
 	if got := gitCalls(); got != 2 {
 		t.Errorf(".git 标记消失后按文件系统即可判定不在仓库，不必再调用 Git：total calls=%d", got)
@@ -147,10 +170,12 @@ func globalListLatencyPolicy(t *testing.T, projectDir, browseRoot string) *appSe
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &appServerGatewayPolicy{runtimeID: "codex", router: &Router{
-		projects: registry,
-		cfg:      config.Config{BrowseRoots: []string{browseRoot}, WorktreesRoot: t.TempDir()},
-	}}
+	router := &Router{
+		projects:       registry,
+		cfg:            config.Config{BrowseRoots: []string{browseRoot}, WorktreesRoot: t.TempDir()},
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	return newAppServerGatewayPolicy(router, "codex")
 }
 
 func globalListLatencyPayload(t *testing.T, cwd string, count int) []byte {

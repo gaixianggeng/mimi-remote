@@ -32,6 +32,44 @@ func gatewayThreadStatusIsNotLoaded(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &text) == nil && text == "notLoaded"
 }
 
+type gatewayWriterHoldersSnapshot struct {
+	enabled bool
+	held    map[string]struct{}
+	known   bool
+}
+
+// probeWriterHolders 在阶段 A 锁外只读探测候选 notLoaded 会话的 writer 锁状态，
+// 避免阶段 B 持锁或提交后才读取磁盘目录并改变响应字节数。
+func (p *appServerGatewayPolicy) probeWriterHolders(notLoadedIDs []string) gatewayWriterHoldersSnapshot {
+	if p == nil || p.router == nil || p.router.codexWriterLocks == nil || p.runtimeID != "codex" {
+		return gatewayWriterHoldersSnapshot{}
+	}
+	held, known := p.router.codexWriterLocks.HeldThreads(notLoadedIDs)
+	return gatewayWriterHoldersSnapshot{
+		enabled: true,
+		held:    held,
+		known:   known,
+	}
+}
+
+// applyWriterHolderAnnotationToMap 在纯内存中按预探测快照为单条响应对象写入 writerHeldElsewhere。
+func applyWriterHolderAnnotationToMap(item map[string]any, threadID string, statusRaw json.RawMessage, snapshot gatewayWriterHoldersSnapshot) {
+	if !snapshot.enabled {
+		return
+	}
+	delete(item, gatewayWriterHeldElsewhereField)
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || !gatewayThreadStatusIsNotLoaded(statusRaw) {
+		item[gatewayWriterHeldElsewhereField] = false
+		return
+	}
+	if _, isHeld := snapshot.held[threadID]; isHeld {
+		item[gatewayWriterHeldElsewhereField] = true
+	} else if snapshot.known {
+		item[gatewayWriterHeldElsewhereField] = false
+	}
+}
+
 // annotateWriterHolders 给 Codex 的 thread/list 结果标注占用情况。只有共享 App Server 报告
 // notLoaded 的会话才可能被别处持有：已加载的会话，锁就在共享实例自己手里。
 // 无法确认的会话不带这个字段，由客户端沿用已知值，不能写成 false。

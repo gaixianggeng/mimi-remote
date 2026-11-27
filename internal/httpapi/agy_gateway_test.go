@@ -323,14 +323,29 @@ func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *te
 	if err != nil {
 		t.Fatalf("marshal upstream payload: %v", err)
 	}
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
-		method: "thread/list",
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
 	}
-	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
-		t.Fatalf("expected read-only cwdMissing allowed thread, got %+v", allowed)
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(upstreamPayload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest failed: %v", err)
+	}
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, upstreamPayload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	allowedEntry, ok := policy.allowedThread("sess-removed")
+	if !ok || !allowedEntry.readOnly || !allowedEntry.cwdMissing || allowedEntry.canAcceptDirectInput {
+		t.Fatalf("expected read-only cwdMissing allowed thread, got ok=%v %+v", ok, allowedEntry)
 	}
 
 	var decoded struct {
@@ -352,8 +367,7 @@ func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *te
 		t.Fatalf("unexpected rewritten missing-dir item: %s", string(rewritten))
 	}
 
-	// Register allowed thread and verify thread/read validation succeeds for the missing-dir history.
-	policy.allowThread(allowed[0])
+	// Verify thread/read validation succeeds for the missing-dir history.
 	readRaw, _ := json.Marshal(map[string]any{
 		"thread": map[string]any{
 			"id":  "sess-removed",
@@ -465,19 +479,33 @@ func TestC15Round2GlobalListDiscoversDeletedBrowseOnlyDirectoryAsReadOnly(t *tes
 			"nextCursor": nil,
 		},
 	})
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
-		method: "thread/list",
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
 	}
-	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
-		t.Fatalf("deleted browse-only dir must be preserved in global list as readOnly+cwdMissing, got %+v", allowed)
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(upstreamPayload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest failed: %v", err)
+	}
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, upstreamPayload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	allowedEntry, ok := policy.allowedThread("sess-browse-deleted")
+	if !ok || !allowedEntry.readOnly || !allowedEntry.cwdMissing || allowedEntry.canAcceptDirectInput {
+		t.Fatalf("deleted browse-only dir must be preserved in global list as readOnly+cwdMissing, got ok=%v %+v", ok, allowedEntry)
 	}
 	if !strings.Contains(string(rewritten), `"cwdMissing":true`) {
 		t.Fatalf("expected cwdMissing=true in rewritten global list: %s", string(rewritten))
 	}
-	policy.allowThread(allowed[0])
 
 	readRaw, _ := json.Marshal(map[string]any{
 		"thread": map[string]any{
@@ -531,11 +559,20 @@ func TestC14Round2RestoredDirectoryRefreshesListAndDetailPermissionsOnSameConnec
 			"nextCursor": nil,
 		},
 	})
-	_, missingAllowed, err := policy.sanitizeGlobalThreadListResponse(listPayload, appServerGatewayPendingThreadRequest{method: "thread/list"})
-	if err != nil || len(missingAllowed) != 1 || !missingAllowed[0].cwdMissing || !missingAllowed[0].readOnly {
-		t.Fatalf("expected missing-dir thread cached as readOnly+cwdMissing, got %+v err=%v", missingAllowed, err)
+	listID := json.RawMessage(`1`)
+	if err := policy.rememberPendingThreadRequest(&listID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	policy.allowThread(missingAllowed[0])
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, listPayload); !forward || policyErr != nil {
+		t.Fatalf("global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	missingAllowed, ok := policy.allowedThread("sess-move")
+	if !ok || !missingAllowed.cwdMissing || !missingAllowed.readOnly {
+		t.Fatalf("expected missing-dir thread cached as readOnly+cwdMissing, got ok=%v %+v", ok, missingAllowed)
+	}
 
 	// Step 2: Restore directory on disk!
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -1347,19 +1384,30 @@ func TestB23Round5SpecialAndPercentLiteralPathsPreserveScopeAndWritability(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
+	}
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(payload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
 		method:          "thread/list",
 		globalDiscovery: true,
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if len(allowed) != 2 {
-		t.Fatalf("expected 2 allowed threads, got %d (%+v)", len(allowed), allowed)
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame failed: forward=%v err=%+v", forward, policyErr)
 	}
-	for _, entry := range allowed {
-		if entry.cwdMissing || entry.readOnly || !entry.canAcceptDirectInput {
-			t.Fatalf("expected thread %s to be writable and non-missing, got %+v", entry.id, entry)
+	for _, threadID := range []string{"thr-special", "thr-literal-pct"} {
+		entry, ok := policy.allowedThread(threadID)
+		if !ok || entry.cwdMissing || entry.readOnly || !entry.canAcceptDirectInput {
+			t.Fatalf("expected thread %s to be writable and non-missing, got ok=%v %+v", threadID, ok, entry)
 		}
 	}
 	var resp struct {

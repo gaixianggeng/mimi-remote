@@ -941,7 +941,7 @@ while IFS= read -r line; do
   printf '%%s\n' "$line" >> %q
   case "$line" in
   *'"method":"thread/list"'*)
-    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[{"id":"thr-danger"}]}}\n'
+    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[{"id":"thr-danger"}],"nextCursor":null}}\n'
     ;;
   esac
 done
@@ -1661,7 +1661,7 @@ func TestAppServerGatewayAuthorizesThreadIDsFromThreadListResponse(t *testing.T)
 			return
 		}
 		response := fmt.Sprintf(
-			`{"id":%s,"result":{"data":[{"id":"thread-authorized","cwd":%q}]}}`,
+			`{"id":%s,"result":{"data":[{"id":"thread-authorized","cwd":%q}],"nextCursor":null}}`,
 			string(*frame.ID),
 			projectDir,
 		)
@@ -2827,7 +2827,7 @@ func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
 	payload := []byte(fmt.Sprintf(
-		`{"id":42,"result":{"data":[{"id":"thread-pending","cwd":%q}]}}`,
+		`{"id":42,"result":{"data":[{"id":"thread-pending","cwd":%q}],"nextCursor":null}}`,
 		projectDir,
 	))
 
@@ -2884,7 +2884,7 @@ func respondToThreadListAuthorization(t *testing.T, conn *websocket.Conn, payloa
 		return
 	}
 	response := fmt.Sprintf(
-		`{"id":%s,"result":{"data":[{"id":%q,"cwd":%q}]}}`,
+		`{"id":%s,"result":{"data":[{"id":%q,"cwd":%q}],"nextCursor":null}}`,
 		string(*frame.ID),
 		threadID,
 		projectDir,

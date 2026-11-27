@@ -391,6 +391,9 @@ func gatewayHistoryBudgetSubject(request appServerGatewayPendingHistoryRequest) 
 	if request.method == "thread/search" {
 		return "thread-search"
 	}
+	if request.method == "thread/list" && strings.TrimSpace(request.cwd) == "" {
+		return "thread-list-global"
+	}
 	return strings.TrimSpace(request.cwd)
 }
 
@@ -504,9 +507,21 @@ func (p *appServerGatewayPolicy) recordHistoryResponseBudget(request appServerGa
 	if subject == "" || strings.TrimSpace(request.method) == "" {
 		return
 	}
-	now := time.Now()
-	key := gatewayHistoryBudgetKey(subject, request.method, request.itemsView)
+	now := p.now()
 	p.mu.Lock()
+	p.recordHistoryResponseBudgetLocked(request, responseBytes, now)
+	p.mu.Unlock()
+
+	p.router.recordHistoryGlobalResponseBudget(request, responseBytes)
+}
+
+// recordHistoryResponseBudgetLocked 要求调用方已持有 p.mu，只更新连接级下行预算。
+func (p *appServerGatewayPolicy) recordHistoryResponseBudgetLocked(request appServerGatewayPendingHistoryRequest, responseBytes int, now time.Time) {
+	subject := gatewayHistoryBudgetSubject(request)
+	if subject == "" || strings.TrimSpace(request.method) == "" {
+		return
+	}
+	key := gatewayHistoryBudgetKey(subject, request.method, request.itemsView)
 	if p.historyBudgets == nil {
 		p.historyBudgets = map[string]appServerGatewayHistoryBudget{}
 	}
@@ -519,9 +534,6 @@ func (p *appServerGatewayPolicy) recordHistoryResponseBudget(request appServerGa
 		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
 	}
 	p.historyBudgets[key] = budget
-	p.mu.Unlock()
-
-	p.router.recordHistoryGlobalResponseBudget(request, responseBytes)
 }
 
 func (r *Router) reserveHistoryGlobalBudget(id *json.RawMessage, request appServerGatewayPendingHistoryRequest) *appServerGatewayPolicyError {

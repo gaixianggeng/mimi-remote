@@ -31,7 +31,7 @@ printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"s
 while IFS= read -r line; do
   case "$line" in
   *'"method":"thread/list"'*)
-    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[]}}\n'
+    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[],"nextCursor":null}}\n'
     ;;
   esac
 done

@@ -264,11 +264,8 @@ func (r *Router) filePathLexicallyInScope(raw string) bool {
 				}
 			}
 		}
-		// 只读查找，不推进 LastUsedAt、不登记 pending use：分类错误不是一次真实访问。
-		if _, ok := r.managedWorktreeForPathFromMemory(candidate); ok {
-			return true
-		}
-		if _, ok := r.managedWorktreeForPathFromRegistry(candidate); ok {
+		// 只读查找，不推进 LastUsedAt、不登记 pending use、不触发并发旧记录迁移写盘：分类错误不是一次真实访问。
+		if r.hasManagedWorktreeForLexicalPath(candidate) {
 			return true
 		}
 		for _, root := range r.cfg.BrowseRoots {
