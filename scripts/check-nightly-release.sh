@@ -476,7 +476,7 @@ fail_check("Release RELEASE_TAG 必须只来自 dispatch input") unless
   release.fetch("env").keys == ["RELEASE_TAG"]
 fail_check("release.yml 不得依赖 release-validation/readiness/attestation") if release.to_s.match?(/release-validation|readiness|attestation/i)
 release_jobs = release.fetch("jobs")
-expected_release_jobs = %w[source-trust verify-safety verify verify-windows release publish-windows]
+expected_release_jobs = %w[source-trust verify-safety verify verify-windows prepare-release linux-smoke release publish-windows]
 fail_check("Release jobs 集合存在未受 source-trust 约束的旁路") unless
   release_jobs.keys.sort == expected_release_jobs.sort
 release_trust = release_jobs.fetch("source-trust")
@@ -538,7 +538,7 @@ fail_check("Release 全历史安全扫描不得降级、跳过或忽略失败") 
   safety_scan.keys.sort == %w[name run] &&
   safety_scan["run"] == "bash ./scripts/check-public-repo-safety.sh --full-history"
 
-%w[verify verify-windows release publish-windows].each do |job_name|
+%w[verify verify-windows prepare-release release publish-windows].each do |job_name|
   job = release_jobs.fetch(job_name)
   fail_check("Release #{job_name} 仓库条件不可放宽") unless
     job["if"] == "github.repository == 'gaixianggeng/mimi-remote'"
@@ -551,9 +551,35 @@ end
   fail_check("Release #{job_name} 必须等待受信来源与全历史安全扫描") unless
     Array(release_jobs.fetch(job_name)["needs"]).sort == %w[source-trust verify-safety].sort
 end
-fail_check("Release 发布必须等待全部来源、安全和构建门禁") unless
-  Array(release_jobs.fetch("release")["needs"]).sort ==
+prepare = release_jobs.fetch("prepare-release")
+publish = release_jobs.fetch("release")
+linux = release_jobs.fetch("linux-smoke")
+fail_check("Release 正式构建必须等待全部来源、安全和构建门禁") unless
+  Array(prepare["needs"]).sort ==
     %w[source-trust verify-safety verify verify-windows].sort
+fail_check("Release 必须先生成正式归档再交给 Linux 门禁") unless
+  step(prepare, "Prepare signed release artifacts").dig("with", "args") == "release --clean --skip=publish" &&
+    !prepare.key?("permissions") &&
+    prepare.dig("outputs", "linux_artifacts") == "${{ steps.linux-assets.outputs.artifact-id }}"
+fail_check("Linux 配对检查必须用匹配的两个原生 runner 执行，且只读取受信构建产物") unless
+  linux["if"] == "github.repository == 'gaixianggeng/mimi-remote'" &&
+    !linux.key?("continue-on-error") && !linux.key?("permissions") && !linux.key?("environment") &&
+    linux["runs-on"] == "${{ matrix.runner }}" && Array(linux["needs"]).sort == %w[prepare-release source-trust] &&
+    linux.dig("strategy", "matrix", "include") == [
+      { "arch" => "amd64", "runner" => "ubuntu-24.04" }, { "arch" => "arm64", "runner" => "ubuntu-24.04-arm" }
+    ]
+fail_check("正式发布必须等待两种架构的 Linux 实包配对检查") unless
+  Array(publish["needs"]).sort == %w[linux-smoke prepare-release source-trust verify-safety] &&
+    publish["permissions"] == { "contents" => "write" }
+linux_artifact = "${{ needs.prepare-release.outputs.linux_artifacts }}"
+fail_check("Linux 检查与发布必须下载同一个准备阶段归档 ID") unless
+  [linux, publish].all? { |job| steps(job).any? { |item| item["uses"].to_s.start_with?("actions/download-artifact@") && item.dig("with", "artifact-ids") == linux_artifact } }
+smoke_step = step(linux, "Pair with the released Linux executable")
+fail_check("Linux 配对检查不得跳过、吞掉失败或只编译测试") unless
+  smoke_step.keys.sort == %w[env name run shell] &&
+    smoke_step["run"].include?('GOFLAGS=-json bash ./scripts/test-linux-tailcat-package.sh "$binary"') &&
+    smoke_step["run"].include?('TestPackagedTailcatStartsAndPairs') &&
+    smoke_step["run"].include?('length == 1')
 fail_check("Release macOS 验证不得重复在低内存 runner 扫描完整历史") if
   steps(release_jobs.fetch("verify")).any? { |item| item["name"] == "Check public repository safety" }
 windows_publish = release_jobs.fetch("publish-windows")
@@ -562,13 +588,13 @@ fail_check("Windows 发布 job 必须依赖已验证 artifact 和已创建的正
 fail_check("Windows 发布 job 必须使用 Windows runner 和最小 contents:write 权限") unless
   windows_publish["runs-on"] == "windows-latest" &&
   windows_publish["permissions"] == { "contents" => "write" }
-%w[verify verify-windows release].each do |job_name|
+%w[verify verify-windows prepare-release linux-smoke].each do |job_name|
   checkout = steps(release_jobs.fetch(job_name)).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
   fail_check("Release #{job_name} 没有 checkout source-trust 验证的 immutable SHA") unless
     checkout && checkout.dig("with", "ref").to_s.include?("needs.source-trust.outputs.tag_sha")
 end
-%w[verify release].each do |job_name|
-  goreleaser_step_name = job_name == "verify" ? "Build release snapshot" : "Release"
+%w[verify prepare-release].each do |job_name|
+  goreleaser_step_name = job_name == "verify" ? "Build release snapshot" : "Prepare signed release artifacts"
   goreleaser_step = step(release_jobs.fetch(job_name), goreleaser_step_name)
   fail_check("Release #{job_name} 的 GoReleaser 没有绑定 source-trust 校验的 RELEASE_TAG") unless
     goreleaser_step.dig("env", "GORELEASER_CURRENT_TAG") == "${{ env.RELEASE_TAG }}"
@@ -1008,6 +1034,9 @@ YAML
     cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
   }
   mutate_release 'repository_dispatch:' 'push:'
+  mutate_release '      - linux-smoke' '      - verify'
+  mutate_release 'args: release --clean --skip=publish' 'args: release --clean'
+  mutate_release 'GOFLAGS=-json bash ./scripts/test-linux-tailcat-package.sh "$binary"' 'true'
   mutate_release 'run: bash ./scripts/check-release-source.sh --check' 'run: echo bypassed'
   mutate_release 'needs: source-trust' 'needs: []'
   mutate_release 'run: bash ./scripts/check-public-repo-safety.sh --full-history' 'run: echo bypassed'

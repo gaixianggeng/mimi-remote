@@ -241,7 +241,7 @@ jobs:
           path: dist-windows/
           if-no-files-found: error
 
-  release:
+  prepare-release:
     needs:
       - source-trust
       - verify-safety
@@ -251,8 +251,9 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     environment: production-release
-    permissions:
-      contents: write
+    outputs:
+      linux_artifacts: ${{ steps.linux-assets.outputs.artifact-id }}
+      other_artifacts: ${{ steps.other-assets.outputs.artifact-id }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -294,16 +295,16 @@ jobs:
       - name: Check signed Mac installer
         run: bash ./scripts/check-macos-installer.sh --require-notarization dist-macos/Mimi-Remote-Mac.dmg
 
-      - name: Release
+      - name: Prepare signed release artifacts
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
           version: "v2.15.3"
-          args: release --clean
+          args: release --clean --skip=publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
-          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          TAP_DEPLOY_KEY: build-only-not-used
           GOTOOLCHAIN: local
           MIMI_MACOS_SIGNING: required
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
@@ -312,22 +313,156 @@ jobs:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
 
-      - name: Upload Mac installer to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            dist-macos/Mimi-Remote-Mac.dmg \
-            dist-macos/Mimi-Remote-Mac.dmg.sha256 \
-            dist-skill/install-mimi-remote.zip \
-            dist-skill/install-mimi-remote.zip.sha256 \
-            --clobber \
-            --repo "$GITHUB_REPOSITORY"
-
-      - name: Check published release artifacts
+      - name: Check signed release artifacts
         env:
           MIMI_REQUIRE_MACOS_SIGNATURE: "1"
         run: bash ./scripts/check-release-artifacts.sh
+
+      - name: Stage Linux archives and checksums
+        id: linux-assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-${{ github.run_attempt }}
+          path: |
+            dist/*_linux_*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Stage remaining release artifacts and metadata
+        id: other-assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: remaining-release-${{ github.run_attempt }}
+          path: |
+            dist/*_darwin_*.tar.gz
+            dist/CHANGELOG.md
+            dist/homebrew/Formula/mimi-remote.rb
+            dist-macos/Mimi-Remote-Mac.dmg*
+            dist-skill/install-mimi-remote.zip*
+          if-no-files-found: error
+          compression-level: 0
+
+  linux-smoke:
+    needs: [source-trust, prepare-release]
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout verified release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.source-trust.outputs.tag_sha }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+      - name: Require the prepared Linux artifact ID
+        env:
+          LINUX_ARTIFACT_ID: ${{ needs.prepare-release.outputs.linux_artifacts }}
+        run: '[[ "$LINUX_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.prepare-release.outputs.linux_artifacts }}
+          path: linux-dist
+          merge-multiple: true
+      - name: Pair with the released Linux executable
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+          [[ "$host" == "linux/$TARGET_ARCH" ]] || { echo "Expected linux/$TARGET_ARCH, got $host" >&2; exit 1; }
+          archive="mimi-remote_${RELEASE_TAG#v}_linux_${TARGET_ARCH}.tar.gz"
+          (cd linux-dist && sha256sum --strict --check --ignore-missing checksums.txt)
+          digest="$(sha256sum "linux-dist/$archive" | cut -d' ' -f1)"
+          grep -Fxq "$digest  $archive" linux-dist/checksums.txt
+          tar -xzf "linux-dist/$archive" -C "$RUNNER_TEMP" mimi-tailcat-experiment
+          binary="$RUNNER_TEMP/mimi-tailcat-experiment"
+          version="$("$binary" version)"
+          [[ "$version" == "${RELEASE_TAG#v}" ]] || { echo "Archive version $version differs from $RELEASE_TAG" >&2; exit 1; }
+          GOFLAGS=-json bash ./scripts/test-linux-tailcat-package.sh "$binary" | tee "$RUNNER_TEMP/pairing.jsonl"
+          jq -es '[.[] | select(.Test == "TestPackagedTailcatStartsAndPairs" and .Action == "pass")] | length == 1' "$RUNNER_TEMP/pairing.jsonl"
+          echo "Passed Linux $TARGET_ARCH pairing: \`$archive\` SHA-256 \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs:
+      - source-trust
+      - verify-safety
+      - prepare-release
+      - linux-smoke
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-release
+    permissions:
+      contents: write
+    steps:
+      - name: Require both prepared artifact IDs
+        env:
+          LINUX_ARTIFACT_ID: ${{ needs.prepare-release.outputs.linux_artifacts }}
+          OTHER_ARTIFACT_ID: ${{ needs.prepare-release.outputs.other_artifacts }}
+        run: '[[ "$LINUX_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$OTHER_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]'
+      - name: Download smoke-tested Linux archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.prepare-release.outputs.linux_artifacts }}
+          path: dist
+          merge-multiple: true
+      - name: Download remaining verified release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.prepare-release.outputs.other_artifacts }}
+          merge-multiple: true
+      - name: Publish verified artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --strict --check checksums.txt)
+          (cd dist-macos && sha256sum --strict --check Mimi-Remote-Mac.dmg.sha256)
+          (cd dist-skill && sha256sum --strict --check install-mimi-remote.zip.sha256)
+          if ! draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$RELEASE_TAG" --notes-file dist/CHANGELOG.md
+            draft=true
+          fi
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/*.tar.gz dist/checksums.txt dist-macos/Mimi-Remote-Mac.dmg{,.sha256} dist-skill/install-mimi-remote.zip{,.sha256}
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
+          for archive in dist/*_linux_*.tar.gz; do
+            digest="$(sha256sum "$archive" | cut -d' ' -f1)"
+            jq -e --arg name "${archive##*/}" --arg digest "sha256:$digest" \
+              'any(.assets[]; .name == $name and .digest == $digest)' <<< "$assets"
+          done
+          if [[ "$draft" == true ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi
+      - name: Checkout Homebrew Tap
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: gaixianggeng/homebrew-tap
+          ref: main
+          path: tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+      - name: Publish verified Homebrew Formula
+        shell: bash
+        run: |
+          cp dist/homebrew/Formula/mimi-remote.rb tap/Formula/mimi-remote.rb
+          git -C tap add -- Formula/mimi-remote.rb
+          if ! git -C tap diff --cached --quiet; then
+            git -C tap -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -m "Update mimi-remote to $RELEASE_TAG"
+            git -C tap push origin HEAD:main
+          fi
 
   publish-windows:
     needs:
