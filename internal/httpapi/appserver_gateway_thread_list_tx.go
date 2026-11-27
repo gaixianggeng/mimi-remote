@@ -341,6 +341,7 @@ type threadListStageACandidate struct {
 
 type threadListStageACandidates struct {
 	worktreeLifecycleEpoch uint64
+	revocationCheckEpoch   uint64
 	canonicalBrowseRoots   []string
 	managedRoot            string
 	responseEnvelope       map[string]json.RawMessage
@@ -983,20 +984,16 @@ func (p *appServerGatewayPolicy) processPendingThreadListResponse(
 		initialWorktreeEpoch = p.router.managedWorktreeLifecycleEpoch.Load()
 	}
 	disallowMissingFallback := false
-	preserveInitialEpoch := false
 	for stageAAttempt := 0; stageAAttempt <= 2; stageAAttempt++ {
 		stageA, stageAErr := p.prepareThreadListStageA(payload, frame, binding, stageAAttempt, disallowMissingFallback)
 		if stageAErr != nil {
 			return p.finalizeThreadListErrorStageB(binding, stageAErr)
 		}
-		if preserveInitialEpoch {
-			stageA.worktreeLifecycleEpoch = initialWorktreeEpoch
-		}
+		stageA.revocationCheckEpoch = initialWorktreeEpoch
 		if p.projectRootsDriftedOutsideLock(stageA.usedProjectRoots) {
 			if p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != initialWorktreeEpoch {
 				disallowMissingFallback = true
 			}
-			preserveInitialEpoch = true
 			if stageAAttempt == 2 {
 				return p.abortThreadListSilently(binding)
 			}
@@ -1008,7 +1005,6 @@ func (p *appServerGatewayPolicy) processPendingThreadListResponse(
 			return decision
 		}
 		disallowMissingFallback = true
-		preserveInitialEpoch = false
 		if p.router != nil {
 			initialWorktreeEpoch = p.router.managedWorktreeLifecycleEpoch.Load()
 		}
@@ -1108,7 +1104,7 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 				matched, floorExceeded := p.router.matchesDeletedOrRevokedManagedWorktreeLocked(
 					stageA.anchorRealPath,
 					stageA.anchorAncestorObjIDs,
-					stageA.worktreeLifecycleEpoch,
+					stageA.revocationCheckEpoch,
 				)
 				if matched || floorExceeded {
 					anchorInvalidated = true
@@ -1134,7 +1130,7 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 				matched, floorExceeded := p.router.matchesDeletedOrRevokedManagedWorktreeLocked(
 					cand.scope.realPath,
 					cand.ancestorObjectIDs,
-					stageA.worktreeLifecycleEpoch,
+					stageA.revocationCheckEpoch,
 				)
 				if matched || floorExceeded {
 					continue

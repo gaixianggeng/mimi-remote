@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 	"time"
 )
 
 var appServerHistoryMediaReadGrace = 5 * time.Second
-
-var errLimitedJSONBufferExceeded = errors.New("limited json buffer exceeded")
 
 type preparedBlobInput struct {
 	contentType string
@@ -183,6 +180,13 @@ func (s *appServerHistoryMediaStore) reservePreparedBatch(blobs []preparedBlobIn
 
 // reservePreparedBatchGreedy 逐条按统一容量公式准入（超单条上限或达双上限的后续条目保留内联，不发坏引用）。
 func (s *appServerHistoryMediaStore) reservePreparedBatchGreedy(blobs []preparedBlobInput) *preparedBlobReservation {
+	return s.reservePreparedBatchGreedyWithBatchHash(blobs, nil)
+}
+
+func (s *appServerHistoryMediaStore) reservePreparedBatchGreedyWithBatchHash(
+	blobs []preparedBlobInput,
+	sharedBatchByHash map[[32]byte]string,
+) *preparedBlobReservation {
 	if len(blobs) == 0 || s == nil {
 		return &preparedBlobReservation{store: s, ids: make([]string, len(blobs)), admitted: make([]bool, len(blobs))}
 	}
@@ -202,11 +206,17 @@ func (s *appServerHistoryMediaStore) reservePreparedBatchGreedy(blobs []prepared
 
 	ids := make([]string, len(blobs))
 	admitted := make([]bool, len(blobs))
-	batchByHash := map[[32]byte]string{}
+	batchByHash := sharedBatchByHash
+	if batchByHash == nil {
+		batchByHash = map[[32]byte]string{}
+	}
 	reusedPinnedSet := map[string]struct{}{}
 	reusedPinnedIDs := make([]string, 0)
 	newItems := make([]preparedBlobCommitItem, 0)
 	usedIDs := map[string]struct{}{}
+	for _, existingBatchID := range batchByHash {
+		usedIDs[existingBatchID] = struct{}{}
+	}
 
 	for i, blob := range blobs {
 		if len(blob.data) == 0 || (s.maxItemBytes > 0 && int64(len(blob.data)) > s.maxItemBytes) {
@@ -626,34 +636,78 @@ func collectStagedMediaBlobs(value any, blobs *[]preparedBlobInput, reps *[]stag
 	}
 }
 
-type limitedJSONWriter struct {
-	buf      bytes.Buffer
-	maxBytes int64
+// estimateJSONBytesWithinLimit 在调用 json.Marshal 之前无分配预估 JSON 字节数，
+// 一旦超过 limit 立即早退，避免在超限父节点上分配整块临时序列化缓冲。
+func estimateJSONBytesWithinLimit(value any, limit int64) (int64, bool) {
+	var total int64
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch typed := v.(type) {
+		case nil:
+			total += 4
+		case bool:
+			if typed {
+				total += 4
+			} else {
+				total += 5
+			}
+		case json.Number:
+			total += int64(len(typed))
+		case float64, int, int64:
+			total += 20
+		case string:
+			total += int64(len(typed)) + 2
+		case []any:
+			total += 2
+			for i, elem := range typed {
+				if i > 0 {
+					total++
+				}
+				if limit > 0 && total > limit {
+					return false
+				}
+				if !walk(elem) {
+					return false
+				}
+			}
+		case map[string]any:
+			total += 2
+			first := true
+			for k, elem := range typed {
+				if !first {
+					total++
+				}
+				first = false
+				total += int64(len(k)) + 3
+				if limit > 0 && total > limit {
+					return false
+				}
+				if !walk(elem) {
+					return false
+				}
+			}
+		default:
+			total += 16
+		}
+		return limit <= 0 || total <= limit
+	}
+	ok := walk(value)
+	return total, ok
 }
 
-func (w *limitedJSONWriter) Write(p []byte) (int, error) {
-	if w.maxBytes > 0 && int64(w.buf.Len())+int64(len(p)) > w.maxBytes {
-		return 0, errLimitedJSONBufferExceeded
+func boundedJSONMarshal(value any, maxBytes int64) ([]byte, int64, bool) {
+	est, withinEst := estimateJSONBytesWithinLimit(value, maxBytes)
+	if !withinEst {
+		return nil, est, false
 	}
-	return w.buf.Write(p)
-}
-
-func limitedJSONMarshal(value any, maxBytes int64) ([]byte, bool) {
-	// json.Encoder.Encode 会在末尾附加单个 '\n'，多留 1 字节容差再裁剪。
-	writerLimit := maxBytes
-	if writerLimit > 0 {
-		writerLimit++
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, est, false
 	}
-	w := limitedJSONWriter{maxBytes: writerLimit}
-	enc := json.NewEncoder(&w)
-	if err := enc.Encode(value); err != nil {
-		return nil, false
+	if maxBytes > 0 && int64(len(encoded)) > maxBytes {
+		return nil, int64(len(encoded)), false
 	}
-	out := bytes.TrimSuffix(w.buf.Bytes(), []byte{'\n'})
-	if maxBytes > 0 && int64(len(out)) > maxBytes {
-		return nil, false
-	}
-	return out, true
+	return encoded, int64(len(encoded)), true
 }
 
 type stagedOutputWaveCandidate struct {
@@ -667,7 +721,7 @@ const maxOutputStageWaves = 8
 // stageOutputWaves 自顶向下按波次延迟脱水：
 //   - 每波仅序列化当前最外层候选输出，绝不预先序列化其被覆盖的子树；
 //   - 父节点准入成功即立刻替换并跳过整个后代子树（零冗余 CPU/内存）；
-//   - 仅当父节点因单条上限或容量被拒时，才在下一波下沉其子节点，且严格限制总临时序列化字节上限。
+//   - 仅当父节点因单条上限或容量被拒时，才在下一波下沉其子节点，跨波共享去重索引并严格限制总临时预算。
 func stageOutputWaves(root any, minimumItemBytes int, store *appServerHistoryMediaStore) (*preparedBlobReservation, bool) {
 	if store == nil || root == nil {
 		return nil, false
@@ -688,12 +742,17 @@ func stageOutputWaves(root any, minimumItemBytes int, store *appServerHistoryMed
 	if totalTempBudget > 32<<20 {
 		totalTempBudget = 32 << 20
 	}
+	// 严禁临时预算低于已配置单条上限，避免合法大输出（如 33 MiB <= 64 MiB）被误留内联。
+	if maxItemBytes > totalTempBudget {
+		totalTempBudget = maxItemBytes
+	}
 
 	var (
-		combined      *preparedBlobReservation
-		changed       bool
-		tempBytesUsed int64
-		waveRoots     = []any{root}
+		combined        *preparedBlobReservation
+		changed         bool
+		tempBytesUsed   int64
+		waveRoots       = []any{root}
+		sharedBatchHash = map[[32]byte]string{}
 	)
 	for wave := 0; wave < maxOutputStageWaves && len(waveRoots) > 0 && tempBytesUsed < totalTempBudget; wave++ {
 		var candidates []stagedOutputWaveCandidate
@@ -707,7 +766,7 @@ func stageOutputWaves(root any, minimumItemBytes int, store *appServerHistoryMed
 			for i, cand := range candidates {
 				blobs[i] = cand.blob
 			}
-			res := store.reservePreparedBatchGreedy(blobs)
+			res := store.reservePreparedBatchGreedyWithBatchHash(blobs, sharedBatchHash)
 			waveAdmitted := false
 			for i, cand := range candidates {
 				if res.admitted[i] {
@@ -799,8 +858,9 @@ func collectOuterOutputWave(
 							}
 						}
 					} else {
-						encoded, withinCap := limitedJSONMarshal(result, itemCap)
+						encoded, cost, withinCap := boundedJSONMarshal(result, itemCap)
 						if !withinCap {
+							*tempBytesUsed += cost
 							overflowed = true
 							skipKey = "result"
 							*overflowDeferred = append(*overflowDeferred, result)
@@ -817,8 +877,9 @@ func collectOuterOutputWave(
 				}
 			case "fileChange":
 				if changes, ok := typed["changes"].([]any); ok && len(changes) > 0 {
-					encoded, withinCap := limitedJSONMarshal(changes, itemCap)
+					encoded, cost, withinCap := boundedJSONMarshal(changes, itemCap)
 					if !withinCap {
+						*tempBytesUsed += cost
 						overflowed = true
 						skipKey = "changes"
 						*overflowDeferred = append(*overflowDeferred, changes)

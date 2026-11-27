@@ -190,13 +190,13 @@ func refreshProjectAvailability(project Project) Project {
 }
 
 func (r *Registry) List() []Project {
-	obsSeq := r.nextSeq.Add(1)
 	base := r.ListCached()
 	out := make([]Project, len(base))
 	for i, project := range base {
-		out[i] = refreshProjectAvailability(project)
+		obsSeq := r.nextSeq.Add(1)
+		refreshed := refreshProjectAvailability(project)
+		out[i] = r.applyRefreshedProject(refreshed, obsSeq)
 	}
-	r.applyRefreshedSnapshot(out, obsSeq)
 	return out
 }
 
@@ -207,71 +207,40 @@ func (r *Registry) Get(id string) (Project, bool) {
 		return Project{}, false
 	}
 	refreshed := refreshProjectAvailability(project)
-	r.applyRefreshedProject(refreshed, obsSeq)
-	return refreshed, true
+	return r.applyRefreshedProject(refreshed, obsSeq), true
 }
 
-func (r *Registry) applyRefreshedSnapshot(updated []Project, obsSeq uint64) {
-	if r == nil || len(updated) == 0 {
-		return
-	}
-	r.mu.Lock()
-	if r.projectRefreshSeq == nil {
-		r.projectRefreshSeq = map[string]uint64{}
-	}
-	changed := false
-	for _, next := range updated {
-		prev, ok := r.projects[next.ID]
-		if !ok {
-			continue
-		}
-		if obsSeq < r.projectRefreshSeq[next.ID] {
-			continue
-		}
-		r.projectRefreshSeq[next.ID] = obsSeq
-		if prev.RealPath != next.RealPath || prev.Missing != next.Missing {
-			changed = true
-		}
-		r.projects[next.ID] = next
-	}
-	for i, prev := range r.list {
-		if next, ok := r.projects[prev.ID]; ok {
-			r.list[i] = next
-		}
-	}
-	if changed {
-		r.indexGen++
-		r.pathCandidates = buildProjectPathCandidates(r.list)
-		r.invalidatePathMatchCacheLocked(r.indexGen)
-	}
-	r.mu.Unlock()
-}
-
-func (r *Registry) applyRefreshedProject(next Project, obsSeq uint64) {
+func (r *Registry) applyRefreshedProject(next Project, obsSeq uint64) Project {
 	if r == nil || next.ID == "" {
-		return
+		return next
 	}
 	r.mu.Lock()
 	if r.projectRefreshSeq == nil {
 		r.projectRefreshSeq = map[string]uint64{}
 	}
-	if prev, ok := r.projects[next.ID]; ok && obsSeq >= r.projectRefreshSeq[next.ID] {
-		r.projectRefreshSeq[next.ID] = obsSeq
-		changed := prev.RealPath != next.RealPath || prev.Missing != next.Missing
-		r.projects[next.ID] = next
-		for i := range r.list {
-			if r.list[i].ID == next.ID {
-				r.list[i] = next
-				break
+	winning := next
+	if prev, ok := r.projects[next.ID]; ok {
+		if obsSeq < r.projectRefreshSeq[next.ID] {
+			winning = prev
+		} else {
+			r.projectRefreshSeq[next.ID] = obsSeq
+			changed := prev.RealPath != next.RealPath || prev.Missing != next.Missing
+			r.projects[next.ID] = next
+			for i := range r.list {
+				if r.list[i].ID == next.ID {
+					r.list[i] = next
+					break
+				}
+			}
+			if changed {
+				r.indexGen++
+				r.pathCandidates = buildProjectPathCandidates(r.list)
+				r.invalidatePathMatchCacheLocked(r.indexGen)
 			}
 		}
-		if changed {
-			r.indexGen++
-			r.pathCandidates = buildProjectPathCandidates(r.list)
-			r.invalidatePathMatchCacheLocked(r.indexGen)
-		}
 	}
 	r.mu.Unlock()
+	return winning
 }
 
 // invalidatePathMatchCacheLocked 要求调用方已持有 r.mu 写锁（锁序严格为 r.mu -> r.cacheMu）。
@@ -394,8 +363,7 @@ func (r *Registry) FindByPathVerifyingMatch(path string) (Project, bool) {
 	matchedCandidates := r.matchingCandidatesByCleanPath(cleanReal, cleanAbs)
 	for _, cand := range matchedCandidates {
 		obsSeq := r.nextSeq.Add(1)
-		live := refreshProjectAvailability(cand)
-		r.applyRefreshedProject(live, obsSeq)
+		live := r.applyRefreshedProject(refreshProjectAvailability(cand), obsSeq)
 		if live.Missing {
 			continue
 		}
