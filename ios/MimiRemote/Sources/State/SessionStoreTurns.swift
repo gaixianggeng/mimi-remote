@@ -170,6 +170,8 @@ extension SessionStore {
             var unprobedProviders: Set<String> = []
             var threadGoalRuntimeProviders: Set<String> = []
             var unprobedGoalProviders: Set<String> = []
+            var turnSteerRuntimeProviders: Set<String> = []
+            var unprobedSteerProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
                 guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
                 do {
@@ -183,6 +185,13 @@ extension SessionStore {
                         } catch {
                             unprobedGoalProviders.insert(provider)
                         }
+                        do {
+                            if try await client.runtimeSupportsTurnSteer(runtimeProvider: provider) {
+                                turnSteerRuntimeProviders.insert(provider)
+                            }
+                        } catch {
+                            unprobedSteerProviders.insert(provider)
+                        }
                     }
                 } catch {
                     unprobedProviders.insert(provider)
@@ -192,15 +201,19 @@ extension SessionStore {
             // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
             // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
             availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
-            // 目标能力（#791）同一口径：没探成的 Runtime 沿用上一次的声明结论。
+            // 目标与引导能力（#791 / #1172）同一口径：没探成的 Runtime 沿用上一次的声明结论。
             threadGoalRuntimeProviders.formUnion(
                 self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
+            )
+            turnSteerRuntimeProviders.formUnion(
+                self.turnSteerRuntimeProviders.intersection(unprobedProviders.union(unprobedSteerProviders))
             )
             let diagnostics = await client.runtimeChannelDiagnostics()
             guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
             self.runtimeChannelDiagnosticsByProvider = diagnostics
             self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
+            self.turnSteerRuntimeProviders = turnSteerRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
                 // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
@@ -249,6 +262,7 @@ extension SessionStore {
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
                 threadGoalRuntimeProviders = ["codex"]
+                turnSteerRuntimeProviders = ["codex", "claude"]
             }
             appServerModelOptionsLastRefresh = Date()
             for provider in RuntimeFeatureSupport.runtimeProviders {
@@ -331,6 +345,10 @@ extension SessionStore {
                 if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
                    appStore.activeHostScope == hostScope {
                     threadGoalRuntimeProviders.insert(provider)
+                }
+                if let supportsSteer = try? await clientFactory().runtimeSupportsTurnSteer(runtimeProvider: provider),
+                   appStore.activeHostScope == hostScope {
+                    if supportsSteer { turnSteerRuntimeProviders.insert(provider) } else { turnSteerRuntimeProviders.remove(provider) }
                 }
                 if provider == Self.nativeHarnessRuntimeProvider {
                     installNativeHarnessHostEvents()
@@ -1278,7 +1296,7 @@ extension SessionStore {
                 return false
             }
             let clientMessageID = UUID().uuidString
-            if runningDelivery == .queued {
+            if runningDelivery == .queued || !supportsTurnSteer(runtimeProvider: session.runtimeProvider) {
                 let queueCount = queuedRunningTurnsBySessionID[session.id]?.count ?? 0
                 guard queueCount < Self.queuedTurnLimitPerSession else {
                     setErrorMessage(L10n.format("ui.each_session_retains_a_maximum_of_value_messages", Self.queuedTurnLimitPerSession))

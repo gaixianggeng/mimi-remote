@@ -57,6 +57,12 @@ enum RuntimeFeatureSupport {
             && goalProviders.contains(CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider))
     }
 
+    /// 当前回合引导（`turn/steer`）以通道声明为准（#1172）；未声明 `turn/steer` 的通道自动回落排队。
+    static func supportsTurnSteer(for provider: String, declaredBy steerProviders: Set<String>) -> Bool {
+        !isDeepSeek(provider)
+            && steerProviders.contains(CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider))
+    }
+
     static func isDeepSeek(_ provider: String?) -> Bool {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) == "deepseek"
     }

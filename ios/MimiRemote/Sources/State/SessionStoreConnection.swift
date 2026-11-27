@@ -3051,6 +3051,7 @@ extension SessionStore {
         availableRuntimeProviders = ["codex"]
         runtimeChannelDiagnosticsByProvider = [:]
         threadGoalRuntimeProviders = ["codex"]
+        turnSteerRuntimeProviders = ["codex", "claude"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle

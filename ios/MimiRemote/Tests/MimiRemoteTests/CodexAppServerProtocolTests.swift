@@ -390,6 +390,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
             message: "invalid params",
             data: nil
         ))
+        let gatewayPolicyRejected = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32080,
+            message: "app-server method 不允许：turn/steer",
+            data: nil
+        ))
         let ambiguousInternalError = CodexAppServerConnectionError.appServer(CodexAppServerError(
             code: -32603,
             message: "internal error",
@@ -419,6 +424,10 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(
             CodexAppServerSessionWebSocketClient.turnSendOutcome(for: invalidParams),
             .rejected(message: invalidParams.localizedDescription)
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: gatewayPolicyRejected),
+            .rejected(message: gatewayPolicyRejected.localizedDescription)
         )
         XCTAssertEqual(
             CodexAppServerSessionWebSocketClient.turnSendOutcome(for: ambiguousInternalError),
