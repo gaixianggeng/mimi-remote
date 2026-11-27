@@ -6,7 +6,7 @@ import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
 import type { PersistedToolMapping } from "../agy/overlay.ts";
 import { unavailableAgyRateLimits } from "../agy/rateLimits.ts";
-import type { TranscriptActivityInfo, TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../agy/transcript.ts";
+import type { OwnTurnTranscriptWatermark, TranscriptActivityInfo, TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../agy/transcript.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
@@ -26,6 +26,7 @@ export interface ManagerOptions {
   externalWritePollMs?: number;
   onSessionOpen?: (openResult: AcpSessionOpenResult) => void;
   onAvailableCommands?: (cwd: string, commands: AcpAvailableCommand[]) => void;
+  onOwnTurnWatermark?: (threadId: string, watermark: OwnTurnTranscriptWatermark | null) => void;
   onTurnPersisted?: (
     threadId: string,
     patch: {
@@ -49,6 +50,7 @@ export interface ManagerOptions {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      ownTurnWatermark?: OwnTurnTranscriptWatermark | null;
     },
   ) => void;
   reserveTurnAttempt?: (
@@ -93,6 +95,7 @@ export class ThreadManager {
           this.titleChanged(threadId, title);
         }
       },
+      onOwnTurnWatermark: options.onOwnTurnWatermark,
       onTurnPersisted: options.onTurnPersisted,
       reserveTurnAttempt: options.reserveTurnAttempt,
       existingTurnCount: options.existingTurnCount,
