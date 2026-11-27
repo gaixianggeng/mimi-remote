@@ -28,17 +28,29 @@ struct SessionsPage: Equatable {
     let sessions: [AgentSession]
     let nextCursor: String?
     let hasMore: Bool
+    let listMeta: SessionListMeta?
+    let rawSortEvidenceBySessionID: [SessionID: RawSortEvidence]
 
     init(response: SessionsResponse) {
         self.sessions = response.sessions
         self.nextCursor = response.nextCursor
         self.hasMore = response.hasMore ?? false
+        self.listMeta = nil
+        self.rawSortEvidenceBySessionID = [:]
     }
 
-    init(sessions: [AgentSession], nextCursor: String? = nil, hasMore: Bool = false) {
+    init(
+        sessions: [AgentSession],
+        nextCursor: String? = nil,
+        hasMore: Bool = false,
+        listMeta: SessionListMeta? = nil,
+        rawSortEvidenceBySessionID: [SessionID: RawSortEvidence] = [:]
+    ) {
         self.sessions = sessions
         self.nextCursor = nextCursor
         self.hasMore = hasMore
+        self.listMeta = listMeta
+        self.rawSortEvidenceBySessionID = rawSortEvidenceBySessionID
     }
 }
 

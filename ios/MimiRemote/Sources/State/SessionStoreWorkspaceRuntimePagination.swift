@@ -121,6 +121,45 @@ extension SessionStore {
         return Self.sortedSessions(scoped)
     }
 
+    /// 跨已启用运行时投影当前工作区的本地缓存会话（按复合键隔离同 ID，不触发网络请求）。
+    func directoryScopedSessions(
+        workspaceID: String,
+        runtimeProviders: [String]
+    ) -> [AgentSession] {
+        var seen: Set<CanonicalSessionKey> = []
+        var combined: [AgentSession] = []
+        let hostScope = appStore.activeHostScope
+        for provider in runtimeProviders {
+            let normalized = Self.normalizedRuntimeProvider(provider)
+            for item in directoryScopedSessions(workspaceID: workspaceID, runtimeProvider: normalized) {
+                let key = CanonicalSessionKey(
+                    hostScope: hostScope,
+                    runtimeProvider: normalized,
+                    sessionID: item.id
+                )
+                if seen.insert(key).inserted {
+                    combined.append(item)
+                }
+            }
+        }
+        return Self.sortedSessions(combined)
+    }
+
+    /// 按复合键汇总 Store 已知的子会话归属证据（P1-2a），供 K 路归并引擎计数前合并。
+    func knownSubagentOwnershipByCanonicalKey(
+        hostScope: HostScope
+    ) -> [CanonicalSessionKey: SubagentOwnershipEvidence] {
+        var map: [CanonicalSessionKey: SubagentOwnershipEvidence] = [:]
+        map.reserveCapacity(sessions.count)
+        for item in sessions {
+            let evidence = SubagentOwnershipEvidence(session: item)
+            guard evidence.isSubagent else { continue }
+            let key = CanonicalSessionKey(session: item, hostScope: hostScope)
+            map[key] = evidence.merged(with: map[key])
+        }
+        return map
+    }
+
     func alignGlobalSessionToKnownDirectoryScope(_ item: AgentSession) -> AgentSession {
         guard controlledGlobalSessionIDs.contains(item.id),
               let workspace = workspaceForDirectoryScopedSession(item) else {
@@ -312,7 +351,9 @@ extension SessionStore {
         return SessionsPage(
             sessions: SessionIndexStore.sortedSessions(listable),
             nextCursor: page.nextCursor,
-            hasMore: page.hasMore
+            hasMore: page.hasMore,
+            listMeta: page.listMeta,
+            rawSortEvidenceBySessionID: page.rawSortEvidenceBySessionID
         )
     }
 }

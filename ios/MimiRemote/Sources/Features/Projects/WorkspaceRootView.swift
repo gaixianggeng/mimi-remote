@@ -284,10 +284,13 @@ struct WorkspaceRootView: View {
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @ScaledMetric(relativeTo: .callout) private var emptyActionSize: CGFloat = 16
     @ScaledMetric(relativeTo: .title3) private var emptyTitleSize: CGFloat = 20
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
     @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
+    @StateObject private var mergedCoordinator = WorkspaceMergedSessionCoordinator()
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
@@ -301,9 +304,10 @@ struct WorkspaceRootView: View {
     private let rememberedWorkspaceID: String?
     private let bottomContentMargin: CGFloat?
     private let onWorkspaceSelectionChange: ((String?) -> Void)?
+    private let preferredRuntime: WorkspaceSessionRuntimeChoice
 
     @State private var selectedWorkspaceID: String?
-    @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
+    @Binding private var browseScope: WorkspaceSessionBrowseScope
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var manualCatalogRefreshTask: Task<Void, Never>?
     @State private var manualCatalogRefreshInvocationID: UUID?
@@ -323,8 +327,10 @@ struct WorkspaceRootView: View {
     @State private var pagerSelectionIsUserDriven = false
     @State private var pendingHapticWorkspaceID: String?
     @State private var suppressedHapticWorkspaceID: String?
+
     init(
-        selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
+        browseScope: Binding<WorkspaceSessionBrowseScope>,
+        preferredRuntime: WorkspaceSessionRuntimeChoice = .codex,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         manageConnections: (() -> Void)? = nil,
@@ -348,7 +354,8 @@ struct WorkspaceRootView: View {
         self.rememberedWorkspaceID = initialWorkspaceID
         self.bottomContentMargin = bottomContentMargin
         self.onWorkspaceSelectionChange = onWorkspaceSelectionChange
-        _selectedSessionRuntime = selectedSessionRuntime
+        self.preferredRuntime = preferredRuntime
+        _browseScope = browseScope
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
         _openWorkspacePresenter = StateObject(
             wrappedValue: openWorkspacePresenter ?? OpenWorkspaceSheetPresenter()
@@ -356,6 +363,46 @@ struct WorkspaceRootView: View {
         // 初值来自 Shell 记住的浏览选择（或预览、快照的固定值）：首帧分页就停在该工作区，
         // 不会先渲染第一页再跳转；它不在目录中时由 synchronizeSelection 回落。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
+    }
+
+    init(
+        selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
+        onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
+        onOpenSession: @escaping (AgentSession) -> Void = { _ in },
+        manageConnections: (() -> Void)? = nil,
+        onConnectComputer: (() -> Void)? = nil,
+        embedsNavigationStack: Bool = true,
+        appearanceStore: WorkspaceAppearanceStore? = nil,
+        openWorkspacePresenter: OpenWorkspaceSheetPresenter? = nil,
+        initialWorkspaceID: String? = nil,
+        bottomContentMargin: CGFloat? = nil,
+        onWorkspaceSelectionChange: ((String?) -> Void)? = nil,
+        onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
+        currentDate: @escaping () -> Date = Date.init
+    ) {
+        self.init(
+            browseScope: Binding(
+                get: { .single(selectedSessionRuntime.wrappedValue) },
+                set: {
+                    if case let .single(choice) = $0 {
+                        selectedSessionRuntime.wrappedValue = choice
+                    }
+                }
+            ),
+            preferredRuntime: selectedSessionRuntime.wrappedValue,
+            onStartSession: onStartSession,
+            onOpenSession: onOpenSession,
+            manageConnections: manageConnections,
+            onConnectComputer: onConnectComputer,
+            embedsNavigationStack: embedsNavigationStack,
+            appearanceStore: appearanceStore,
+            openWorkspacePresenter: openWorkspacePresenter,
+            initialWorkspaceID: initialWorkspaceID,
+            bottomContentMargin: bottomContentMargin,
+            onWorkspaceSelectionChange: onWorkspaceSelectionChange,
+            onCatalogRefreshEvent: onCatalogRefreshEvent,
+            currentDate: currentDate
+        )
     }
 
     static func shouldEmbedNavigationStack(usesCompactNavigation: Bool) -> Bool {
@@ -371,11 +418,23 @@ struct WorkspaceRootView: View {
             credentialsSuspended: appStore.isCredentialMemorySuspended,
             hasNoConfiguredHost: isInNoHostEmptyState
         )
-        let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
+        let selectedSessionPresentationKey = browseScope.isAll
+            ? nil
+            : selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
             presentationKey: selectedSessionPresentationKey,
             needsInitialLoad: selectedSessionPresentationKey.map {
                 runtimeSessionPagesByKey[$0]?.hasLoadedFirstPage != true
+            } ?? false,
+            hasNoConfiguredHost: isInNoHostEmptyState
+        )
+        let selectedMergedKey = browseScope.isAll
+            ? selectedProject.map(workspaceMergedPresentationKey(for:))
+            : nil
+        let mergedRefreshScope = WorkspaceMergedSessionRefreshScope(
+            key: selectedMergedKey,
+            needsInitialLoad: selectedMergedKey.map {
+                !mergedCoordinator.hasLoadedFirstPage(for: $0)
             } ?? false,
             hasNoConfiguredHost: isInNoHostEmptyState
         )
@@ -408,12 +467,14 @@ struct WorkspaceRootView: View {
         .onChange(of: appStore.activeHostScope) { _, _ in
             sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
+            mergedCoordinator.resetAll()
         }
         .onChange(of: appStore.hasNoConfiguredHost) { _, hasNoHost in
             if hasNoHost {
                 sessionRefreshOwner.cancelAll()
                 cancelManualCatalogRefresh()
                 catalogLoad.reset()
+                mergedCoordinator.resetAll()
             }
         }
         .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
@@ -451,23 +512,47 @@ struct WorkspaceRootView: View {
             else { return }
             await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
         }
+        .task(id: mergedRefreshScope) {
+            guard !mergedRefreshScope.hasNoConfiguredHost,
+                  mergedRefreshScope.needsInitialLoad,
+                  let mergedKey = mergedRefreshScope.key,
+                  let project = sessionStore.sidebarProjects.first(where: {
+                      $0.id == mergedKey.workspaceID && $0.path == mergedKey.workspacePath
+                  })
+            else { return }
+            await mergedCoordinator.refresh(
+                project: project,
+                key: mergedKey,
+                sessionStore: sessionStore
+            )
+        }
         .task(id: neighborPrefetchScope) {
             guard !isInNoHostEmptyState else { return }
             // 当前页优先：等它自己的 task 先占住 single-flight，再补相邻页。
             for project in neighborWorkspaceProjects {
                 guard !Task.isCancelled else { return }
-                let presentationKey = workspaceSessionPresentationKey(for: project)
-                // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
-                // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
-                guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
-                    cachedPageState: runtimeSessionPagesByKey[presentationKey]
-                ) else {
-                    continue
+                if browseScope.isAll {
+                    let neighborKey = workspaceMergedPresentationKey(for: project)
+                    guard !mergedCoordinator.hasLoadedFirstPage(for: neighborKey) else { continue }
+                    await mergedCoordinator.refresh(
+                        project: project,
+                        key: neighborKey,
+                        sessionStore: sessionStore
+                    )
+                } else {
+                    let presentationKey = workspaceSessionPresentationKey(for: project)
+                    // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
+                    // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
+                    guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
+                        cachedPageState: runtimeSessionPagesByKey[presentationKey]
+                    ) else {
+                        continue
+                    }
+                    await refreshWorkspaceSessions(
+                        project: project,
+                        presentationKey: presentationKey
+                    )
                 }
-                await refreshWorkspaceSessions(
-                    project: project,
-                    presentationKey: presentationKey
-                )
             }
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
@@ -958,10 +1043,10 @@ struct WorkspaceRootView: View {
                     .padding(.horizontal, 4)
 
                 WorkspaceRuntimePicker(
-                    selection: $selectedSessionRuntime,
+                    browseScope: $browseScope,
                     availableRuntimeProviders: sessionStore.availableRuntimeProviders,
                     onRetryUnavailable: { choice in
-                        await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+                        await retryUnavailableRuntime(choice)
                     }
                 )
             }
@@ -1171,68 +1256,119 @@ struct WorkspaceRootView: View {
         .accessibilityIdentifier("workspace.statusLine")
     }
 
+    @ViewBuilder
     private func workspaceDetail<StatusLine: View>(
         project: AgentProject,
         showsStatusLine: Bool,
         @ViewBuilder statusLine: () -> StatusLine
     ) -> some View {
-        let presentationKey = workspaceSessionPresentationKey(for: project)
-        let cachedPageState = runtimeSessionPagesByKey[presentationKey]
-        // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
-        // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
-        let storedRuntimeSessions = sessionStore.directoryScopedSessions(
-            workspaceID: project.id,
-            runtimeProvider: presentationKey.runtimeProvider
-        )
-        let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
-        let loadState = sessionLoadState(for: presentationKey)
-        let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
-        return WorkspaceDetailView(
-            statusLine: statusLine(),
-            showsStatusLine: showsStatusLine,
-            // 胶囊行已经承载筛选器时，详情页不再自己画一条筛选行。
-            showsInlineRuntimePicker: usesInlineRuntimePicker,
-            // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
-            // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
-            recentSessions: WorkspaceSessionPresentation.visibleSessions(
-                loadedSessions,
-                limit: visibleLimit
-            ),
-            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
-            sessionLoadState: loadState,
-            hasInitialSessionContent: cachedPageState?.hasLoadedFirstPage == true || !storedRuntimeSessions.isEmpty,
-            canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
-                loadedCount: loadedSessions.count,
-                visibleLimit: visibleLimit,
-                remoteHasMore: cachedPageState?.hasMore == true
-            ),
-            selectedRuntime: $selectedSessionRuntime,
-            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
-            runtimeDiagnostic: sessionStore.workspaceRuntimeNotice(for: selectedSessionRuntime),
-            onRetryUnavailable: { choice in
-                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
-            },
-            currentDate: currentDate,
-            onRefreshSessions: {
-                Task {
-                    await refreshWorkspaceSessions(
+        if browseScope.isAll {
+            let mergedKey = workspaceMergedPresentationKey(for: project)
+            let projection = mergedCoordinator.projection(for: mergedKey, sessionStore: sessionStore)
+            WorkspaceDetailView(
+                statusLine: statusLine(),
+                showsStatusLine: showsStatusLine,
+                showsInlineRuntimePicker: usesInlineRuntimePicker,
+                recentSessions: projection.visibleSessions,
+                unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
+                sessionLoadState: mergedCoordinator.loadState(for: mergedKey),
+                hasInitialSessionContent: projection.hasInitialContent,
+                canLoadMoreSessions: projection.canLoadMore,
+                browseScope: $browseScope,
+                preferredRuntime: preferredRuntime,
+                availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                mergedCompleteness: projection.completeness,
+                mergedPartialNotice: projection.partialNotice,
+                onRetryUnavailable: { choice in
+                    await mergedCoordinator.retryUnavailable(
+                        runtime: choice,
                         project: project,
-                        presentationKey: presentationKey,
-                        restartFromFirst: true
+                        key: mergedKey,
+                        sessionStore: sessionStore
                     )
-                }
-            },
-            onLoadMoreSessions: {
-                await loadMoreWorkspaceSessions(project: project, presentationKey: presentationKey)
-            },
-            onStartSession: { runtimeChoice in
-                onStartSession(project, runtimeChoice)
-            },
-            onOpenSession: { session in
-                onOpenSession(session)
-            },
-            bottomContentMargin: bottomContentMargin
-        )
+                },
+                currentDate: currentDate,
+                onRefreshSessions: {
+                    Task {
+                        await mergedCoordinator.refresh(
+                            project: project,
+                            key: mergedKey,
+                            sessionStore: sessionStore,
+                            restartFromFirst: true
+                        )
+                    }
+                },
+                onLoadMoreSessions: {
+                    await mergedCoordinator.loadMore(
+                        project: project,
+                        key: mergedKey,
+                        sessionStore: sessionStore
+                    )
+                },
+                onStartSession: { runtimeChoice in
+                    onStartSession(project, runtimeChoice)
+                },
+                onOpenSession: onOpenSession,
+                bottomContentMargin: bottomContentMargin
+            )
+        } else {
+            let presentationKey = workspaceSessionPresentationKey(for: project)
+            let cachedPageState = runtimeSessionPagesByKey[presentationKey]
+            // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
+            // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
+            let storedRuntimeSessions = sessionStore.directoryScopedSessions(
+                workspaceID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider
+            )
+            let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
+            let loadState = sessionLoadState(for: presentationKey)
+            let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
+            WorkspaceDetailView(
+                statusLine: statusLine(),
+                showsStatusLine: showsStatusLine,
+                // 胶囊行已经承载筛选器时，详情页不再自己画一条筛选行。
+                showsInlineRuntimePicker: usesInlineRuntimePicker,
+                // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
+                // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
+                recentSessions: WorkspaceSessionPresentation.visibleSessions(
+                    loadedSessions,
+                    limit: visibleLimit
+                ),
+                unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
+                sessionLoadState: loadState,
+                hasInitialSessionContent: cachedPageState?.hasLoadedFirstPage == true || !storedRuntimeSessions.isEmpty,
+                canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
+                    loadedCount: loadedSessions.count,
+                    visibleLimit: visibleLimit,
+                    remoteHasMore: cachedPageState?.hasMore == true
+                ),
+                browseScope: $browseScope,
+                preferredRuntime: preferredRuntime,
+                availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                runtimeDiagnostic: sessionStore.workspaceRuntimeNotice(for: selectedSingleRuntime),
+                onRetryUnavailable: { choice in
+                    await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+                },
+                currentDate: currentDate,
+                onRefreshSessions: {
+                    Task {
+                        await refreshWorkspaceSessions(
+                            project: project,
+                            presentationKey: presentationKey,
+                            restartFromFirst: true
+                        )
+                    }
+                },
+                onLoadMoreSessions: {
+                    await loadMoreWorkspaceSessions(project: project, presentationKey: presentationKey)
+                },
+                onStartSession: { runtimeChoice in
+                    onStartSession(project, runtimeChoice)
+                },
+                onOpenSession: onOpenSession,
+                bottomContentMargin: bottomContentMargin
+            )
+        }
     }
 
     private func presentOpenWorkspaceSheet() {
@@ -1305,12 +1441,21 @@ struct WorkspaceRootView: View {
         workspaceSessionVisibleLimitByKey = workspaceSessionVisibleLimitByKey.filter {
             $0.key.workspaceID != project.id
         }
+        mergedCoordinator.removeWorkspace(workspaceID: project.id)
         sessionStore.forgetWorkspace(project)
+    }
+
+    private var enabledWorkspaceRuntimes: [WorkspaceSessionRuntimeChoice] {
+        WorkspaceSessionRuntimeChoice.enabledRuntimes(from: enabledRuntimesRawValue)
+    }
+
+    private var selectedSingleRuntime: WorkspaceSessionRuntimeChoice {
+        browseScope.singleRuntimeChoice ?? preferredRuntime
     }
 
     /// LazyHStack 会预先构建左右相邻页；提前取回它们的首屏窗口，
     /// 否则滑动落地时才开始请求，会先看到骨架屏再跳成列表。
-    /// 只取紧邻的前后各一页，且只取当前 Runtime——不做整库预热。
+    /// 只取紧邻的前后各一页，且只取当前浏览范围——不做整库预热。
     private var neighborWorkspaceProjects: [AgentProject] {
         let projects = sessionStore.sidebarProjects
         guard let index = projects.firstIndex(where: { $0.id == selectedWorkspaceID }) else {
@@ -1325,7 +1470,8 @@ struct WorkspaceRootView: View {
         (
             [appStore.activeHostScope.profileID,
              appStore.hasNoConfiguredHost ? "no-host" : "host",
-             selectedSessionRuntime.rawValue,
+             browseScope.id,
+             enabledRuntimesRawValue,
              selectedWorkspaceID ?? ""]
                 + neighborWorkspaceProjects.map(\.id)
         ).joined(separator: "|")
@@ -1336,8 +1482,29 @@ struct WorkspaceRootView: View {
             hostScope: appStore.activeHostScope,
             workspaceID: project.id,
             workspacePath: project.path,
-            runtimeProvider: selectedSessionRuntime.runtimeProvider
+            runtimeProvider: selectedSingleRuntime.runtimeProvider
         )
+    }
+
+    private func workspaceMergedPresentationKey(for project: AgentProject) -> WorkspaceMergedPresentationKey {
+        WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: enabledWorkspaceRuntimes
+        )
+    }
+
+    private func retryUnavailableRuntime(_ choice: WorkspaceSessionRuntimeChoice) async -> Bool {
+        if browseScope.isAll, let project = selectedProject {
+            return await mergedCoordinator.retryUnavailable(
+                runtime: choice,
+                project: project,
+                key: workspaceMergedPresentationKey(for: project),
+                sessionStore: sessionStore
+            )
+        }
+        return await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
     }
 
     private func workspaceSessionVisibleLimit(for key: WorkspaceSessionPresentationKey) -> Int {
@@ -1449,19 +1616,30 @@ struct WorkspaceRootView: View {
         else {
             return
         }
-        let presentationKey = workspaceSessionPresentationKey(for: project)
-        // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
-        await refreshWorkspaceSessions(
-            project: project,
-            presentationKey: presentationKey,
-            restartFromFirst: true
-        )
+        let hostScope = appStore.activeHostScope
+        if browseScope.isAll {
+            let mergedKey = workspaceMergedPresentationKey(for: project)
+            await mergedCoordinator.refresh(
+                project: project,
+                key: mergedKey,
+                sessionStore: sessionStore,
+                restartFromFirst: true
+            )
+        } else {
+            let presentationKey = workspaceSessionPresentationKey(for: project)
+            // 下拉先提交用户正在看的会话列表，目录和全部工作区的 Git 摘要不能挡住它。
+            await refreshWorkspaceSessions(
+                project: project,
+                presentationKey: presentationKey,
+                restartFromFirst: true
+            )
+        }
         // 目录同步要活过这次下拉手势本身，所以不能用 refreshable 任务的取消状态当门槛：
         // 指示器结束时这个任务就会被取消，拿它当条件会让后台同步永远起不来。
         // 页面离开和 Host 切换由 onDisappear 与 onChange 取消后台任务，语义不受影响。
-        guard appStore.activeHostScope == presentationKey.hostScope else { return }
+        guard appStore.activeHostScope == hostScope else { return }
         // 下拉完成只等待会话；目录同步在后台补齐，同一页面尚未完成的请求直接复用。
-        startManualCatalogRefresh(hostScope: presentationKey.hostScope)
+        startManualCatalogRefresh(hostScope: hostScope)
     }
 
     private func refreshWorkspaceSessions(

@@ -10,6 +10,11 @@ struct SessionFamily: Identifiable, Equatable {
 
     var id: SessionID { root.id }
 
+    /// 跨运行时唯一渲染键，防止合并视图中 `Codex/X` 与 `Claude/X` 同 ID 碰撞。
+    var renderID: String {
+        SessionHierarchy.compositeKey(root)
+    }
+
     var members: [AgentSession] { [root] + children }
 }
 
@@ -26,6 +31,11 @@ struct SessionHierarchyRow: Identifiable, Equatable {
 
     var id: SessionID { session.id }
 
+    /// 跨运行时唯一渲染键，确保混排列表 `ForEach` 零重复 ID。
+    var renderID: String {
+        SessionHierarchy.compositeKey(session)
+    }
+
     var isChild: Bool {
         if case .child = role { return true }
         return false
@@ -38,6 +48,10 @@ enum SessionHierarchy {
     /// 防御异常数据里的环；真实派生链只有几层。
     private static let maxAncestorDepth = 16
 
+    static func compositeKey(_ session: AgentSession) -> String {
+        "\(runtimeKey(session))::\(session.id)"
+    }
+
     /// 输入顺序就是列表原来的排序（置顶、运行优先、时间等规则都已生效）。
     /// 每个家族放在最先出现的成员的位置，相当于按父子中最近活动的会话排序；
     /// 父会话不在同一份输入里时，子会话保持平铺，不会消失。
@@ -45,36 +59,41 @@ enum SessionHierarchy {
         guard sessions.contains(where: { $0.spawnedFromThreadID != nil }) else {
             return sessions.map { SessionFamily(root: $0, children: [], leader: $0) }
         }
-        var byThreadID: [String: AgentSession] = [:]
+        var byRuntimeThreadKey: [String: AgentSession] = [:]
         for session in sessions {
-            for key in threadKeys(session) where byThreadID[key] == nil {
-                byThreadID[key] = session
+            let runtime = runtimeKey(session)
+            for key in threadKeys(session) {
+                let scopedKey = "\(runtime)::\(key)"
+                if byRuntimeThreadKey[scopedKey] == nil {
+                    byRuntimeThreadKey[scopedKey] = session
+                }
             }
         }
 
-        var rootIDBySessionID: [SessionID: SessionID] = [:]
+        var rootKeyBySessionKey: [String: String] = [:]
         for session in sessions {
-            rootIDBySessionID[session.id] = rootID(of: session, byThreadID: byThreadID)
+            rootKeyBySessionKey[compositeKey(session)] = rootKey(of: session, byRuntimeThreadKey: byRuntimeThreadKey)
         }
 
-        var order: [SessionID] = []
-        var leaderByRootID: [SessionID: AgentSession] = [:]
-        var childrenByRootID: [SessionID: [AgentSession]] = [:]
-        var sessionByID: [SessionID: AgentSession] = [:]
+        var order: [String] = []
+        var leaderByRootKey: [String: AgentSession] = [:]
+        var childrenByRootKey: [String: [AgentSession]] = [:]
+        var sessionByKey: [String: AgentSession] = [:]
         for session in sessions {
-            sessionByID[session.id] = sessionByID[session.id] ?? session
-            let rootID = rootIDBySessionID[session.id] ?? session.id
-            if leaderByRootID[rootID] == nil {
-                leaderByRootID[rootID] = session
-                order.append(rootID)
+            let key = compositeKey(session)
+            sessionByKey[key] = sessionByKey[key] ?? session
+            let root = rootKeyBySessionKey[key] ?? key
+            if leaderByRootKey[root] == nil {
+                leaderByRootKey[root] = session
+                order.append(root)
             }
-            if rootID != session.id {
-                childrenByRootID[rootID, default: []].append(session)
+            if root != key {
+                childrenByRootKey[root, default: []].append(session)
             }
         }
-        return order.compactMap { rootID in
-            guard let root = sessionByID[rootID], let leader = leaderByRootID[rootID] else { return nil }
-            return SessionFamily(root: root, children: childrenByRootID[rootID] ?? [], leader: leader)
+        return order.compactMap { rootKey in
+            guard let root = sessionByKey[rootKey], let leader = leaderByRootKey[rootKey] else { return nil }
+            return SessionFamily(root: root, children: childrenByRootKey[rootKey] ?? [], leader: leader)
         }
     }
 
@@ -88,10 +107,11 @@ enum SessionHierarchy {
                 role: .root(childCount: family.children.count, isExpanded: isExpanded)
             ))
             guard isExpanded else { continue }
+            let lastChildKey = family.children.last.map(compositeKey)
             for child in family.children {
                 rows.append(SessionHierarchyRow(
                     session: child,
-                    role: .child(parent: family.root, isLast: child.id == family.children.last?.id)
+                    role: .child(parent: family.root, isLast: compositeKey(child) == lastChildKey)
                 ))
             }
         }
@@ -99,21 +119,23 @@ enum SessionHierarchy {
     }
 
     /// 沿派生链向上，找同一份输入里能找到的最顶层祖先；直接父会话不在输入里时保持平铺。
-    private static func rootID(of session: AgentSession, byThreadID: [String: AgentSession]) -> SessionID {
+    private static func rootKey(
+        of session: AgentSession,
+        byRuntimeThreadKey: [String: AgentSession]
+    ) -> String {
+        let runtime = runtimeKey(session)
         var current = session
-        var visited: Set<SessionID> = [session.id]
+        var visited: Set<String> = [compositeKey(session)]
         for _ in 0..<maxAncestorDepth {
             guard let parentThreadID = current.spawnedFromThreadID,
-                  let parent = byThreadID[parentThreadID],
-                  // 派生关系只在同一运行时内成立，不同渠道的同名 ID 不能串起来。
-                  runtimeKey(parent) == runtimeKey(session) else {
+                  let parent = byRuntimeThreadKey["\(runtime)::\(parentThreadID)"] else {
                 break
             }
             // 成环说明数据异常；整条链都按平铺处理，避免同一会话同时出现在两个家族里。
-            guard visited.insert(parent.id).inserted else { return session.id }
+            guard visited.insert(compositeKey(parent)).inserted else { return compositeKey(session) }
             current = parent
         }
-        return current.id
+        return compositeKey(current)
     }
 
     private static func threadKeys(_ session: AgentSession) -> [String] {
@@ -148,15 +170,18 @@ extension SessionHierarchy {
     static func sectionedFamilies<Key: Hashable>(
         _ sections: [(key: Key, sessions: [AgentSession])]
     ) -> [SessionFamilySection<Key>] {
-        var sectionBySessionID: [SessionID: Key] = [:]
+        var sectionBySessionKey: [String: Key] = [:]
         for section in sections {
-            for session in section.sessions where sectionBySessionID[session.id] == nil {
-                sectionBySessionID[session.id] = section.key
+            for session in section.sessions {
+                let key = compositeKey(session)
+                if sectionBySessionKey[key] == nil {
+                    sectionBySessionKey[key] = section.key
+                }
             }
         }
         var familiesByKey: [Key: [SessionFamily]] = [:]
         for family in families(sections.flatMap(\.sessions)) {
-            guard let key = sectionBySessionID[family.leader.id] else { continue }
+            guard let key = sectionBySessionKey[compositeKey(family.leader)] else { continue }
             familiesByKey[key, default: []].append(family)
         }
         return sections.compactMap { section in
