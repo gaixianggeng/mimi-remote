@@ -13,7 +13,7 @@
 - iPhone 或 iPad 运行 iOS / iPadOS 18 或更高版本。
 - 电脑运行 macOS 15 或更高版本、Windows 10/11 x64，或带 systemd 用户会话的 Linux（x86_64 或 ARM64），并已安装和登录 Codex（Mac 上 Codex CLI 或 ChatGPT 桌面版均可，Windows 和 Linux 需要 Codex CLI）。
 - 电脑已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 Mimi Remote 宿主：Mac 使用 **Mimi Remote Mac**，Windows 使用 `Mimi-Remote-Setup` 安装程序，Linux 使用 `linux` 归档。
-- 移动设备能够通过局域网、Tailscale 私有网络、实验性 Tailcat 连接或用户配置的 HTTPS 地址访问电脑。
+- 移动设备能够通过局域网、Tailscale 私有网络、Tailcat 连接或用户配置的 HTTPS 地址访问电脑。
 
 支持范围：只有来自 App Store、TestFlight 或从本仓库源码构建的正式签名包在支持范围内。iOS 16 / 17 回移分支，以及未签名 / TrollStore / 越狱构建不受支持，相关问题不进入修复排期。
 
@@ -63,7 +63,7 @@ Before using the app, confirm that:
 - Your iPhone or iPad runs iOS/iPadOS 18 or later.
 - Your computer runs macOS 15 or later, Windows 10/11 x64, or Linux (x86_64 or ARM64 with a systemd user session), with Codex installed and signed in (on a Mac, the Codex CLI or the ChatGPT desktop app; on Windows and Linux, the Codex CLI).
 - The Mimi Remote host is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running: **Mimi Remote Mac** on Mac, the `Mimi-Remote-Setup` installer on Windows, or the `linux` archive on Linux.
-- The mobile device can reach the computer over a local network, a private Tailscale network, the experimental Tailcat connection, or an HTTPS endpoint you configure.
+- The mobile device can reach the computer over a local network, a private Tailscale network, the Tailcat connection, or an HTTPS endpoint you configure.
 
 Supported builds: only signed builds from the App Store, TestFlight, or source built from this repository are supported. iOS 16/17 back-ports, and unsigned / TrollStore / jailbroken builds, are out of scope and are not scheduled for fixes.
 

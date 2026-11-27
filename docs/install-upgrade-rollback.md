@@ -40,7 +40,7 @@ Windows 防火墙规则和 LAN 监听默认不启用。用户确认工作区并�
 & "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" restart --no-pair --wait 30s
 ```
 
-安装包还内置与 agentd 同版本的实验性 Tailcat 辅助程序 `mimi-tailcat-experiment.exe`，默认关闭。没装 Tailscale、也没开 LAN（例如处在 Public 网络）时，在托盘控制面板点“开启 Tailcat”，或在托盘菜单选“开启 Tailcat…”。确认后 agentd 启动辅助程序，托盘以 agentd 回读的运行状态为准。随后在“配对设备”中点“用 Tailcat”生成 Tailcat 二维码；Tailscale 和局域网都没有开启或不可用时，会直接显示 Tailcat 二维码。Tailcat 只发起出站连接，不新增防火墙规则：能直连时点对点，否则经 DERP 中继转发，默认中继由 Tailscale 运营。
+安装包还内置与 agentd 同版本的 Tailcat 辅助程序 `mimi-tailcat-experiment.exe`，默认关闭。没装 Tailscale、也没开 LAN（例如处在 Public 网络）时，在托盘控制面板点“开启 Tailcat”，或在托盘菜单选“开启 Tailcat…”。确认后 agentd 启动辅助程序，托盘以 agentd 回读的运行状态为准。随后在“配对设备”中点“用 Tailcat”生成 Tailcat 二维码；Tailscale 和局域网都没有开启或不可用时，会直接显示 Tailcat 二维码。Tailcat 只发起出站连接，不新增防火墙规则：能直连时点对点，否则经 DERP 中继转发，默认中继由 Tailscale 运营。
 
 辅助程序的身份、已配对设备和本机控制通道 `control.sock` 保存在 `%APPDATA%\mimi-remote\tailcat`，由用户配置文件的 ACL 保护；控制通道使用 Windows 10 1803 起内置的 AF_UNIX socket。agentd 停止或重启时，通过控制通道让辅助程序正常退出。计划任务和辅助程序各自的 kill-on-close Job Object 负责兜底，agentd 异常退出也不会留下进程。升级和卸载前，安装器会等待辅助程序退出，必要时强制结束。`agentd doctor` 的 `tailcat` 项报告辅助程序是否存在及其版本，缺失时重新运行同版本安装器。关闭 Tailcat 会断开正在使用它的设备，不影响 Tailscale 和 LAN 连接。
 
@@ -75,7 +75,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 macOS 安装要求 macOS 15 或更高版本。有安装包即可先配置桌面端。使用 Codex 桌面共享时才需要额外设置，见[共享 App Server](shared-ssh-app-server.md)。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并保存。服务、助手与通道就绪后，用移动端 App（主屏上叫 mimi）扫描新生成的二维码。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd`、默认使用的 Claude 适配器 `mimi-claude-adapter`、回退用的 `alleycat-claude-bridge`，以及实验性 Tailcat 辅助程序 `mimi-tailcat-experiment`（默认关闭）。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并保存。服务、助手与通道就绪后，用移动端 App（主屏上叫 mimi）扫描新生成的二维码。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd`、默认使用的 Claude 适配器 `mimi-claude-adapter`、回退用的 `alleycat-claude-bridge`，以及 Tailcat 辅助程序 `mimi-tailcat-experiment`（默认关闭）。
 
 检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 

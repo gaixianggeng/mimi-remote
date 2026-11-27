@@ -196,6 +196,10 @@ final class SessionStore: ObservableObject {
     }
     /// 通道声明了 thread/goal/* 的 Runtime，与可用性一起刷新；目标入口只对这些 Runtime 展示（#791）。
     @Published var threadGoalRuntimeProviders: Set<String> = ["codex"]
+    /// 通道声明支持沿用已有会话权限（preserve_thread_permissions）的 Runtime（#1177）。
+    @Published var preserveThreadPermissionRuntimeProviders: Set<String> = ["codex", "agy"]
+    /// 通道声明了 turn/steer 的 Runtime，与可用性一起刷新；引导入口只对这些 Runtime 开放（#1172）。
+    @Published var turnSteerRuntimeProviders: Set<String> = ["codex", "claude"]
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
@@ -1299,6 +1303,10 @@ final class SessionStore: ObservableObject {
             setErrorMessage(L10n.text("ui.there_are_currently_no_active_rounds_to_boot"))
             return false
         }
+        guard supportsTurnSteer(runtimeProvider: session.runtimeProvider) else {
+            setErrorMessage(L10n.text("ui.the_current_running_channel_does_not_support_steer"))
+            return false
+        }
         let item = queue[location.index]
         let hasEarlierFreshTurnBoundary = queue[..<location.index].contains {
             $0.requiresFreshTurn == true
@@ -1352,7 +1360,6 @@ final class SessionStore: ObservableObject {
             sessionID: session.id
         )
         setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-        setStatusMessage(L10n.text("ui.directed_current_reply_immediately"))
         return true
     }
 

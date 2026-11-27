@@ -30,9 +30,14 @@ enum RuntimeFeatureSupport {
         return normalized != "codex" && appServerRuntimeProviders.contains(normalized)
     }
 
-    /// 仅 Codex 网关允许通过 `mimiPreserveThreadPermissions: true` 继承已有线程权限设置。
-    static func supportsPreserveThreadPermissions(for provider: String?) -> Bool {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) == "codex"
+    /// Codex 与声明了 `preserve_thread_permissions` 的 Antigravity 网关允许携带
+    /// `mimiPreserveThreadPermissions: true` 继承已有线程权限设置（#1177）。
+    static func supportsPreserveThreadPermissions(
+        for provider: String?,
+        declaredBy providers: Set<String> = ["codex", "agy"]
+    ) -> Bool {
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
+        return !isDeepSeek(normalized) && providers.contains(normalized)
     }
 
     static func permissionModes(for provider: String) -> [ComposerPermissionMode] {
@@ -55,6 +60,12 @@ enum RuntimeFeatureSupport {
     static func supportsGoals(for provider: String, declaredBy goalProviders: Set<String>) -> Bool {
         !isDeepSeek(provider)
             && goalProviders.contains(CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider))
+    }
+
+    /// 当前回合引导（`turn/steer`）以通道声明为准（#1172）；未声明 `turn/steer` 的通道自动回落排队。
+    static func supportsTurnSteer(for provider: String, declaredBy steerProviders: Set<String>) -> Bool {
+        !isDeepSeek(provider)
+            && steerProviders.contains(CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider))
     }
 
     static func isDeepSeek(_ provider: String?) -> Bool {

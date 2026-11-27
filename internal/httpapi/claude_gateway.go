@@ -681,28 +681,35 @@ func copyClaudeBridgeFrames(ctx context.Context, reader *bufio.Reader, client *w
 // when the caller must tear the connection down (client write failed).
 func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) (string, bool) {
 	policyStart := time.Now()
-	forwardPayload, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	decision := policy.observeUpstreamFrameDecision(websocket.TextMessage, payload)
 	policyDuration := time.Since(policyStart)
-	if policyErr != nil {
-		if monitor != nil {
-			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, policyErr, policyDuration)
+	pinGrace := time.Duration(0)
+	defer func() {
+		if decision.releasePins != nil {
+			decision.releasePins(pinGrace)
 		}
-		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
+	}()
+	if decision.policyErr != nil {
+		if monitor != nil {
+			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, decision.policyErr, policyDuration)
+		}
+		if !writeGatewayPolicyError(client, clientWriteMu, decision.policyErr) {
 			return "upstream_policy_error_write_failed", true
 		}
 		return "", false
 	}
-	if !forward {
+	if !decision.forward {
 		if monitor != nil {
 			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
 		}
 		return "", false
 	}
-	frame := append([]byte(nil), forwardPayload...)
+	frame := append([]byte(nil), decision.forwardPayload...)
 	writeStart := time.Now()
 	if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, frame); err != nil {
 		return gatewayCloseReason("client_write", err), true
 	}
+	pinGrace = appServerHistoryMediaReadGrace
 	if monitor != nil {
 		monitor.recordForward("upstream_to_client", len(payload), len(frame), policyDuration, time.Since(writeStart), frame)
 	}

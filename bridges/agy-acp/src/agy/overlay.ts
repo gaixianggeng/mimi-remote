@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { PersistedSessionPermissions } from "../runtime/settings.ts";
+import type { OwnTurnTranscriptWatermark } from "./transcript.ts";
 
 export interface TurnOutcomeRecord {
   status: "completed" | "failed" | "interrupted";
@@ -59,6 +61,9 @@ interface OverlayEntry {
   archivedTurnAttempts?: TurnAttemptRecord[];
   turnAttempts?: TurnAttemptRecord[];
   toolMappings?: Record<string, PersistedToolMapping[]>;
+  permissions?: PersistedSessionPermissions;
+  /** 最近一次由本适配器正常/中断/失败结束且无外部冲突的 transcript 水印，防止重启或刷新时误判为电脑端运行。 */
+  ownTurnWatermark?: OwnTurnTranscriptWatermark;
 }
 
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
@@ -153,9 +158,23 @@ interface OverlayData {
  * - 记录首次观测到的 `createdAt` 与首条用户提问 `preview`（ACP `session/list` 只给 `title` 和 `updatedAt`）；
  * - 保存归档标记 `archived`。
  */
+function sanitizePersistedWatermark(watermark: OwnTurnTranscriptWatermark): OwnTurnTranscriptWatermark {
+  return {
+    status: watermark.status,
+    completedAtMs: watermark.completedAtMs,
+    size: watermark.size,
+    mtimeMs: watermark.mtimeMs,
+    lastUserStepIndex: watermark.lastUserStepIndex,
+    lastStepIndex: watermark.lastStepIndex,
+    ...(watermark.persistedAtSettlement !== undefined ? { persistedAtSettlement: watermark.persistedAtSettlement } : {}),
+    ...(watermark.expectedPromptText ? { expectedPromptText: watermark.expectedPromptText } : {}),
+  };
+}
+
 export class AgyOverlay {
   private loaded = false;
   private data: OverlayData = { version: 1, sessions: {} };
+  private readonly ephemeralWatermarks = new Map<string, OwnTurnTranscriptWatermark | null>();
   private writeChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly filePath: string) {}
@@ -197,6 +216,18 @@ export class AgyOverlay {
 
   getToolMappings(sessionId: string, turnId: string): PersistedToolMapping[] {
     return this.data.sessions[sessionId]?.toolMappings?.[turnId] ?? [];
+  }
+
+  /** 同步写入/清除会话的即时内存水印，消除回合结束到磁盘持久化之间的竞态窗口。 */
+  setEphemeralOwnTurnWatermark(sessionId: string, watermark: OwnTurnTranscriptWatermark | null): void {
+    this.ephemeralWatermarks.set(sessionId, watermark);
+  }
+
+  getOwnTurnWatermark(sessionId: string): OwnTurnTranscriptWatermark | undefined {
+    if (this.ephemeralWatermarks.has(sessionId)) {
+      return this.ephemeralWatermarks.get(sessionId) ?? undefined;
+    }
+    return this.data.sessions[sessionId]?.ownTurnWatermark;
   }
 
   /**
@@ -280,6 +311,8 @@ export class AgyOverlay {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      permissions?: PersistedSessionPermissions;
+      ownTurnWatermark?: OwnTurnTranscriptWatermark | null;
     },
   ): Promise<void> {
     await this.load();
@@ -389,7 +422,19 @@ export class AgyOverlay {
       ...(archivedTurnAttempts ? { archivedTurnAttempts } : {}),
       ...(turnAttempts ? { turnAttempts } : {}),
       ...(toolMappings ? { toolMappings } : {}),
+      ...(patch.permissions ? { permissions: patch.permissions } : {}),
     };
+    if (patch.ownTurnWatermark === null) {
+      delete next.ownTurnWatermark;
+      if (this.ephemeralWatermarks.get(sessionId) === null) {
+        this.ephemeralWatermarks.delete(sessionId);
+      }
+    } else if (patch.ownTurnWatermark !== undefined && !patch.ownTurnWatermark.provisional) {
+      next.ownTurnWatermark = sanitizePersistedWatermark(patch.ownTurnWatermark);
+      if (this.ephemeralWatermarks.get(sessionId) === patch.ownTurnWatermark) {
+        this.ephemeralWatermarks.delete(sessionId);
+      }
+    }
     this.data.sessions[sessionId] = next;
     await this.persist();
   }

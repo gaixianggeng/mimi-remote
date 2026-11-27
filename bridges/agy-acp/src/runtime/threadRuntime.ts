@@ -15,6 +15,7 @@ import type { PersistedToolMapping } from "../agy/overlay.ts";
 import {
   detectExternalConcurrentWrite,
   type ExternalWriteBaseline,
+  type OwnTurnTranscriptWatermark,
   type TranscriptActivityInfo,
   type TranscriptSnapshotResult,
   type TranscriptTurnSnapshot,
@@ -22,7 +23,7 @@ import {
 import { desktopOwnerSummary } from "../handlers/threads.ts";
 import { selectPermissionOption, serverApprovalFor } from "./approvals.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
-import type { AgyRunSettings } from "./settings.ts";
+import { isAgyModeId, type AgyModeId, type AgyRunSettings } from "./settings.ts";
 import { toAcpPromptBlocks } from "./userInput.ts";
 
 export const EXTERNAL_WRITE_CONFLICT_MESSAGE =
@@ -63,6 +64,7 @@ export interface RuntimeHost {
   onSessionOpen?(openResult: AcpSessionOpenResult): void;
   onAvailableCommands?(cwd: string, commands: AcpAvailableCommand[]): void;
   onTitleUpdated?(threadId: string, title: string): void;
+  onOwnTurnWatermark?(threadId: string, watermark: OwnTurnTranscriptWatermark | null): void;
   onTurnPersisted?(
     threadId: string,
     patch: {
@@ -86,6 +88,7 @@ export interface RuntimeHost {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      ownTurnWatermark?: OwnTurnTranscriptWatermark | null;
     },
   ): void;
   reserveTurnAttempt?(
@@ -111,6 +114,10 @@ export interface TurnStartRequest {
   input: UserInput[];
   clientUserMessageId: string | null;
   settings: Partial<AgyRunSettings>;
+  /** 为 true 时沿用会话原有权限/模式，不主动下发 session/set_mode 覆盖上游状态（#1177）。 */
+  preservePermissions?: boolean;
+  /** 单轮协作模式为 plan；只影响本轮，不覆盖会话基础权限。 */
+  planMode?: boolean;
 }
 
 export class ThreadRuntime {
@@ -120,6 +127,9 @@ export class ThreadRuntime {
   private appliedMode: string | undefined;
   private appliedModel: string | undefined;
   private appliedEffort: string | undefined;
+  private preserveExistingMode: boolean;
+  private baseMode: AgyModeId | undefined;
+  private transientPlanMode = false;
   private currentTurn: LiveTurn | undefined;
   private currentAttempt:
     | {
@@ -163,11 +173,14 @@ export class ThreadRuntime {
     initialTitle: string | null = null,
     private readonly appDataDirName?: string,
     initialTimestamps?: { createdAt?: number; updatedAt?: number },
+    preserveExistingMode = false,
   ) {
     const nowSec = Math.floor(Date.now() / 1000);
     this.createdAt = initialTimestamps?.createdAt ?? nowSec;
     this.updatedAt = initialTimestamps?.updatedAt ?? this.createdAt;
     this.title = initialTitle;
+    this.preserveExistingMode = preserveExistingMode;
+    this.baseMode = preserveExistingMode ? undefined : settings.mode;
   }
 
   get activeTurnId(): string | undefined {
@@ -176,6 +189,11 @@ export class ThreadRuntime {
 
   get currentSettings(): AgyRunSettings {
     return this.settings;
+  }
+
+  get effectiveMode(): AgyModeId {
+    if (isAgyModeId(this.appliedMode)) return this.appliedMode;
+    return this.baseMode ?? this.settings.mode;
   }
 
   isBusy(): boolean {
@@ -228,12 +246,27 @@ export class ThreadRuntime {
 
     let turn: LiveTurn | undefined;
     try {
-      this.settings = {
-        model: req.settings.model ?? this.settings.model,
-        effort: req.settings.effort ?? this.settings.effort,
-        mode: req.settings.mode ?? this.settings.mode,
-        executionPolicy: req.settings.executionPolicy ?? this.settings.executionPolicy,
-      };
+      const preservingPermissions = req.preservePermissions === true;
+      const planMode = req.planMode === true;
+      if (!preservingPermissions) {
+        this.preserveExistingMode = false;
+        const nextExecutionPolicy = req.settings.executionPolicy ?? this.settings.executionPolicy;
+        const nextBaseMode = req.settings.mode ?? this.baseMode ?? this.settings.mode;
+        this.baseMode = nextBaseMode;
+        this.transientPlanMode = planMode && nextBaseMode !== "plan";
+        this.settings = {
+          model: req.settings.model ?? this.settings.model,
+          effort: req.settings.effort ?? this.settings.effort,
+          mode: planMode ? "plan" : nextBaseMode,
+          executionPolicy: nextExecutionPolicy,
+        };
+      } else {
+        this.settings = {
+          ...this.settings,
+          model: req.settings.model ?? this.settings.model,
+          effort: req.settings.effort ?? this.settings.effort,
+        };
+      }
       const { blocks, preview, promptHash, promptTruncated } = await toAcpPromptBlocks(req.input);
 
       if (!this.client || this.client.isClosed) {
@@ -245,8 +278,24 @@ export class ThreadRuntime {
         this.recordSessionMeta(result, false);
       }
 
+      let modeToApply: AgyModeId | undefined;
+      if (!preservingPermissions) {
+        modeToApply = this.settings.mode;
+      } else if (planMode) {
+        this.transientPlanMode = true;
+        modeToApply = "plan";
+      } else if (this.transientPlanMode) {
+        this.transientPlanMode = false;
+        modeToApply = this.baseMode;
+      } else if (!this.preserveExistingMode) {
+        modeToApply = this.baseMode ?? this.settings.mode;
+      }
+      if (modeToApply) {
+        this.settings = { ...this.settings, mode: modeToApply };
+      }
+
       const client = this.client!;
-      await this.applySessionControls(client, this.settings);
+      await this.applySessionControls(client, this.settings, { modeToApply });
 
       // 预留不可复用回合序号与发布回合之前，绕过 300ms 进程缓存重新确认当前持有者（C11 round5），
       // 防止写前判断到 sessionLoadWithReplay 之间的异步窗口内已被外部进程抢先接手。
@@ -302,6 +351,7 @@ export class ThreadRuntime {
       this.currentAttempt = attemptMeta;
       this.startingTurn = false;
 
+      this.host.onOwnTurnWatermark?.(this.threadId, null);
       this.host.publish(this.threadId, "thread/status/changed", {
         threadId: this.threadId,
         status: { type: "active", activeFlags: [] },
@@ -311,6 +361,7 @@ export class ThreadRuntime {
       this.host.onTurnPersisted?.(this.threadId, {
         ...(preview ? { preview } : {}),
         updatedAt: this.updatedAt,
+        ownTurnWatermark: null,
       });
 
       const initialInspection = await this.inspectTranscript();
@@ -431,7 +482,33 @@ export class ThreadRuntime {
     } finally {
       const isCurrentTurn = this.currentTurn === turn;
       const hadConflict = isCurrentTurn && Boolean(this.externalWriteConflict);
+      const savedBaseline = isCurrentTurn ? this.externalWriteBaseline : undefined;
+      const completedAtMs = Date.now();
+      const attemptStatus: "completed" | "failed" | "interrupted" =
+        finishedTurn?.status === "failed"
+          ? "failed"
+          : finishedTurn?.status === "interrupted"
+            ? "interrupted"
+            : "completed";
       if (isCurrentTurn) {
+        if (hadConflict) {
+          this.host.onOwnTurnWatermark?.(this.threadId, null);
+        } else {
+          const beforeLastUserStepIndex = initialSnapshot?.userInputStepIndices?.length
+            ? (initialSnapshot.userInputStepIndices[initialSnapshot.userInputStepIndices.length - 1] ?? null)
+            : null;
+          this.host.onOwnTurnWatermark?.(this.threadId, {
+            status: attemptStatus,
+            completedAtMs,
+            size: initialSnapshot?.size ?? 0,
+            mtimeMs: initialSnapshot?.mtimeMs ?? 0,
+            lastUserStepIndex: null,
+            lastStepIndex: initialSnapshot?.lastStepIndex ?? null,
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+            provisional: true,
+            beforeLastUserStepIndex,
+          });
+        }
         this.stopExternalWriteMonitor();
         this.externalWriteBaseline = undefined;
         this.externalWriteCheckInFlight = undefined;
@@ -439,7 +516,6 @@ export class ThreadRuntime {
         this.currentTurn = undefined;
         this.currentAttempt = undefined;
       }
-      const completedAtMs = Date.now();
       this.updatedAt = Math.max(this.updatedAt, Math.floor(completedAtMs / 1000));
       const afterInspection = await this.inspectTranscript();
       const afterSnapshot = afterInspection.kind === "present" ? afterInspection.snapshot : undefined;
@@ -464,12 +540,45 @@ export class ThreadRuntime {
           nativeUserStepIndex = idx;
         }
       }
-      const attemptStatus: "completed" | "failed" | "interrupted" =
-        finishedTurn?.status === "failed"
-          ? "failed"
-          : finishedTurn?.status === "interrupted"
-            ? "interrupted"
-            : "completed";
+      const finalExternalWriteConflict =
+        hadConflict
+        || (
+          savedBaseline !== undefined
+          && afterSnapshot !== undefined
+          && detectExternalConcurrentWrite(savedBaseline, afterSnapshot).detected
+        );
+      let settledWatermark: OwnTurnTranscriptWatermark | null | undefined;
+      if (this.turnGeneration === turnGeneration) {
+        if (finalExternalWriteConflict || afterInspection.kind === "error") {
+          settledWatermark = null;
+        } else if (afterSnapshot !== undefined) {
+          const lastUserStepIndex = afterSnapshot.userInputStepIndices?.length
+            ? (afterSnapshot.userInputStepIndices[afterSnapshot.userInputStepIndices.length - 1] ?? null)
+            : null;
+          settledWatermark = {
+            status: attemptStatus,
+            completedAtMs,
+            size: afterSnapshot.size,
+            mtimeMs: afterSnapshot.mtimeMs,
+            lastUserStepIndex,
+            lastStepIndex: afterSnapshot.lastStepIndex ?? null,
+            ...(attemptPersisted !== undefined ? { persistedAtSettlement: attemptPersisted } : {}),
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+          };
+        } else {
+          settledWatermark = {
+            status: attemptStatus,
+            completedAtMs,
+            size: 0,
+            mtimeMs: 0,
+            lastUserStepIndex: null,
+            lastStepIndex: null,
+            persistedAtSettlement: false,
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+          };
+        }
+        this.host.onOwnTurnWatermark?.(this.threadId, settledWatermark);
+      }
       const toolEntries = turn.toolMappings();
       this.host.onTurnPersisted?.(this.threadId, {
         updatedAt: this.updatedAt,
@@ -490,12 +599,13 @@ export class ThreadRuntime {
           ...(attemptStatus !== "completed" && finishedTurn ? { syntheticTurn: finishedTurn } : {}),
         },
         ...(toolEntries.length > 0 ? { toolMappings: { turnId: finishedTurn?.id ?? attemptMeta.turnId, entries: toolEntries } } : {}),
+        ...(settledWatermark !== undefined ? { ownTurnWatermark: settledWatermark } : {}),
       });
       // 若在异步收尾期间已有新回合启动或会话已关闭，不得发布旧回合的终态覆盖新状态。
       if (this.turnGeneration !== turnGeneration) {
         return;
       }
-      const ext = hadConflict
+      const ext = finalExternalWriteConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
         : undefined;
       if (this.turnGeneration !== turnGeneration) {
@@ -537,10 +647,15 @@ export class ThreadRuntime {
     this.unsubPermission = undefined;
   }
 
-  private async applySessionControls(client: AcpClient, settings: AgyRunSettings): Promise<void> {
-    if (settings.mode && settings.mode !== this.appliedMode) {
-      await client.sessionSetMode(this.threadId, settings.mode);
-      this.appliedMode = settings.mode;
+  private async applySessionControls(
+    client: AcpClient,
+    settings: AgyRunSettings,
+    options?: { modeToApply?: AgyModeId | undefined },
+  ): Promise<void> {
+    const desiredMode = options && "modeToApply" in options ? options.modeToApply : settings.mode;
+    if (desiredMode && desiredMode !== this.appliedMode) {
+      await client.sessionSetMode(this.threadId, desiredMode);
+      this.appliedMode = desiredMode;
     }
     if (settings.model && settings.model !== this.appliedModel) {
       await client.sessionSetConfigOption(this.threadId, "model", settings.model);
@@ -567,6 +682,10 @@ export class ThreadRuntime {
     }
     if (open.modes?.currentModeId) {
       this.appliedMode = open.modes.currentModeId;
+      if (this.preserveExistingMode && !this.transientPlanMode && isAgyModeId(open.modes.currentModeId)) {
+        this.baseMode = open.modes.currentModeId;
+        this.settings = { ...this.settings, mode: open.modes.currentModeId };
+      }
     }
     for (const opt of open.configOptions ?? []) {
       if (opt.id === "model") this.appliedModel = opt.currentValue;
@@ -591,6 +710,10 @@ export class ThreadRuntime {
     }
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
       this.appliedMode = update.currentModeId;
+      if (this.preserveExistingMode && !this.transientPlanMode && isAgyModeId(update.currentModeId)) {
+        this.baseMode = update.currentModeId;
+        this.settings = { ...this.settings, mode: update.currentModeId };
+      }
       return;
     }
     this.currentTurn?.onUpdate(update);

@@ -43,16 +43,23 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 // newAppServerGatewayPolicy 初始化一次连接（或一个 broker 会话）的全部策略状态。
 // broker 与一对一代理必须共用同一套初始化，否则两条路径的裁剪规则会悄悄分叉。
 func newAppServerGatewayPolicy(r *Router, runtimeID string) *appServerGatewayPolicy {
+	var evictionEpoch uint64
+	if r != nil {
+		r.gatewayThreadsMu.Lock()
+		evictionEpoch = r.gatewayRestrictionEvictionEpoch
+		r.gatewayThreadsMu.Unlock()
+	}
 	return &appServerGatewayPolicy{
-		router:                r,
-		runtimeID:             runtimeID,
-		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
-		pendingClientRequests: map[string]appServerGatewayPendingClientRequest{},
-		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
-		activeServerTurns:     map[string]struct{}{},
-		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
-		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
-		allowedThreads:        map[string]appServerGatewayAllowedThread{},
+		router:                   r,
+		runtimeID:                runtimeID,
+		restrictionEvictionEpoch: evictionEpoch,
+		pendingThreads:           map[string]appServerGatewayPendingThreadRequest{},
+		pendingClientRequests:    map[string]appServerGatewayPendingClientRequest{},
+		pendingServerRequests:    map[string]appServerGatewayPendingServerRequest{},
+		activeServerTurns:        map[string]struct{}{},
+		pendingHistory:           map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:           map[string]appServerGatewayHistoryBudget{},
+		allowedThreads:           map[string]appServerGatewayAllowedThread{},
 	}
 }
 
@@ -97,6 +104,10 @@ type clientFrameForwardTracker func(messageType int, payload []byte) (rollback f
 type clientFrameAuthorizer func() bool
 
 func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, frameMu *sync.Mutex, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker) string {
+	return r.copyClientFramesToAppServerForSink(ctx, client, upstream, clientWriteMu, upstreamWriteMu, policy, monitor, frameMu, authorize, intercept, trackForward, 0)
+}
+
+func (r *Router) copyClientFramesToAppServerForSink(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, frameMu *sync.Mutex, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker, clientSinkGen uint64) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
@@ -105,7 +116,7 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 		if frameMu != nil {
 			frameMu.Lock()
 		}
-		reason, stop := r.processClientFrameToAppServer(ctx, client, upstream, clientWriteMu, upstreamWriteMu, policy, monitor, authorize, intercept, trackForward, messageType, payload)
+		reason, stop := r.processClientFrameToAppServerForSink(ctx, client, upstream, clientWriteMu, upstreamWriteMu, policy, monitor, authorize, intercept, trackForward, messageType, payload, clientSinkGen)
 		if frameMu != nil {
 			frameMu.Unlock()
 		}
@@ -116,6 +127,10 @@ func (r *Router) copyClientFramesToAppServer(ctx context.Context, client *websoc
 }
 
 func (r *Router) processClientFrameToAppServer(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker, messageType int, payload []byte) (string, bool) {
+	return r.processClientFrameToAppServerForSink(ctx, client, upstream, clientWriteMu, upstreamWriteMu, policy, monitor, authorize, intercept, trackForward, messageType, payload, 0)
+}
+
+func (r *Router) processClientFrameToAppServerForSink(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, authorize clientFrameAuthorizer, intercept clientFrameInterceptor, trackForward clientFrameForwardTracker, messageType int, payload []byte, clientSinkGen uint64) (string, bool) {
 	if authorize != nil && !authorize() {
 		return "broker_sink_replaced", true
 	}
@@ -130,7 +145,7 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 		}
 	}
 	policyStart := time.Now()
-	forwardPayload, policyErr := policy.validateClientFrameContext(ctx, messageType, payload)
+	forwardPayload, policyErr := policy.validateClientFrameForSink(ctx, messageType, payload, clientSinkGen)
 	policyDuration := time.Since(policyStart)
 	monitor.logSessionListStage(payload, "request_policy", policyDuration)
 	if policyErr != nil {
@@ -190,10 +205,14 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		}
 		monitor.logSessionListStage(payload, "upstream_received", 0)
 		policyStart := time.Now()
-		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
+		decision := policy.observeUpstreamFrameDecision(messageType, payload)
 		policyDuration := time.Since(policyStart)
 		monitor.logSessionListStage(payload, "response_policy", policyDuration)
-		if policyErr != nil {
+		if decision.policyErr != nil {
+			if decision.releasePins != nil {
+				decision.releasePins(0)
+			}
+			policyErr := decision.policyErr
 			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, policyErr, policyDuration)
 			if policyErr.historyResponseBlocked {
 				monitor.recordHistoryResponseBlocked(len(payload), payload)
@@ -207,17 +226,26 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			}
 			continue
 		}
-		if !forward {
+		if !decision.forward {
+			if decision.releasePins != nil {
+				decision.releasePins(0)
+			}
 			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
 			continue
 		}
 		writeStart := time.Now()
-		if err := writeWebSocketFrame(to, toWriteMu, messageType, forwardPayload); err != nil {
+		if err := writeWebSocketFrame(to, toWriteMu, messageType, decision.forwardPayload); err != nil {
+			if decision.releasePins != nil {
+				decision.releasePins(0)
+			}
 			return gatewayCloseReason("client_write", err)
+		}
+		if decision.releasePins != nil {
+			decision.releasePins(appServerHistoryMediaReadGrace)
 		}
 		writeDuration := time.Since(writeStart)
 		monitor.logSessionListStage(payload, "client_written", writeDuration)
-		monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, writeDuration, forwardPayload)
+		monitor.recordForward("upstream_to_client", len(payload), len(decision.forwardPayload), policyDuration, writeDuration, decision.forwardPayload)
 	}
 }
 

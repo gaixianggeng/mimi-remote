@@ -212,9 +212,36 @@ struct WorkspaceRuntimePicker: View {
     @Namespace private var selectionNamespace
     @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
-    @Binding var selection: WorkspaceSessionRuntimeChoice
+    @Binding var browseScope: WorkspaceSessionBrowseScope
     let availableRuntimeProviders: Set<String>
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
+
+    init(
+        browseScope: Binding<WorkspaceSessionBrowseScope>,
+        availableRuntimeProviders: Set<String>,
+        onRetryUnavailable: @escaping (WorkspaceSessionRuntimeChoice) async -> Bool
+    ) {
+        _browseScope = browseScope
+        self.availableRuntimeProviders = availableRuntimeProviders
+        self.onRetryUnavailable = onRetryUnavailable
+    }
+
+    init(
+        selection: Binding<WorkspaceSessionRuntimeChoice>,
+        availableRuntimeProviders: Set<String>,
+        onRetryUnavailable: @escaping (WorkspaceSessionRuntimeChoice) async -> Bool
+    ) {
+        _browseScope = Binding(
+            get: { .single(selection.wrappedValue) },
+            set: {
+                if case let .single(choice) = $0 {
+                    selection.wrappedValue = choice
+                }
+            }
+        )
+        self.availableRuntimeProviders = availableRuntimeProviders
+        self.onRetryUnavailable = onRetryUnavailable
+    }
 
     private var enabledChoices: [WorkspaceSessionRuntimeChoice] {
         WorkspaceSessionRuntimeChoice.enabledRuntimes(from: enabledRuntimesRawValue)
@@ -297,7 +324,7 @@ struct WorkspaceRuntimePicker: View {
                 retryingRuntime = choice
                 Task {
                     let recovered = await onRetryUnavailable(choice)
-                    if recovered { select(choice) }
+                    if recovered { select(.single(choice)) }
                     retryingRuntime = nil
                 }
             } label: {
@@ -316,9 +343,45 @@ struct WorkspaceRuntimePicker: View {
         enabledSet: Set<WorkspaceSessionRuntimeChoice>,
         tokens: ThemeTokens
     ) -> some View {
-        HStack(spacing: 0) {
+        let isAllSelected = browseScope.isAll
+
+        return HStack(spacing: 0) {
+            Button {
+                select(.all)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 14, height: 14)
+
+                    Text(L10n.text("ui.workspace_runtime_all"))
+                        .font(themeStore.uiFont(.footnote, weight: isAllSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(isAllSelected ? tokens.accentText : tokens.secondaryText)
+                .opacity(isAllSelected ? 1 : 0.78)
+                .padding(.horizontal, 8)
+                .frame(minHeight: 32)
+                .background {
+                    if isAllSelected {
+                        selectionCapsule(tokens: tokens)
+                    }
+                }
+                .frame(
+                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .disabled(retryingRuntime != nil)
+            .accessibilityLabel(L10n.text("ui.workspace_runtime_all"))
+            .accessibilityAddTraits(isAllSelected ? .isSelected : [])
+            .accessibilityHint(L10n.text("ui.show_all_runtime_sessions_hint"))
+            .accessibilityIdentifier("workspace.sessions.runtime.all")
+
             ForEach(choices) { choice in
-                let isSelected = selection == choice
+                let isSelected = browseScope == .single(choice)
                 let isAvailable = choice.isAvailable(
                     in: availableRuntimeProviders,
                     enabledRuntimes: enabledSet
@@ -326,14 +389,14 @@ struct WorkspaceRuntimePicker: View {
 
                 Button {
                     if isAvailable {
-                        select(choice)
+                        select(.single(choice))
                     } else {
                         guard retryingRuntime == nil else { return }
-                        let previousSelection = selection
+                        let previousScope = browseScope
                         retryingRuntime = choice
                         Task {
                             let recovered = await onRetryUnavailable(choice)
-                            if recovered, selection == previousSelection { select(choice) }
+                            if recovered, browseScope == previousScope { select(.single(choice)) }
                             retryingRuntime = nil
                         }
                     }
@@ -364,25 +427,7 @@ struct WorkspaceRuntimePicker: View {
                     .frame(minHeight: 32)
                     .background {
                         if isSelected {
-                            // 选中项只画一层中性玻璃提亮，与外轨透明玻璃胶囊配合，不叠加第二层玻璃或实色块。
-                            let shape = Capsule()
-                            shape
-                                .fill(
-                                    WorkbenchChromeMaterial<Capsule>.selectionTint(
-                                        tokens: tokens,
-                                        reduceTransparency: reduceTransparency || colorSchemeContrast == .increased
-                                    )
-                                )
-                                .overlay {
-                                    // 增强对比度仅补中性轮廓，不重新引入紫色边框。
-                                    if colorSchemeContrast == .increased {
-                                        shape.stroke(tokens.border, lineWidth: 1)
-                                    }
-                                }
-                                .matchedGeometryEffect(
-                                    id: "workspace-runtime-selection",
-                                    in: selectionNamespace
-                                )
+                            selectionCapsule(tokens: tokens)
                         }
                     }
                     // 视觉表面缩小，透明命中层仍至少 44pt，兼顾层级与实体机触控。
@@ -412,13 +457,35 @@ struct WorkspaceRuntimePicker: View {
         }
     }
 
-    private func select(_ choice: WorkspaceSessionRuntimeChoice) {
+    private func selectionCapsule(tokens: ThemeTokens) -> some View {
+        // 选中项只画一层中性玻璃提亮，与外轨透明玻璃胶囊配合，不叠加第二层玻璃或实色块。
+        let shape = Capsule()
+        return shape
+            .fill(
+                WorkbenchChromeMaterial<Capsule>.selectionTint(
+                    tokens: tokens,
+                    reduceTransparency: reduceTransparency || colorSchemeContrast == .increased
+                )
+            )
+            .overlay {
+                // 增强对比度仅补中性轮廓，不重新引入紫色边框。
+                if colorSchemeContrast == .increased {
+                    shape.stroke(tokens.border, lineWidth: 1)
+                }
+            }
+            .matchedGeometryEffect(
+                id: "workspace-runtime-selection",
+                in: selectionNamespace
+            )
+    }
+
+    private func select(_ scope: WorkspaceSessionBrowseScope) {
         if reduceMotion {
-            selection = choice
+            browseScope = scope
         } else {
             // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
             withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
-                selection = choice
+                browseScope = scope
             }
         }
     }
@@ -433,9 +500,36 @@ struct WorkspaceRuntimePopoverPicker: View {
     @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
     private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
 
-    @Binding var selection: WorkspaceSessionRuntimeChoice
+    @Binding var browseScope: WorkspaceSessionBrowseScope
     let availableRuntimeProviders: Set<String>
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
+
+    init(
+        browseScope: Binding<WorkspaceSessionBrowseScope>,
+        availableRuntimeProviders: Set<String>,
+        onRetryUnavailable: @escaping (WorkspaceSessionRuntimeChoice) async -> Bool
+    ) {
+        _browseScope = browseScope
+        self.availableRuntimeProviders = availableRuntimeProviders
+        self.onRetryUnavailable = onRetryUnavailable
+    }
+
+    init(
+        selection: Binding<WorkspaceSessionRuntimeChoice>,
+        availableRuntimeProviders: Set<String>,
+        onRetryUnavailable: @escaping (WorkspaceSessionRuntimeChoice) async -> Bool
+    ) {
+        _browseScope = Binding(
+            get: { .single(selection.wrappedValue) },
+            set: {
+                if case let .single(choice) = $0 {
+                    selection.wrappedValue = choice
+                }
+            }
+        )
+        self.availableRuntimeProviders = availableRuntimeProviders
+        self.onRetryUnavailable = onRetryUnavailable
+    }
 
     @State private var isPresented = false
     @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
@@ -461,9 +555,17 @@ struct WorkspaceRuntimePopoverPicker: View {
                     isPresented = true
                 } label: {
                     HStack(spacing: 6) {
-                        RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
+                        switch browseScope {
+                        case .all:
+                            Image(systemName: "square.stack.3d.up")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(tokens.primaryText)
+                                .frame(width: 14, height: 14)
+                        case let .single(choice):
+                            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                        }
 
-                        Text(selection.listTitle)
+                        Text(browseScope.listTitle)
                             .font(themeStore.uiFont(.footnote, weight: .medium))
                             .foregroundStyle(tokens.primaryText)
                             .lineLimit(1)
@@ -481,7 +583,7 @@ struct WorkspaceRuntimePopoverPicker: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.text("ui.runtime_provider"))
-                .accessibilityValue(selection.listTitle)
+                .accessibilityValue(browseScope.listTitle)
                 .accessibilityIdentifier("workspace.sessions.runtimePicker")
                 .popover(isPresented: $isPresented, arrowEdge: .top) {
                     popoverContent(tokens: tokens, choices: choices, enabledSet: enabledSet)
@@ -545,7 +647,7 @@ struct WorkspaceRuntimePopoverPicker: View {
                 Task {
                     let recovered = await onRetryUnavailable(choice)
                     if recovered {
-                        selection = choice
+                        browseScope = .single(choice)
                     }
                     retryingRuntime = nil
                 }
@@ -587,6 +689,22 @@ struct WorkspaceRuntimePopoverPicker: View {
         enabledSet: Set<WorkspaceSessionRuntimeChoice>
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            Button {
+                browseScope = .all
+                isPresented = false
+            } label: {
+                allRuntimesRow(tokens: tokens)
+            }
+            .buttonStyle(.plain)
+            .disabled(retryingRuntime != nil)
+            .accessibilityLabel(L10n.text("ui.workspace_runtime_all"))
+            .accessibilityAddTraits(browseScope.isAll ? .isSelected : [])
+            .accessibilityHint(L10n.text("ui.show_all_runtime_sessions_hint"))
+            .accessibilityIdentifier("workspace.sessions.runtime.all")
+
+            Divider()
+                .padding(.leading, 42)
+
             // 只展示用户已开启的 Runtime；暂不可用的那个允许点击重探，
             // 不能让首次网络失败把筛选器锁死到 App 重启。
             ForEach(choices) { choice in
@@ -594,31 +712,32 @@ struct WorkspaceRuntimePopoverPicker: View {
                     in: availableRuntimeProviders,
                     enabledRuntimes: enabledSet
                 )
+                let isSelected = browseScope == .single(choice)
 
                 Button {
                     if isAvailable {
-                        selection = choice
+                        browseScope = .single(choice)
                         isPresented = false
                     } else {
                         guard retryingRuntime == nil else { return }
-                        let previousSelection = selection
+                        let previousScope = browseScope
                         retryingRuntime = choice
                         Task {
                             let recovered = await onRetryUnavailable(choice)
-                            if recovered, selection == previousSelection {
-                                selection = choice
+                            if recovered, browseScope == previousScope {
+                                browseScope = .single(choice)
                                 isPresented = false
                             }
                             retryingRuntime = nil
                         }
                     }
                 } label: {
-                    row(choice: choice, isAvailable: isAvailable, tokens: tokens)
+                    row(choice: choice, isSelected: isSelected, isAvailable: isAvailable, tokens: tokens)
                 }
                 .buttonStyle(.plain)
                 .disabled(retryingRuntime != nil)
                 .accessibilityLabel(choice.listTitle)
-                .accessibilityAddTraits(choice == selection ? .isSelected : [])
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityHint(
                     isAvailable
                         ? L10n.text("ui.show_runtime_sessions_hint")
@@ -637,8 +756,42 @@ struct WorkspaceRuntimePopoverPicker: View {
         .frame(minWidth: 260, alignment: .leading)
     }
 
+    private func allRuntimesRow(tokens: ThemeTokens) -> some View {
+        let isSelected = browseScope.isAll
+        return HStack(spacing: 10) {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(isSelected ? tokens.accentText : tokens.primaryText)
+                .frame(width: 20, height: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.text("ui.workspace_runtime_all"))
+                    .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(tokens.primaryText)
+
+                Text(L10n.text("ui.runtime_subtitle_all"))
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.accentText)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
+    }
+
     private func row(
         choice: WorkspaceSessionRuntimeChoice,
+        isSelected: Bool,
         isAvailable: Bool,
         tokens: ThemeTokens
     ) -> some View {
@@ -654,7 +807,7 @@ struct WorkspaceRuntimePopoverPicker: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(choice.listTitle)
-                    .font(themeStore.uiFont(.subheadline, weight: choice == selection ? .semibold : .regular))
+                    .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isAvailable ? tokens.primaryText : tokens.tertiaryText)
 
                 // 两行都带副标题，行高才是齐的；不可用时提示可点击重试。
@@ -670,7 +823,7 @@ struct WorkspaceRuntimePopoverPicker: View {
 
             Spacer(minLength: 12)
 
-            if choice == selection {
+            if isSelected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(tokens.accentText)

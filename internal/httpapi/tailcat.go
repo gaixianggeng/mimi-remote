@@ -22,7 +22,7 @@ type tailcatControlRequest struct {
 
 func (r *Router) tailcatLocalHandler(w http.ResponseWriter, req *http.Request) {
 	if !r.isAuthorizedTailcatLocalRequest(req) {
-		writeError(w, http.StatusForbidden, "Tailcat 实验只允许本机 Mimi 客户端控制")
+		writeError(w, http.StatusForbidden, "Tailcat 只允许本机 Mimi 客户端控制")
 		return
 	}
 	if r.tailcat == nil {

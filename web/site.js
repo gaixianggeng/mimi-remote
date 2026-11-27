@@ -50,7 +50,7 @@
     "ov.5.t": "多台电脑、多个 Agent",
     "ov.5.n": "配对 Mac、Windows、Linux 电脑，一个 App 遥控 Codex 和 Claude Code。",
     "ov.6.t": "局域网或 Tailscale",
-    "ov.6.n": "Mac、Windows 与 Linux 还可试用 Tailcat：实验性、默认关闭，初次握手经第三方中继。",
+    "ov.6.n": "Mac、Windows 与 Linux 还可使用 Tailcat：可选、默认关闭，初次握手经第三方中继。",
 
     "handoff.eyebrow": "不重复造轮子",
     "handoff.title": "电脑照用原生 App，<br>移动端多一个顺手入口。",

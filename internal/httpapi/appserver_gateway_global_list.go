@@ -1,13 +1,10 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,201 +76,10 @@ func (p *appServerGatewayPolicy) storeGlobalListCursorToken(upstream string) (st
 	return token, nil
 }
 
-func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
-	payload []byte,
-	pending appServerGatewayPendingThreadRequest,
-) ([]byte, []appServerGatewayAllowedThread, error) {
-	var response map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &response); err != nil {
-		return nil, nil, fmt.Errorf("thread/list response 无效")
-	}
-	var resultFields map[string]json.RawMessage
-	if raw := response["result"]; len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &resultFields) != nil {
-		return nil, nil, fmt.Errorf("thread/list response.result 必须是对象")
-	}
-	dataRaw, ok := resultFields["data"]
-	if !ok || bytes.Equal(bytes.TrimSpace(dataRaw), []byte("null")) {
-		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
-	}
-	var rawItems []json.RawMessage
-	if err := json.Unmarshal(dataRaw, &rawItems); err != nil {
-		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
-	}
-
-	limit := int64(appServerGatewayThreadListMaxLimit)
-	if pending.responseLimitSet {
-		limit = pending.responseLimit
-	}
-	if limit <= 0 || limit > appServerGatewayThreadListMaxLimit {
-		limit = appServerGatewayThreadListMaxLimit
-	}
-	// 先收集需要 Git 归属判定的 browse-root 目录，统一并行判定，再逐条裁剪。
-	type globalListCandidate struct {
-		itemFields map[string]json.RawMessage
-		thread     appServerGatewayThreadWire
-		threadID   string
-		scope      gatewayScope
-	}
-	candidates := make([]globalListCandidate, 0, len(rawItems))
-	var gitPaths []string
-	seenGitPaths := map[string]struct{}{}
-	for _, rawItem := range rawItems {
-		var itemFields map[string]json.RawMessage
-		var thread appServerGatewayThreadWire
-		if json.Unmarshal(rawItem, &itemFields) != nil || json.Unmarshal(rawItem, &thread) != nil {
-			continue
-		}
-		threadIDRaw := firstNonEmptyRaw(thread.ID, thread.ThreadID, thread.SessionID)
-		cwdRaw := firstNonEmptyRaw(thread.CWD, thread.Path)
-		threadID := strings.TrimSpace(threadIDRaw)
-		cwd := strings.TrimSpace(cwdRaw)
-		if threadID == "" || threadID != threadIDRaw || cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) {
-			continue
-		}
-		scope, ok := p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
-		if !ok {
-			continue
-		}
-		if !scope.missing {
-			info, err := os.Stat(scope.realPath)
-			if err != nil || !info.IsDir() {
-				continue
-			}
-			if strings.TrimSpace(scope.project.ID) == "" && scope.browse {
-				if _, seen := seenGitPaths[scope.realPath]; !seen {
-					seenGitPaths[scope.realPath] = struct{}{}
-					gitPaths = append(gitPaths, scope.realPath)
-				}
-			}
-		}
-		candidates = append(candidates, globalListCandidate{itemFields: itemFields, thread: thread, threadID: threadID, scope: scope})
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), appServerGatewayGlobalListGitWait)
-	defer cancel()
-	projectByPath, unsettledPaths := p.resolveGlobalListBrowseProjects(ctx, gitPaths)
-
-	// incomplete 表示本页有条目在等待预算内没能判定归属。这些条目既不能放行，
-	// 也不能当作“已不存在”，所以本页不能推进 cursor。
-	incomplete := false
-	safeItems := make([]map[string]any, 0, min(len(candidates), int(limit)))
-	allowedThreads := make([]appServerGatewayAllowedThread, 0, cap(safeItems))
-	for _, candidate := range candidates {
-		if int64(len(safeItems)) >= limit {
-			break
-		}
-		itemFields, thread, threadID, scope := candidate.itemFields, candidate.thread, candidate.threadID, candidate.scope
-		project := scope.project
-		if strings.TrimSpace(project.ID) == "" && scope.browse && !scope.missing {
-			if _, unsettled := unsettledPaths[scope.realPath]; unsettled {
-				incomplete = true
-				continue
-			}
-			project = projectByPath[scope.realPath]
-		}
-		if strings.TrimSpace(project.ID) == "" {
-			if scope.browse && scope.missing && normalizeAppServerRuntimeID(p.runtimeID) == appServerRuntimeAgyID {
-				// Antigravity 仅位于 browse_roots 内且原目录已删除的只读历史（C15）：
-				// 目录缺失后无法再通过目录浏览器进入，也无法运行 Git 归属查询；
-				// 为其生成只读缺失工作区标识，使已登记目录与仅浏览目录在全局历史发现中行为一致，
-				// 同时保持 Codex 全局发现严格要求 Git 归属已登记项目的既有语义。
-				project = projects.Project{
-					ID:   scope.id,
-					Name: filepath.Base(scope.realPath),
-					Path: scope.realPath,
-				}
-			} else {
-				continue
-			}
-		}
-
-		// 外部 browse-root Worktree、原目录已移动/删除的历史会话以及显式 parent 子会话
-		// 都只有“可读发现”资格；上游即使声明 canAcceptDirectInput=true 也强制降为只读。
-		isSubagent := strings.TrimSpace(thread.ParentThreadID) != ""
-		forceReadOnly := scope.browse || scope.missing || isSubagent
-		canAccept := false
-		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
-		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
-			canAccept = *thread.CanAcceptDirectInput
-		}
-
-		safeThread := copyGatewayRawFields(itemFields,
-			"id", "sessionId", "threadId", "parentThreadId", "cwd", "path",
-			"name", "preview", "status", "modelProvider", "source", "threadSource",
-			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
-			"canAcceptDirectInput", "cwdMissing",
-			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
-			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
-			"claudeOwner",
-			// Claude 桌面版"主会话派生会话"的父会话 ID，只用于列表分组展示。
-			// 它不是 parentThreadId：派生会话是完整会话，不因此变成只读。
-			"spawnedFromThreadId",
-		)
-		if forceReadOnly {
-			safeThread["canAcceptDirectInput"] = false
-		}
-		mimiMeta := map[string]any{
-			"projectId":   project.ID,
-			"projectName": project.Name,
-			"projectPath": project.Path,
-			"discovery":   "global",
-			"readOnly":    forceReadOnly,
-		}
-		if scope.missing {
-			safeThread["cwdMissing"] = true
-			mimiMeta["cwdMissing"] = true
-		}
-		safeThread["mimiRemote"] = mimiMeta
-		safeItems = append(safeItems, safeThread)
-		allowedThreads = append(allowedThreads, appServerGatewayAllowedThread{
-			id:                   threadID,
-			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
-			cwd:                  scope.realPath,
-			scopeID:              scope.id,
-			canAcceptDirectInput: canAccept,
-			directInputKnown:     directInputKnown,
-			readOnly:             forceReadOnly,
-			readOnlySubagent:     isSubagent,
-			readOnlyBrowseScope:  scope.browse,
-			cwdMissing:           scope.missing,
-		})
-	}
-
-	safeResult := map[string]any{"data": safeItems}
-	if incomplete {
-		cursor, err := p.storeGlobalListRetryCursor(pending.upstreamCursor)
-		if err != nil {
-			return nil, nil, err
-		}
-		log.Printf("app-server gateway global thread/list incomplete runtime=%s returned=%d upstream=%d; client will retry the same page", p.runtimeID, len(safeItems), len(rawItems))
-		safeResult["nextCursor"] = cursor
-	} else if rawCursor, exists := resultFields["nextCursor"]; exists && !bytes.Equal(bytes.TrimSpace(rawCursor), []byte("null")) {
-		var upstreamCursor string
-		if json.Unmarshal(rawCursor, &upstreamCursor) == nil && strings.TrimSpace(upstreamCursor) != "" {
-			cursor, err := p.storeGlobalListCursor(upstreamCursor)
-			if err != nil {
-				return nil, nil, err
-			}
-			safeResult["nextCursor"] = cursor
-		}
-	} else if exists {
-		safeResult["nextCursor"] = nil
-	}
-	safeResponse := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      response["id"],
-		"result":  safeResult,
-	}
-	rewritten, err := json.Marshal(safeResponse)
-	if err != nil {
-		return nil, nil, fmt.Errorf("重写 thread/list response 失败：%w", err)
-	}
-	return rewritten, allowedThreads, nil
-}
-
 // resolveGlobalListBrowseProjects 判定 browse-root 目录各自归属哪个已登记项目（归属不到
 // 时为空 Project）。unsettled 里的目录在等待预算内没有结论：本页对它们既不放行，
 // 也不当作不存在。目录都不在 Git 仓库里时不扫描已登记项目。
-func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Context, paths []string) (map[string]projects.Project, map[string]struct{}) {
+func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Context, paths []string, refreshedProjects []projects.Project) (map[string]projects.Project, map[string]struct{}) {
 	projectByPath := map[string]projects.Project{}
 	unsettled := map[string]struct{}{}
 	if len(paths) == 0 {
@@ -286,7 +92,7 @@ func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Con
 		// 未判定的目录之后仍可能属于某个仓库：也要把已登记项目的判定一并发起，
 		// 预算用完时它们在后台继续，客户端重取本页时两边都已命中缓存。
 		if !result.settled || result.ok {
-			projectByCommonDir, projectsSettled = p.authorizedProjectsByGitCommonDir(ctx)
+			projectByCommonDir, projectsSettled = p.authorizedProjectsByGitCommonDirWithSnapshot(ctx, refreshedProjects)
 			break
 		}
 	}
@@ -311,9 +117,17 @@ func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Con
 // authorizedProjectsByGitCommonDir 按 Git common-dir 归并已登记项目。settled=false 表示
 // 有项目的 Git 没给出结论：此时查不到归属不能当作“仓库未授权”的证据。
 func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) (map[string]projects.Project, bool) {
+	return p.authorizedProjectsByGitCommonDirWithSnapshot(ctx, nil)
+}
+
+func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDirWithSnapshot(ctx context.Context, refreshedProjects []projects.Project) (map[string]projects.Project, bool) {
 	grouped := map[string][]projects.Project{}
 	out := map[string]projects.Project{}
-	registered := p.router.projects.List()
+	registered := refreshedProjects
+	if registered == nil && p.router != nil && p.router.projects != nil {
+		// 阶段 A 锁外解析 Git 归属时刷新已登记项目的规范路径，避免配置符号链接改指后仍归属到旧仓库。
+		registered = p.router.projects.List()
+	}
 	paths := make([]string, 0, len(registered))
 	for _, project := range registered {
 		paths = append(paths, project.RealPath)

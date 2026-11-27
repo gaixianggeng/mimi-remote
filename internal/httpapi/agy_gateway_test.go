@@ -323,14 +323,29 @@ func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *te
 	if err != nil {
 		t.Fatalf("marshal upstream payload: %v", err)
 	}
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
-		method: "thread/list",
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
 	}
-	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
-		t.Fatalf("expected read-only cwdMissing allowed thread, got %+v", allowed)
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(upstreamPayload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest failed: %v", err)
+	}
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, upstreamPayload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	allowedEntry, ok := policy.allowedThread("sess-removed")
+	if !ok || !allowedEntry.readOnly || !allowedEntry.cwdMissing || allowedEntry.canAcceptDirectInput {
+		t.Fatalf("expected read-only cwdMissing allowed thread, got ok=%v %+v", ok, allowedEntry)
 	}
 
 	var decoded struct {
@@ -352,8 +367,7 @@ func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *te
 		t.Fatalf("unexpected rewritten missing-dir item: %s", string(rewritten))
 	}
 
-	// Register allowed thread and verify thread/read validation succeeds for the missing-dir history.
-	policy.allowThread(allowed[0])
+	// Verify thread/read validation succeeds for the missing-dir history.
 	readRaw, _ := json.Marshal(map[string]any{
 		"thread": map[string]any{
 			"id":  "sess-removed",
@@ -465,19 +479,33 @@ func TestC15Round2GlobalListDiscoversDeletedBrowseOnlyDirectoryAsReadOnly(t *tes
 			"nextCursor": nil,
 		},
 	})
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
-		method: "thread/list",
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
 	}
-	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
-		t.Fatalf("deleted browse-only dir must be preserved in global list as readOnly+cwdMissing, got %+v", allowed)
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(upstreamPayload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest failed: %v", err)
+	}
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, upstreamPayload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	allowedEntry, ok := policy.allowedThread("sess-browse-deleted")
+	if !ok || !allowedEntry.readOnly || !allowedEntry.cwdMissing || allowedEntry.canAcceptDirectInput {
+		t.Fatalf("deleted browse-only dir must be preserved in global list as readOnly+cwdMissing, got ok=%v %+v", ok, allowedEntry)
 	}
 	if !strings.Contains(string(rewritten), `"cwdMissing":true`) {
 		t.Fatalf("expected cwdMissing=true in rewritten global list: %s", string(rewritten))
 	}
-	policy.allowThread(allowed[0])
 
 	readRaw, _ := json.Marshal(map[string]any{
 		"thread": map[string]any{
@@ -531,11 +559,20 @@ func TestC14Round2RestoredDirectoryRefreshesListAndDetailPermissionsOnSameConnec
 			"nextCursor": nil,
 		},
 	})
-	_, missingAllowed, err := policy.sanitizeGlobalThreadListResponse(listPayload, appServerGatewayPendingThreadRequest{method: "thread/list"})
-	if err != nil || len(missingAllowed) != 1 || !missingAllowed[0].cwdMissing || !missingAllowed[0].readOnly {
-		t.Fatalf("expected missing-dir thread cached as readOnly+cwdMissing, got %+v err=%v", missingAllowed, err)
+	listID := json.RawMessage(`1`)
+	if err := policy.rememberPendingThreadRequest(&listID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	policy.allowThread(missingAllowed[0])
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, listPayload); !forward || policyErr != nil {
+		t.Fatalf("global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+	missingAllowed, ok := policy.allowedThread("sess-move")
+	if !ok || !missingAllowed.cwdMissing || !missingAllowed.readOnly {
+		t.Fatalf("expected missing-dir thread cached as readOnly+cwdMissing, got ok=%v %+v", ok, missingAllowed)
+	}
 
 	// Step 2: Restore directory on disk!
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -1347,19 +1384,30 @@ func TestB23Round5SpecialAndPercentLiteralPathsPreserveScopeAndWritability(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{
+	if policy.pendingThreads == nil {
+		policy.pendingThreads = map[string]appServerGatewayPendingThreadRequest{}
+	}
+	if policy.allowedThreads == nil {
+		policy.allowedThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	var reqFrame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(payload, &reqFrame)
+	if err := policy.rememberPendingThreadRequest(&reqFrame.ID, appServerGatewayPendingThreadRequest{
 		method:          "thread/list",
 		globalDiscovery: true,
-	})
-	if err != nil {
-		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if len(allowed) != 2 {
-		t.Fatalf("expected 2 allowed threads, got %d (%+v)", len(allowed), allowed)
+	rewritten, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if !forward || policyErr != nil {
+		t.Fatalf("observeUpstreamFrame failed: forward=%v err=%+v", forward, policyErr)
 	}
-	for _, entry := range allowed {
-		if entry.cwdMissing || entry.readOnly || !entry.canAcceptDirectInput {
-			t.Fatalf("expected thread %s to be writable and non-missing, got %+v", entry.id, entry)
+	for _, threadID := range []string{"thr-special", "thr-literal-pct"} {
+		entry, ok := policy.allowedThread(threadID)
+		if !ok || entry.cwdMissing || entry.readOnly || !entry.canAcceptDirectInput {
+			t.Fatalf("expected thread %s to be writable and non-missing, got ok=%v %+v", threadID, ok, entry)
 		}
 	}
 	var resp struct {
@@ -1446,5 +1494,118 @@ func TestColdAgyStatusInspectsFailingShimOnce(t *testing.T) {
 	}
 	if calls, err := os.ReadFile(shim + ".calls"); err != nil || string(calls) != "--version\n" {
 		t.Fatalf("version calls across cold and cached reads: %q, %v", calls, err)
+	}
+}
+
+func TestAgyPreserveThreadPermissionsCapabilityAndPolicyValidation(t *testing.T) {
+	dir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "proj-1", Name: "Repo", Path: dir}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	fakeAgyBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	router := &Router{
+		cfg: config.Config{
+			Projects: []config.ProjectConfig{{ID: "proj-1", Name: "Repo", Path: dir}},
+			Agy: config.AgyConfig{
+				Enabled: true,
+				Env: map[string]string{
+					agybridge.AgyBinaryEnvKey: fakeAgyBin,
+				},
+			},
+		},
+		projects:   registry,
+		agyAdapter: newAgyAdapterSupervisor(),
+	}
+
+	// 旧版适配器未声明 preserveThreadPermissions：channel 不暴露该能力，网关拒绝 mimiPreserveThreadPermissions。
+	router.setAgyAdapterProbe(agyAdapterProbe{
+		Status:    "ready",
+		Path:      "/opt/mimi/mimi-agy-adapter",
+		Version:   "0.1.0",
+		Healthy:   true,
+		CheckedAt: time.Now().UTC(),
+		Capabilities: &agybridge.AdapterCapabilities{
+			Name:       "mimi-agy-adapter",
+			Version:    "0.1.0",
+			Methods:    []string{"initialize", "thread/resume", "turn/start"},
+			FullAccess: true,
+		},
+	})
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/app-server/config", nil)
+	if ch := router.agyChannelConfig(req); ch.Capabilities.PreserveThreadPermissions {
+		t.Fatalf("legacy adapter without capability must not advertise preserve_thread_permissions")
+	}
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "turn/start", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		"input":                               []any{map[string]any{"type": "text", "text": "hi"}},
+		gatewayPreserveThreadPermissionsParam: true,
+	}); err == nil {
+		t.Fatalf("expected legacy agy adapter to reject mimiPreserveThreadPermissions")
+	}
+
+	// 新版适配器声明 preserveThreadPermissions：channel 开放能力，thread/resume 与 turn/start 放行并剥离覆盖参数。
+	router.setAgyAdapterProbe(agyAdapterProbe{
+		Status:    "ready",
+		Path:      "/opt/mimi/mimi-agy-adapter",
+		Version:   "0.1.0",
+		Healthy:   true,
+		CheckedAt: time.Now().UTC(),
+		Capabilities: &agybridge.AdapterCapabilities{
+			Name:                      "mimi-agy-adapter",
+			Version:                   "0.1.0",
+			Methods:                   []string{"initialize", "thread/resume", "turn/start"},
+			FullAccess:                true,
+			PreserveThreadPermissions: true,
+		},
+	})
+	if ch := router.agyChannelConfig(req); !ch.Capabilities.PreserveThreadPermissions {
+		t.Fatalf("modern adapter must advertise preserve_thread_permissions")
+	}
+	for _, method := range []string{"thread/resume", "turn/start"} {
+		params := map[string]any{
+			"threadId":                            "thr-agy-1",
+			"cwd":                                 dir,
+			gatewayPreserveThreadPermissionsParam: true,
+		}
+		if method == "turn/start" {
+			params["input"] = []any{map[string]any{"type": "text", "text": "continue"}}
+		}
+		if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, method, params); err != nil {
+			t.Fatalf("%s with mimiPreserveThreadPermissions should be allowed for agy: %v", method, err)
+		}
+		var sanitized map[string]any
+		if method == "thread/resume" {
+			sanitized = sanitizedGatewayThreadParams(appServerRuntimeAgyID, method, params)
+		} else {
+			sanitized = sanitizedGatewayTurnParams(appServerRuntimeAgyID, params, dir)
+		}
+		for _, forbidden := range []string{"approvalPolicy", "approvalsReviewer", "sandbox", "sandboxPolicy", gatewayPreserveThreadPermissionsParam} {
+			if _, exists := sanitized[forbidden]; exists {
+				t.Fatalf("%s preserve mode must omit %s, got %+v", method, forbidden, sanitized)
+			}
+		}
+	}
+
+	// 与显式权限覆盖同时发送时仍必须拒绝；thread/fork 对 agy 仍不允许。
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "turn/start", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		"input":                               []any{map[string]any{"type": "text", "text": "conflict"}},
+		gatewayPreserveThreadPermissionsParam: true,
+		"approvalPolicy":                      "on-request",
+	}); err == nil {
+		t.Fatalf("expected conflict error when mimiPreserveThreadPermissions is combined with approvalPolicy")
+	}
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "thread/fork", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		gatewayPreserveThreadPermissionsParam: true,
+	}); err == nil {
+		t.Fatalf("expected agy thread/fork with mimiPreserveThreadPermissions to be rejected")
 	}
 }

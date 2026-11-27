@@ -265,7 +265,7 @@ final class ModuleControlsTests: XCTestCase {
             network: .tailcat,
             pairURL: "mimiremote://pair?transport=tailcat",
             expiresAt: "2026-11-17T14:00:00Z",
-            warnings: ["Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。"]
+            warnings: ["Tailcat 二维码在所示时间前有效，且不会包含长期访问码。"]
         )
         let lan = PairingInfo(
             endpoint: "http://192.168.31.20:8787",

@@ -286,6 +286,7 @@ struct ComposerView: View {
         .sheet(isPresented: $showsQueuedTurnManager) {
             QueuedTurnManagerSheet(
                 turns: sessionStore.selectedQueuedTurns,
+                showsGuideCurrentTurn: sessionStore.supportsTurnSteer(runtimeProvider: composerRuntimeProvider),
                 canGuideCurrentTurn: canUseGuidedFollowUp,
                 onUpdate: { turn, payload in
                     _ = sessionStore.updateQueuedTurn(clientMessageID: turn.id, payload: payload)
@@ -455,6 +456,12 @@ struct ComposerView: View {
                 return
             }
             clampModelSelectionToSelectedSessionRuntime()
+        }
+        .onChange(of: sessionStore.preserveThreadPermissionRuntimeProviders) { _, _ in
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
+            restoreComposerPermissionSelection(for: activeComposerDraftScope)
         }
     }
 
@@ -799,7 +806,7 @@ struct ComposerView: View {
         return session.isRunning &&
             composerState.sendMode == .standard &&
             sessionStore.canControlSession(session) &&
-            !RuntimeFeatureSupport.isDeepSeek(composerRuntimeProvider)
+            sessionStore.supportsTurnSteer(runtimeProvider: composerRuntimeProvider)
     }
 
     var canUseGuidedFollowUp: Bool {
@@ -955,7 +962,8 @@ struct ComposerView: View {
                 }
                 .disabled(turn.dispatchState == .dispatching)
 
-                if turn.intent.canGuideCurrentTurn {
+                if turn.intent.canGuideCurrentTurn,
+                   sessionStore.supportsTurnSteer(runtimeProvider: composerRuntimeProvider) {
                     Button {
                         _ = sessionStore.guideQueuedTurnNow(clientMessageID: turn.id)
                     } label: {

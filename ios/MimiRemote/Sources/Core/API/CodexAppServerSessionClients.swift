@@ -28,6 +28,14 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.threadGoalsSupported(runtimeProvider: runtimeProvider)
     }
 
+    func runtimeSupportsPreserveThreadPermissions(runtimeProvider: String) async throws -> Bool {
+        try await runtime.preserveThreadPermissionsSupported(runtimeProvider: runtimeProvider)
+    }
+
+    func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool {
+        try await runtime.turnSteerSupported(runtimeProvider: runtimeProvider)
+    }
+
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         try await runtime.capabilities(path: path, forceReload: forceReload)
     }
@@ -443,6 +451,23 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         // 原生 Harness 不消费 goal 参数；app-server 通道读共享快照里的声明。
         guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
         return CodexAppServerSessionRuntime.supportsThreadGoals(
+            runtimeProvider: runtimeProvider,
+            in: try await bundle.currentConfiguration()
+        )
+    }
+
+    func runtimeSupportsPreserveThreadPermissions(runtimeProvider: String) async throws -> Bool {
+        guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
+        return CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(
+            runtimeProvider: runtimeProvider,
+            in: try await bundle.currentConfiguration()
+        )
+    }
+
+    func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool {
+        // 原生 Harness 不支持 turn/steer；app-server 通道读共享快照里的声明（#1172）。
+        guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
+        return CodexAppServerSessionRuntime.supportsTurnSteer(
             runtimeProvider: runtimeProvider,
             in: try await bundle.currentConfiguration()
         )
@@ -1261,9 +1286,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                 )
             }
             let wasExplicitlyRejected = appError.data?.objectValue?["accepted"]?.boolValue == false
-            // -32602 表示请求参数在执行前即被拒绝；-32603 等内部错误可能发生在
+            // -32602 表示请求参数在执行前即被拒绝；-32080 表示本机 gateway 策略在转发到上游前即阻断
+            // （如方法未放行、工作区未授权或会话只读），确定未到达上游；-32603 等内部错误可能发生在
             // bridge 已接受并启动 turn 之后，不能允许自动重试制造重复消息。
-            if wasExplicitlyRejected || appError.code == -32602 {
+            if wasExplicitlyRejected || appError.code == -32602 || appError.code == -32080 {
                 return .rejected(message: error.localizedDescription)
             }
             return .uncertain(message: error.localizedDescription)

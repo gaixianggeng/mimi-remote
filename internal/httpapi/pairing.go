@@ -140,7 +140,7 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	if publicKey != "" && r.tailcat == nil {
 		markPairingFailure(w, "tailcat_relay_unreachable", "network_tailcat")
-		writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
+		writeError(w, http.StatusServiceUnavailable, "Tailcat 未启用")
 		return
 	}
 	if (managedSessionID == "") != (managedGrant == "") {

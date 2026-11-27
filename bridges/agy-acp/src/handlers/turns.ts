@@ -6,7 +6,13 @@ import { appDataDirForOrigin } from "../agy/env.ts";
 import { directoryExists } from "../agy/git.ts";
 import type { AgyOverlay } from "../agy/overlay.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
-import { runSettingsFor } from "../runtime/settings.ts";
+import {
+  collaborationModeName,
+  hasExplicitPermissionParams,
+  permissionMetaFor,
+  persistedPermissionsFor,
+  runSettingsFor,
+} from "../runtime/settings.ts";
 import type { ThreadRuntime } from "../runtime/threadRuntime.ts";
 import { errorText } from "../util/logging.ts";
 import { desktopOwnerSummary, toThread, type AdapterThread } from "./threads.ts";
@@ -64,6 +70,8 @@ function newRecord(threadId: string, cwd: string): SessionRecord {
 
 function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: Params) {
   const settings = runtime.currentSettings;
+  const meta = permissionMetaFor(settings.executionPolicy, runtime.effectiveMode);
+  const hasExplicit = hasExplicitPermissionParams(params);
   return {
     thread,
     model: settings.model ?? "",
@@ -72,9 +80,9 @@ function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: 
     disabledPluginIds: [],
     cwd: runtime.cwd,
     instructionSources: [],
-    approvalPolicy: params.approvalPolicy ?? "on-request",
-    approvalsReviewer: params.approvalsReviewer ?? "user",
-    sandbox: settings.executionPolicy,
+    approvalPolicy: hasExplicit ? (params.approvalPolicy ?? meta.approvalPolicy) : meta.approvalPolicy,
+    approvalsReviewer: hasExplicit ? (params.approvalsReviewer ?? meta.approvalsReviewer) : meta.approvalsReviewer,
+    sandbox: meta.sandbox,
     reasoningEffort: settings.effort ?? null,
     permissionProfile: { type: "disabled" },
     activePermissionProfile: null,
@@ -85,18 +93,32 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
   const { manager, catalog, history, overlay } = deps;
 
   async function openExisting(threadId: string, cwd: string | undefined, params: Params) {
+    await overlay.load();
     const existingRuntime = manager.get(threadId);
     const record = (await catalog.get(threadId)) ?? (existingRuntime ? newRecord(threadId, existingRuntime.cwd) : undefined);
     if (!record) {
       throw RpcError.invalidParams(`找不到 Antigravity 会话 ${threadId}`);
     }
+    const explicitPermissions = hasExplicitPermissionParams(params);
+    const savedPermissions = overlay.get(threadId)?.permissions;
+    const baseSettings = runSettingsFor(params);
+    const initialSettings =
+      !explicitPermissions && savedPermissions
+        ? {
+            ...baseSettings,
+            mode: savedPermissions.mode,
+            executionPolicy: savedPermissions.executionPolicy,
+          }
+        : baseSettings;
+    const preserveExistingMode = !explicitPermissions && !savedPermissions;
     const runtime = manager.openExisting(
       threadId,
       cwd ?? record.cwd,
-      runSettingsFor(params),
+      initialSettings,
       record.name,
       appDataDirForOrigin(record.origin, deps.env?.() ?? process.env),
       { createdAt: record.createdAt, updatedAt: record.updatedAt },
+      preserveExistingMode,
     );
     return { record, runtime };
   }
@@ -106,9 +128,10 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const params = asParams(raw);
       const cwd = requireString(params, "cwd", "thread/start");
       await deps.agyGate.ensure();
+      const startSettings = runSettingsFor(params);
       let runtime: ThreadRuntime;
       try {
-        runtime = await manager.createNew(cwd, runSettingsFor(params));
+        runtime = await manager.createNew(cwd, startSettings);
       } catch (error) {
         throw normalizeAcpAuthError(error);
       }
@@ -117,6 +140,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
         cwd,
         createdAt: runtime.createdAt,
         updatedAt: runtime.updatedAt,
+        permissions: persistedPermissionsFor(params, startSettings.executionPolicy),
       });
       manager.subscribe(runtime.threadId, context.session);
       const thread = toThread(newRecord(runtime.threadId, cwd), [], {
@@ -173,19 +197,24 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       }
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
+      const explicitPermissions = hasExplicitPermissionParams(params);
+      const persisted = explicitPermissions ? persistedPermissionsFor(params, settings.executionPolicy) : undefined;
+      const planMode = collaborationModeName(params.collaborationMode) === "plan";
       try {
         const turn = await runtime.startTurn({
           input,
           clientUserMessageId: typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : null,
+          preservePermissions: !explicitPermissions,
+          planMode,
           settings: {
             ...(settings.model ? { model: settings.model } : {}),
             ...(settings.effort ? { effort: settings.effort } : {}),
-            ...("approvalPolicy" in params || "sandboxPolicy" in params || "sandbox" in params || "collaborationMode" in params
-              ? { mode: settings.mode }
-              : {}),
-            ...("sandboxPolicy" in params || "sandbox" in params ? { executionPolicy: settings.executionPolicy } : {}),
+            ...(persisted ? { mode: persisted.mode, executionPolicy: persisted.executionPolicy } : {}),
           },
         });
+        if (persisted) {
+          await overlay.recordSession(threadId, { permissions: persisted });
+        }
         history.invalidate(threadId);
         return { turn };
       } catch (error) {

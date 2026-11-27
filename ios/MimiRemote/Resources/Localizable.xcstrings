@@ -12952,23 +12952,6 @@
         }
       }
     },
-    "ui.enable_tailcat_experiment": {
-      "comment": "Toggle label for the Tailcat transport experiment.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use Tailcat experimental mode"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "使用 Tailcat 实验模式"
-          }
-        }
-      }
-    },
     "ui.enabled_runtimes_footer": {
       "extractionState": "manual",
       "localizations": {
@@ -13835,24 +13818,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "预计 %@ 重置"
-          }
-        }
-      }
-    },
-    "ui.experimental_features": {
-      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental Features"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实验功能"
           }
         }
       }
@@ -34699,6 +34664,24 @@
         }
       }
     },
+    "ui.runtime_subtitle_all": {
+      "comment": "Subtitle for the All runtimes option in the workspace runtime picker popover.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Combined sessions from all enabled runtimes in this workspace."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "汇总当前工作区所有已开启运行时的会话。"
+          }
+        }
+      }
+    },
     "ui.runtime_subtitle_antigravity": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -37460,6 +37443,24 @@
         }
       }
     },
+    "ui.show_all_runtime_sessions_hint": {
+      "comment": "Accessibility hint for choosing the combined All runtimes workspace session list.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows recent sessions from all enabled runtimes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示所有已开启运行时的最近会话。"
+          }
+        }
+      }
+    },
     "ui.show_details": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -39582,40 +39583,6 @@
         }
       }
     },
-    "ui.tailcat_experiment_enabled": {
-      "comment": "Settings summary when the Tailcat experiment is enabled.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tailcat mode on"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tailcat 模式已开启"
-          }
-        }
-      }
-    },
-    "ui.tailcat_experiment_summary": {
-      "comment": "Explains what the Tailcat experiment changes.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When on, all requests use Tailcat only. Your saved Tailscale connection remains unchanged and resumes when this switch is off."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开启后，所有请求只走 Tailcat。已保存的 Tailscale 连接不会被修改；关闭开关后恢复使用。"
-          }
-        }
-      }
-    },
     "ui.tailcat_failure_network_cellular": {
       "comment": "Device network type when the connection failed.",
       "localizations": {
@@ -40071,23 +40038,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "HTTP 请求：%@ ms"
-          }
-        }
-      }
-    },
-    "ui.tailcat_safety_note": {
-      "comment": "Safety warning for the experimental Tailcat transport.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental transport. Keep the existing Tailscale profile until real-device HTTP, WebSocket, file transfer, reconnect, and background recovery tests pass."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这是实验传输。在真机完成 HTTP、WebSocket、文件传输、重连和后台恢复验证前，请保留现有 Tailscale 连接档案。"
           }
         }
       }
@@ -41755,6 +41705,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前运行通道不支持手动压缩"
+          }
+        }
+      }
+    },
+    "ui.the_current_running_channel_does_not_support_steer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current running channel does not support steering the current reply"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前运行通道不支持引导当前回复"
           }
         }
       }
@@ -51254,6 +51221,42 @@
         }
       }
     },
+    "ui.workspace_default_show_all_runtimes": {
+      "comment": "Settings toggle title for opening workspaces in the combined All runtimes view by default.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show all runtimes by default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区默认展示全部运行时"
+          }
+        }
+      }
+    },
+    "ui.workspace_default_show_all_runtimes_description": {
+      "comment": "Settings toggle subtitle explaining the default All runtimes workspace view.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Workspaces in the combined All view instead of a single runtime."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进入工作区时默认汇总展示所有已开启运行时的会话。"
+          }
+        }
+      }
+    },
     "ui.workspace_definition_open_one": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -51841,6 +51844,150 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作区列表"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_all_unavailable_message": {
+      "comment": "Empty state description when all enabled runtimes are unavailable.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All enabled runtimes are currently unavailable on this computer. Check your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上已开启的运行时当前均不可用，请检查电脑端状态后重试。"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_all_unavailable_title": {
+      "comment": "Empty state title when all enabled runtimes are unavailable in the combined workspace view.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No runtimes available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无可用运行时"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_partial_degraded_message": {
+      "comment": "Banner message listing runtimes that returned partial results.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ returned partial results. Reload to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 返回了部分结果，可点击重新加载重试。"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_partial_degraded_title": {
+      "comment": "Banner title when one or more runtimes returned partial or degraded session list results.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session list may be incomplete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话列表可能不完整"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_partial_empty_title": {
+      "comment": "Empty state title when no sessions are visible yet and one or more runtimes are unavailable or degraded.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to load all runtimes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能加载全部运行时"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_partial_unavailable_message": {
+      "comment": "Banner message listing unavailable runtimes while showing sessions from remaining runtimes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is currently unavailable. Showing sessions from remaining runtimes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 当前不可用，已先展示其余运行时的会话。"
+          }
+        }
+      }
+    },
+    "ui.workspace_merged_partial_unavailable_title": {
+      "comment": "Banner title when one or more runtimes are unavailable in the combined workspace session list.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some runtimes are unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分运行时暂不可用"
+          }
+        }
+      }
+    },
+    "ui.workspace_runtime_all": {
+      "comment": "Workspace runtime filter option showing combined sessions from all enabled runtimes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部"
           }
         }
       }

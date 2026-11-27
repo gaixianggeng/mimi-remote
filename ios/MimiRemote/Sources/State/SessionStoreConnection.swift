@@ -3051,6 +3051,8 @@ extension SessionStore {
         availableRuntimeProviders = ["codex"]
         runtimeChannelDiagnosticsByProvider = [:]
         threadGoalRuntimeProviders = ["codex"]
+        preserveThreadPermissionRuntimeProviders = ["codex", "agy"]
+        turnSteerRuntimeProviders = ["codex", "claude"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle
@@ -3096,7 +3098,8 @@ extension SessionStore {
                 // 插入头部会改变所有后续位置；这是批内唯一需要 O(n) 的 lookup 更新，
                 // 与既有 upsert 的数组语义保持一致。
                 sessionIndexByID = Dictionary(
-                    uniqueKeysWithValues: batch.sessions.enumerated().map { ($0.element.id, $0.offset) }
+                    batch.sessions.enumerated().map { ($0.element.id, $0.offset) },
+                    uniquingKeysWith: { _, latest in latest }
                 )
             }
             return

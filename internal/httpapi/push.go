@@ -329,11 +329,12 @@ func (r *Router) restoreGatewayThreadAuthorization(record pushbridge.LocateRecor
 		return true
 	}
 	r.allowGatewayThread(appServerGatewayAllowedThread{
-		id:        threadID,
-		runtimeID: record.Runtime,
-		cwd:       cwd,
-		scopeID:   scope.id,
-		readOnly:  record.ReadOnly,
+		id:             threadID,
+		runtimeID:      record.Runtime,
+		cwd:            cwd,
+		scopeID:        scope.id,
+		readOnly:       record.ReadOnly,
+		pushSeededOnly: true,
 	})
 	return true
 }

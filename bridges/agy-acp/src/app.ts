@@ -30,6 +30,7 @@ export interface CapabilityDeclaration {
   version: string;
   methods: string[];
   fullAccess: boolean;
+  preserveThreadPermissions: boolean;
   agy: { minimumVersion: string };
 }
 
@@ -42,6 +43,7 @@ export function capabilityDeclaration(router: Router): CapabilityDeclaration {
     version: ADAPTER_VERSION,
     methods,
     fullAccess: true,
+    preserveThreadPermissions: true,
     agy: { minimumVersion: MINIMUM_AGY_VERSION },
   };
 }
@@ -140,6 +142,7 @@ export function createApp(options: AppOptions): App {
       rateLimits.observePlanType(tierNameFromSessionMeta(open._meta));
     },
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
+    onOwnTurnWatermark: (threadId, watermark) => overlay.setEphemeralOwnTurnWatermark(threadId, watermark),
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
       historyRef?.invalidate(threadId);

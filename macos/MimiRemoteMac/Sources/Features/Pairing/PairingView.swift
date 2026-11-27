@@ -94,7 +94,7 @@ struct PairingView: View {
     static func visibleWarnings(for pairing: PairingInfo, lastError: String?) -> [String] {
         // 内置连接的有效期已由二维码下方的倒计时胶囊展示，不再重复渲染静态实验提示框挤压页面。
         let filtered = pairing.warnings.filter { warning in
-            !(pairing.network == .tailcat && warning.hasPrefix("Tailcat 是邀请实验"))
+            !(pairing.network == .tailcat && warning.hasPrefix("Tailcat 二维码"))
         }
         return filtered + [lastError].compactMap { $0 }
     }

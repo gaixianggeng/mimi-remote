@@ -14,7 +14,7 @@ Mimi Remote 不需要 Mimi 账号，不收集邮箱、密码或手机号。App �
 
 App 仅在完成用户明确请求时处理以下数据：
 
-- 连接资料：用户配置的 `agentd` 地址、连接名称与访问 Token。Token 保存在系统 Keychain 中。使用实验性 Tailcat 连接时，本机 Tailcat 客户端密钥与连接地址也保存在 Keychain 中。
+- 连接资料：用户配置的 `agentd` 地址、连接名称与访问 Token。Token 保存在系统 Keychain 中。使用 Tailcat 连接时，本机 Tailcat 客户端密钥与连接地址也保存在 Keychain 中。
 - 本地状态：语言、外观、权限偏好、最近工作区、会话索引、恢复路由、待发送草稿及诊断历史。
 - 开发内容：提示词、会话、代码、Diff、图片、日志和工具结果仅供设备与用户配置的电脑处理。托管中继可能转发其端到端加密数据包，开发者无法读取内容。
 - 本地通知：仅保存打开指定连接、项目和会话所需的路由标识，不包含 Token、消息正文或工作目录。
@@ -27,7 +27,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 连接可使用局域网、Tailscale 等私有网络、自建 Tailcat、Mimi 中转或用户配置的 HTTPS 地址。Mimi Remote 运营的托管中继仅转发端到端加密的数据包，不解密、查看或保存工作内容。其他网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
 
-#### 自建 Tailcat 连接（实验性，可选，默认关闭）
+#### 自建 Tailcat 连接（可选，默认关闭）
 
 App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连接库。只有用户在电脑端的 Mimi Remote 中开启 Tailcat 并扫码配对后，App 才会使用这条连接。
 
@@ -119,7 +119,7 @@ Mimi Remote requires no Mimi account and does not collect email addresses, passw
 
 The app processes the following data only to perform actions you request:
 
-- Connection data: the `agentd` address, connection name, and access token you configure. Tokens are stored in the system Keychain. When you use the experimental Tailcat connection, the app's Tailcat client key and connection address are also stored in the Keychain.
+- Connection data: the `agentd` address, connection name, and access token you configure. Tokens are stored in the system Keychain. When you use the Tailcat connection, the app's Tailcat client key and connection address are also stored in the Keychain.
 - Local state: language, appearance and permission preferences, recent workspaces, session indexes, restoration routes, queued drafts, and diagnostic history.
 - Development content: prompts, conversations, code, diffs, images, logs, and tool results are processed only by your device and the computer you configure. The managed relay may forward their end-to-end encrypted packets; the developer cannot read the content.
 - Local notifications: only routing identifiers needed to open a connection, project, and session are stored. Tokens, message bodies, and working-directory paths are excluded.
@@ -132,7 +132,7 @@ Mimi Remote connects directly to an `agentd` endpoint that you enter or import b
 
 Connections may use a local network, a private network such as Tailscale, self-hosted Tailcat, Mimi Relay, or an HTTPS endpoint you configure. Mimi Remote's managed relay only forwards end-to-end encrypted packets; it does not decrypt, view, or store your work content. Other network infrastructure providers may process metadata needed for encrypted connections under their own policies.
 
-#### Self-hosted Tailcat connection (experimental, optional, off by default)
+#### Self-hosted Tailcat connection (optional, off by default)
 
 The app includes a Tailcat client. Tailcat is an open-source peer-to-peer connection library published by Tailscale. The app uses this connection only after you turn on Tailcat in Mimi Remote on your computer and pair by scanning its QR code.
 

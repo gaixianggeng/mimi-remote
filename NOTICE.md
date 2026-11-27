@@ -55,7 +55,7 @@ Swift Package Manager 依赖：
 
 随附的连接组件：
 
-- 实验性 Tailcat 连接。Mac 安装包与 Linux 归档随附 Tailcat 辅助程序 `mimi-tailcat-experiment`，iOS App 内置 Tailcat 客户端框架；两者源码位于本仓库 `experiments/tailcat`，依赖 Tailscale 发布的 `github.com/tailscale/tailcat`（BSD-3-Clause）与 `tailscale.com` 等模块。这些依赖的许可证正文尚未并入 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，补齐前以各上游仓库的许可证文件为准。Tailcat 默认使用 Tailscale 运营的公共 DERP 中继，数据处理说明见[隐私政策](docs/privacy-policy.md)。
+- Tailcat 连接。Mac 安装包与 Linux 归档随附 Tailcat 辅助程序 `mimi-tailcat-experiment`，iOS App 内置 Tailcat 客户端框架；两者源码位于本仓库 `experiments/tailcat`，依赖 Tailscale 发布的 `github.com/tailscale/tailcat`（BSD-3-Clause）与 `tailscale.com` 等模块。这些依赖的许可证正文尚未并入 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，补齐前以各上游仓库的许可证文件为准。Tailcat 默认使用 Tailscale 运营的公共 DERP 中继，数据处理说明见[隐私政策](docs/privacy-policy.md)。
 
 本仓库不打包用户的 Codex 凭证，也不托管第三方服务账号。
 

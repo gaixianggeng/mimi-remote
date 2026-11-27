@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 /// 工作区顶部胶囊的尺寸与宽屏信息密度策略。
@@ -32,22 +33,52 @@ enum WorkspaceStripLayout {
         max(0, viewportWidth - contentPadding * 2)
     }
 
+    /// 按已启用 Runtime 数量与动态字号计算内联分段筛选器所需的最小内容宽度。
+    /// 默认 2 个运行时且标准字号维持 `inlineRuntimePickerMinimumWidth`（640pt）；
+    /// 每多出 1 个运行时（5 段含「全部」约 445pt）追加 80pt 预算，避免挤压工作区胶囊；
+    /// 更大动态字号按档位追加预算，辅助功能字号直接退回弹窗行。
+    static func inlineRuntimePickerMinimumWidth(
+        enabledRuntimeCount: Int,
+        dynamicTypeSize: DynamicTypeSize = .large
+    ) -> CGFloat {
+        let extraRuntimeBudget = CGFloat(max(0, enabledRuntimeCount - 2)) * 80
+        let dynamicTypeBudget: CGFloat
+        switch dynamicTypeSize {
+        case .xLarge:
+            dynamicTypeBudget = 40
+        case .xxLarge:
+            dynamicTypeBudget = 80
+        case .xxxLarge:
+            dynamicTypeBudget = 120
+        default:
+            dynamicTypeBudget = 0
+        }
+        return inlineRuntimePickerMinimumWidth + extraRuntimeBudget + dynamicTypeBudget
+    }
+
     /// 统一决定 Runtime 是否进入胶囊行，避免 Runtime 布局和行内新建入口分别判断。
     /// `viewportWidth` 是应用了内边距的外层容器宽，不是设备屏宽。
     static func usesInlineRuntimePicker(
         viewportWidth: CGFloat,
         showsHostSwitcherInStrip: Bool,
         hasBottomTabBar: Bool,
-        contentPadding: CGFloat = horizontalPadding
+        contentPadding: CGFloat = horizontalPadding,
+        enabledRuntimeCount: Int = 2,
+        dynamicTypeSize: DynamicTypeSize = .large
     ) -> Bool {
         // 底部 Tab 栏时新建按钮必须留在筛选行，横屏 iPhone 也不能切到 inline 布局。
-        guard !hasBottomTabBar else { return false }
+        // 辅助功能字号下多段控件会挤压工作区胶囊，退回弹窗筛选行保证可读性。
+        guard !hasBottomTabBar, !dynamicTypeSize.isAccessibilitySize else { return false }
 
         let hostSwitcherBudget = showsHostSwitcherInStrip
             ? WorkbenchChromeIconMetrics.minimumHitTarget + chipSpacing
             : 0
         let availableContentWidth = minimumContentWidth(viewportWidth: viewportWidth, contentPadding: contentPadding)
-        return availableContentWidth - hostSwitcherBudget >= inlineRuntimePickerMinimumWidth
+        let minimumWidth = inlineRuntimePickerMinimumWidth(
+            enabledRuntimeCount: enabledRuntimeCount,
+            dynamicTypeSize: dynamicTypeSize
+        )
+        return availableContentWidth - hostSwitcherBudget >= minimumWidth
     }
 
     /// 使用胶囊滚动区的真实宽度，而不是设备宽度。浮动侧栏会持续改变详情区宽度，
@@ -113,9 +144,12 @@ enum WorkspacePagerTransition {
 }
 
 /// 高频滚动几何只发布给胶囊自身，避免横滑每一帧都重算完整的工作区会话列表。
+/// 使用 `@Observable` 实现属性级订阅：仅读取 `pagePosition` 的 `WorkspaceProjectChip`
+/// 在滚动帧重绘，持有状态但未读取的 `WorkspaceRootView` 不会被每帧失效。
 @MainActor
-final class WorkspacePagerTransitionState: ObservableObject {
-    @Published private(set) var pagePosition: CGFloat?
+@Observable
+final class WorkspacePagerTransitionState {
+    private(set) var pagePosition: CGFloat?
 
     func update(pagePosition: CGFloat?) {
         if let current = self.pagePosition, let pagePosition,

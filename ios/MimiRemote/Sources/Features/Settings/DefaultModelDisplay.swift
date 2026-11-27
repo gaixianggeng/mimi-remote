@@ -52,6 +52,8 @@ struct DefaultModelSettingsView: View {
     private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
     private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
+    @AppStorage(WorkspaceSessionBrowseScope.defaultShowAllRuntimesPreferenceKey)
+    private var defaultShowAllRuntimes = false
     /// 定向补拉不经过 Store 的聚合刷新标记，页面自己记加载中。
     @State private var isLoadingCatalog = false
     @State private var didLoadCatalog = false
@@ -105,6 +107,28 @@ struct DefaultModelSettingsView: View {
                     )
                     .settingsRow()
                     .accessibilityIdentifier("settings.preferredRuntime")
+
+                    Toggle(isOn: $defaultShowAllRuntimes) {
+                        HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
+                            Image(systemName: "square.stack.3d.up")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(tokens.accentText)
+                                .frame(
+                                    width: SettingsLayoutMetrics.iconSlot,
+                                    height: SettingsLayoutMetrics.iconSlot
+                                )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.text("ui.workspace_default_show_all_runtimes"))
+                                    .settingsTitleFont()
+                                    .foregroundStyle(tokens.primaryText)
+                                Text(L10n.text("ui.workspace_default_show_all_runtimes_description"))
+                                    .settingsDetailFont()
+                                    .foregroundStyle(tokens.secondaryText)
+                            }
+                        }
+                    }
+                    .settingsRow(.descriptive)
+                    .accessibilityIdentifier("settings.defaultShowAllRuntimes")
                 }
             } header: {
                 SettingsGroupHeader(title: L10n.text("ui.preferred_runtime"), showsDivider: false)

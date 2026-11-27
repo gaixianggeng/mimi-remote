@@ -203,6 +203,7 @@ struct SessionListFirstPageInFlight {
     let task: Task<SessionsPage, Error>
     let traversalControl: SessionListFirstPageTraversalControl
     let requestLineage: UUID
+    var fillsPresentationWindow: Bool = true
 }
 
 @MainActor

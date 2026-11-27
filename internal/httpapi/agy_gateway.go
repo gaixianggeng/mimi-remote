@@ -91,6 +91,10 @@ func (p agyAdapterProbe) fullAccessAvailable() bool {
 	return p.Healthy && p.Capabilities != nil && p.Capabilities.FullAccess
 }
 
+func (p agyAdapterProbe) preserveThreadPermissionsAvailable() bool {
+	return p.Healthy && p.Capabilities != nil && p.Capabilities.PreserveThreadPermissions
+}
+
 func newAgyAdapterSupervisor() *claudeBridgeSupervisor {
 	return newResidentAdapterSupervisor(residentAdapterSupervisorConfig{
 		RuntimeID:      appServerRuntimeAgyID,
@@ -357,6 +361,7 @@ func (r *Router) agyChannelConfig(req *http.Request) appServerChannel {
 	}
 
 	capabilities := agySpec.Capabilities
+	capabilities.PreserveThreadPermissions = probe.preserveThreadPermissionsAvailable()
 	capabilities.RateLimits = rateLimitsAvailable
 	capabilities.Rename = probe.supportsMethod("thread/name/set")
 

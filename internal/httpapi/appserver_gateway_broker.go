@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -42,6 +43,9 @@ type codexGatewaySink struct {
 	monitor *relayGatewayConnMonitor
 	done    chan string
 	once    sync.Once
+	// gen 是 broker 分配给本次客户端连接的单调不可变代次（>=1），用于将 in-flight
+	// thread/list 请求与返回路径精确绑定到发起该请求的 sink，防止换连接后跨 sink 下发。
+	gen uint64
 }
 
 // monitorOrNil 是离线期间唯一安全的统计入口。
@@ -116,6 +120,10 @@ type codexGatewayBroker struct {
 
 	mu   sync.Mutex
 	sink *codexGatewaySink
+	// nextSinkGen / activeSinkGen 以无锁原子维护当前活跃 sink 代次：
+	// policy 阶段 B 只需读 activeSinkGen.Load()，绝不反拿 b.mu，保证无锁序反转。
+	nextSinkGen   atomic.Uint64
+	activeSinkGen atomic.Uint64
 	// attachSeq 是最近一次开始的接管序号，sinkSeq 是当前 sink 来自哪次接管（初始 sink
 	// 为 0）。只有最晚开始的接管能发布 sink；两者不等表示最新接管还在途，此时旧
 	// handler 的 detach 不能把会话当成客户端离线，既不回收 broker，也不补发离线提醒。
@@ -229,6 +237,14 @@ func (r *Router) registerCodexGatewayBroker(
 		pending:          map[string][]byte{},
 		pendingDelivered: map[string]*codexGatewaySink{},
 	}
+	if sink != nil {
+		initialGen := broker.nextSinkGen.Add(1)
+		sink.gen = initialGen
+		broker.activeSinkGen.Store(initialGen)
+	}
+	if policy != nil {
+		policy.currentSinkGen = broker.activeSinkGen.Load
+	}
 	r.codexBrokers[key] = broker
 	r.codexBrokerMu.Unlock()
 
@@ -286,6 +302,11 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	b.attachSeq++
 	seq := b.attachSeq
 	stale := b.sink
+	if stale != nil && stale != sink {
+		// 立刻令旧 sink 代次归零，在释放 b.mu 与 stale.abort 之前就阻断旧 sink 的
+		// 在途 thread/list 提交与新登记，消除接管窗口内的跨 sink 泄漏。
+		b.activeSinkGen.CompareAndSwap(stale.gen, 0)
+	}
 	b.mu.Unlock()
 	if stale != sink {
 		stale.abort("broker_sink_replaced")
@@ -307,8 +328,15 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 		return true
 	}
 	previous := b.sink
+	if previous != nil && previous != sink {
+		b.activeSinkGen.CompareAndSwap(previous.gen, 0)
+	}
+	if sink.gen == 0 {
+		sink.gen = b.nextSinkGen.Add(1)
+	}
 	b.sink = sink
 	b.sinkSeq = seq
+	b.activeSinkGen.Store(sink.gen)
 	b.detachedAt = time.Time{}
 	frames := b.replayFramesLocked(sink)
 	// 先拿新 sink 的写锁再放开 b.mu：泵送只能在 b.mu 下看到新 sink，随后的实时帧
@@ -462,6 +490,9 @@ func (b *codexGatewayBroker) detach(sink *codexGatewaySink) {
 		return
 	}
 	b.sink = nil
+	if sink != nil {
+		b.activeSinkGen.CompareAndSwap(sink.gen, 0)
+	}
 	b.detachedAt = time.Now()
 	keepAlive := len(b.startingTurns) > 0 || len(b.queuedTurns) > 0 || len(b.activeTurns) > 0 || len(b.pendingOrder) > 0
 	b.mu.Unlock()
@@ -561,6 +592,7 @@ func (b *codexGatewayBroker) close(reason string) {
 	b.closeReason = reason
 	sink := b.sink
 	b.sink = nil
+	b.activeSinkGen.Store(0)
 	b.pending = map[string][]byte{}
 	b.pendingOrder = nil
 	b.pendingBytes = 0
@@ -597,63 +629,97 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		if b.consumeSubscriptionReleaseResponse(payload) {
 			continue
 		}
-		policyStart := time.Now()
-		forwardPayload, forward, policyErr := b.policy.observeUpstreamFrame(messageType, payload)
-		policyDuration := time.Since(policyStart)
-		sink := b.currentSink()
-		if policyErr != nil {
+		if b.handleUpstreamFrame(messageType, payload) {
+			return
+		}
+	}
+}
+
+func (b *codexGatewayBroker) handleUpstreamFrame(messageType int, payload []byte) bool {
+	policyStart := time.Now()
+	decision := b.policy.observeUpstreamFrameDecision(messageType, payload)
+	policyDuration := time.Since(policyStart)
+	pinGrace := time.Duration(0)
+	defer func() {
+		if decision.releasePins != nil {
+			decision.releasePins(pinGrace)
+		}
+	}()
+
+	if decision.policyErr != nil {
+		policyErr := decision.policyErr
+		targetGen := decision.targetSinkGen
+		if targetGen == 0 {
+			targetGen = policyErr.targetSinkGen
+		}
+		if policyErr.target == "client" {
+			b.mu.Lock()
+			sink := b.sink
+			matched := sink != nil && (targetGen == 0 || sink.gen == targetGen)
+			b.mu.Unlock()
+			if !matched {
+				return false
+			}
 			sink.monitorOrNil().recordPolicyError("upstream_to_client", b.policy.runtimeID, payload, policyErr, policyDuration)
 			if policyErr.historyResponseBlocked {
 				sink.monitorOrNil().recordHistoryResponseBlocked(len(payload), payload)
 			}
-			if policyErr.target == "client" {
-				if sink != nil && !writeGatewayPolicyError(sink.conn, sink.writeMu, policyErr) {
-					sink.finish("client_policy_error_write_failed")
-				}
-			} else if !writeGatewayPolicyError(b.upstream, &b.upstreamWriteMu, policyErr) {
-				b.close("upstream_policy_error_write_failed")
-				return
+			if !writeGatewayPolicyError(sink.conn, sink.writeMu, policyErr) {
+				sink.finish("client_policy_error_write_failed")
 			}
-			continue
+			return false
 		}
-		if !forward {
-			sink.monitorOrNil().recordDropped("upstream_to_client", len(payload), policyDuration)
-			continue
+		sink := b.currentSink()
+		sink.monitorOrNil().recordPolicyError("upstream_to_client", b.policy.runtimeID, payload, policyErr, policyDuration)
+		if policyErr.historyResponseBlocked {
+			sink.monitorOrNil().recordHistoryResponseBlocked(len(payload), payload)
 		}
-		forwardPayload = b.rewriteInitializeResponse(forwardPayload)
-		b.observeLifecycle(messageType, forwardPayload)
-		pendingKey := serverRequestFrameKey(forwardPayload)
-		// 接管途中（旧 sink 已断开、新 sink 未发布）读到的帧会写给旧 sink 并失败，与离线
-		// 期间一样丢弃：新连接的请求要等接管完成才会发出，会话内容由重连后的权威历史
-		// 补齐，待审批帧则由 attach 重放。这里不能等接管落定：旧 handler 可能握着
-		// clientFrameMu 等一个只有泵送才能读到的退订 ACK。
-		b.mu.Lock()
-		sink = b.sink
-		if sink == nil {
-			b.mu.Unlock()
-			// 离线期间只保留审批帧；会话内容由 iOS 重连后走权威历史补齐。
-			continue
+		if !writeGatewayPolicyError(b.upstream, &b.upstreamWriteMu, policyErr) {
+			b.close("upstream_policy_error_write_failed")
+			return true
 		}
-		if pendingKey != "" {
-			if b.pendingDelivered[pendingKey] == sink {
-				b.mu.Unlock()
-				continue
-			}
-			// 写之前登记：接管若发生在写入期间，新 sink 由 attach 重放这条审批，
-			// 不会漏；旧 sink 的这次写入失败也不影响新 sink 的登记。
-			b.pendingDelivered[pendingKey] = sink
-		}
-		b.mu.Unlock()
-		// 不持有 b.mu 写客户端。切网后旧连接收不到 FIN，大帧写入最长要等 75 秒；
-		// 持锁写会让同名会话的新连接卡在 attach 上，连 initialize 都得不到应答。
-		writeStart := time.Now()
-		if err := writeWebSocketFrame(sink.conn, sink.writeMu, messageType, forwardPayload); err != nil {
-			// 客户端写失败只摘掉 sink：上游 turn 仍在跑，broker 必须活着接住后续审批。
-			sink.finish(gatewayCloseReason("client_write", err))
-			continue
-		}
-		sink.monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
+		return false
 	}
+	if !decision.forward {
+		sink := b.currentSink()
+		sink.monitorOrNil().recordDropped("upstream_to_client", len(payload), policyDuration)
+		return false
+	}
+	forwardPayload := b.rewriteInitializeResponse(decision.forwardPayload)
+	b.observeLifecycle(messageType, forwardPayload)
+	pendingKey := serverRequestFrameKey(forwardPayload)
+	// 接管途中（旧 sink 已断开、新 sink 未发布）读到的帧会写给旧 sink 并失败，与离线
+	// 期间一样丢弃：新连接的请求要等接管完成才会发出，会话内容由重连后的权威历史
+	// 补齐，待审批帧则由 attach 重放。这里不能等接管落定：旧 handler 可能握着
+	// clientFrameMu 等一个只有泵送才能读到的退订 ACK。
+	b.mu.Lock()
+	sink := b.sink
+	if sink == nil || (decision.targetSinkGen != 0 && sink.gen != decision.targetSinkGen) {
+		b.mu.Unlock()
+		// 离线期间或已换代 sink 只保留审批帧；旧 sink 的 thread/list 响应绝不投递给新 sink。
+		return false
+	}
+	if pendingKey != "" {
+		if b.pendingDelivered[pendingKey] == sink {
+			b.mu.Unlock()
+			return false
+		}
+		// 写之前登记：接管若发生在写入期间，新 sink 由 attach 重放这条审批，
+		// 不会漏；旧 sink 的这次写入失败也不影响新 sink 的登记。
+		b.pendingDelivered[pendingKey] = sink
+	}
+	b.mu.Unlock()
+	// 不持有 b.mu 写客户端。切网后旧连接收不到 FIN，大帧写入最长要等 75 秒；
+	// 持锁写会让同名会话的新连接卡在 attach 上，连 initialize 都得不到应答。
+	writeStart := time.Now()
+	if err := writeWebSocketFrame(sink.conn, sink.writeMu, messageType, forwardPayload); err != nil {
+		// 客户端写失败只摘掉 sink：上游 turn 仍在跑，broker 必须活着接住后续审批。
+		sink.finish(gatewayCloseReason("client_write", err))
+		return false
+	}
+	pinGrace = appServerHistoryMediaReadGrace
+	sink.monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
+	return false
 }
 
 func (b *codexGatewayBroker) pingUpstream(ctx context.Context) {
@@ -1015,9 +1081,9 @@ func (r *Router) runCodexGatewayBrokerClient(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		sink.finish(r.copyClientFramesToAppServer(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor, &broker.clientFrameMu, func() bool {
+		sink.finish(r.copyClientFramesToAppServerForSink(ctx, client, broker.upstream, clientWriteMu, &broker.upstreamWriteMu, broker.policy, monitor, &broker.clientFrameMu, func() bool {
 			return broker.acceptsClientFrame(sink)
-		}, broker.interceptClientFrame, broker.trackClientFrameForward))
+		}, broker.interceptClientFrame, broker.trackClientFrameForward, sink.gen))
 	}()
 	go func() {
 		sink.finish(pingGatewayConnection(ctx, client, clientWriteMu, "client_ping_write"))
