@@ -51,7 +51,8 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		Aliases: []string{"openai", "codex_app_server", "codex-app-server"},
 		Methods: appServerAllowedMethods,
 		Capabilities: appServerChannelCapability{
-			Streaming:        true,
+			PreserveThreadPermissions: true,
+			Streaming:                 true,
 			History:          true,
 			ApprovalRequests: true,
 			FileDiffs:        true,

@@ -30,11 +30,12 @@ const (
 )
 
 type AdapterCapabilities struct {
-	Name       string   `json:"name"`
-	Version    string   `json:"version"`
-	Methods    []string `json:"methods"`
-	FullAccess bool     `json:"fullAccess"`
-	Agy        struct {
+	Name                      string   `json:"name"`
+	Version                   string   `json:"version"`
+	Methods                   []string `json:"methods"`
+	FullAccess                bool     `json:"fullAccess"`
+	PreserveThreadPermissions bool     `json:"preserveThreadPermissions,omitempty"`
+	Agy                       struct {
 		MinimumVersion string `json:"minimumVersion"`
 	} `json:"agy"`
 }

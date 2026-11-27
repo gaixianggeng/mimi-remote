@@ -456,6 +456,12 @@ struct ComposerView: View {
             }
             clampModelSelectionToSelectedSessionRuntime()
         }
+        .onChange(of: sessionStore.preserveThreadPermissionRuntimeProviders) { _, _ in
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
+            restoreComposerPermissionSelection(for: activeComposerDraftScope)
+        }
     }
 
     @MainActor

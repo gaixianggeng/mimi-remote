@@ -170,6 +170,8 @@ extension SessionStore {
             var unprobedProviders: Set<String> = []
             var threadGoalRuntimeProviders: Set<String> = []
             var unprobedGoalProviders: Set<String> = []
+            var preservePermRuntimeProviders: Set<String> = []
+            var unprobedPreservePermProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
                 guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
                 do {
@@ -177,12 +179,11 @@ extension SessionStore {
                         guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
                         availableRuntimeProviders.insert(provider)
                         do {
-                            if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) {
-                                threadGoalRuntimeProviders.insert(provider)
-                            }
-                        } catch {
-                            unprobedGoalProviders.insert(provider)
-                        }
+                            if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) { threadGoalRuntimeProviders.insert(provider) }
+                        } catch { unprobedGoalProviders.insert(provider) }
+                        do {
+                            if try await client.runtimeSupportsPreserveThreadPermissions(runtimeProvider: provider) { preservePermRuntimeProviders.insert(provider) }
+                        } catch { unprobedPreservePermProviders.insert(provider) }
                     }
                 } catch {
                     unprobedProviders.insert(provider)
@@ -192,15 +193,15 @@ extension SessionStore {
             // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
             // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
             availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
-            // 目标能力（#791）同一口径：没探成的 Runtime 沿用上一次的声明结论。
-            threadGoalRuntimeProviders.formUnion(
-                self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
-            )
+            // 目标与权限继承能力（#791 / #1177）同一口径：没探成的 Runtime 沿用上一次的声明结论。
+            threadGoalRuntimeProviders.formUnion(self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders)))
+            preservePermRuntimeProviders.formUnion(self.preserveThreadPermissionRuntimeProviders.intersection(unprobedProviders.union(unprobedPreservePermProviders)))
             let diagnostics = await client.runtimeChannelDiagnostics()
             guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
             self.runtimeChannelDiagnosticsByProvider = diagnostics
             self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
+            self.preserveThreadPermissionRuntimeProviders = preservePermRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
                 // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
@@ -249,6 +250,7 @@ extension SessionStore {
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
                 threadGoalRuntimeProviders = ["codex"]
+                preserveThreadPermissionRuntimeProviders = ["codex", "agy"]
             }
             appServerModelOptionsLastRefresh = Date()
             for provider in RuntimeFeatureSupport.runtimeProviders {
@@ -331,6 +333,10 @@ extension SessionStore {
                 if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
                    appStore.activeHostScope == hostScope {
                     threadGoalRuntimeProviders.insert(provider)
+                }
+                if let supportsPreserve = try? await clientFactory().runtimeSupportsPreserveThreadPermissions(runtimeProvider: provider),
+                   appStore.activeHostScope == hostScope {
+                    if supportsPreserve { preserveThreadPermissionRuntimeProviders.insert(provider) } else { preserveThreadPermissionRuntimeProviders.remove(provider) }
                 }
                 if provider == Self.nativeHarnessRuntimeProvider {
                     installNativeHarnessHostEvents()

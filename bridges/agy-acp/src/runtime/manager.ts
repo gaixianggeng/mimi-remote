@@ -162,13 +162,24 @@ export class ThreadManager {
     title: string | null,
     appDataDirName?: string,
     initialTimestamps?: { createdAt?: number; updatedAt?: number },
+    preserveExistingMode = false,
   ): ThreadRuntime {
     const existing = this.runtimes.get(threadId);
     if (existing) {
       if (title && !existing.title) existing.title = title;
       return existing;
     }
-    const created = new ThreadRuntime(threadId, cwd, this.host, settings, true, title, appDataDirName, initialTimestamps);
+    const created = new ThreadRuntime(
+      threadId,
+      cwd,
+      this.host,
+      settings,
+      true,
+      title,
+      appDataDirName,
+      initialTimestamps,
+      preserveExistingMode,
+    );
     this.runtimes.set(threadId, created);
     return created;
   }

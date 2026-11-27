@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { PersistedSessionPermissions } from "../runtime/settings.ts";
 
 export interface TurnOutcomeRecord {
   status: "completed" | "failed" | "interrupted";
@@ -59,6 +60,7 @@ interface OverlayEntry {
   archivedTurnAttempts?: TurnAttemptRecord[];
   turnAttempts?: TurnAttemptRecord[];
   toolMappings?: Record<string, PersistedToolMapping[]>;
+  permissions?: PersistedSessionPermissions;
 }
 
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
@@ -280,6 +282,7 @@ export class AgyOverlay {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      permissions?: PersistedSessionPermissions;
     },
   ): Promise<void> {
     await this.load();
@@ -389,6 +392,7 @@ export class AgyOverlay {
       ...(archivedTurnAttempts ? { archivedTurnAttempts } : {}),
       ...(turnAttempts ? { turnAttempts } : {}),
       ...(toolMappings ? { toolMappings } : {}),
+      ...(patch.permissions ? { permissions: patch.permissions } : {}),
     };
     this.data.sessions[sessionId] = next;
     await this.persist();

@@ -22,7 +22,7 @@ import {
 import { desktopOwnerSummary } from "../handlers/threads.ts";
 import { selectPermissionOption, serverApprovalFor } from "./approvals.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
-import type { AgyRunSettings } from "./settings.ts";
+import { isAgyModeId, type AgyModeId, type AgyRunSettings } from "./settings.ts";
 import { toAcpPromptBlocks } from "./userInput.ts";
 
 export const EXTERNAL_WRITE_CONFLICT_MESSAGE =
@@ -111,6 +111,10 @@ export interface TurnStartRequest {
   input: UserInput[];
   clientUserMessageId: string | null;
   settings: Partial<AgyRunSettings>;
+  /** 为 true 时沿用会话原有权限/模式，不主动下发 session/set_mode 覆盖上游状态（#1177）。 */
+  preservePermissions?: boolean;
+  /** 单轮协作模式为 plan；只影响本轮，不覆盖会话基础权限。 */
+  planMode?: boolean;
 }
 
 export class ThreadRuntime {
@@ -120,6 +124,9 @@ export class ThreadRuntime {
   private appliedMode: string | undefined;
   private appliedModel: string | undefined;
   private appliedEffort: string | undefined;
+  private preserveExistingMode: boolean;
+  private baseMode: AgyModeId | undefined;
+  private transientPlanMode = false;
   private currentTurn: LiveTurn | undefined;
   private currentAttempt:
     | {
@@ -163,11 +170,14 @@ export class ThreadRuntime {
     initialTitle: string | null = null,
     private readonly appDataDirName?: string,
     initialTimestamps?: { createdAt?: number; updatedAt?: number },
+    preserveExistingMode = false,
   ) {
     const nowSec = Math.floor(Date.now() / 1000);
     this.createdAt = initialTimestamps?.createdAt ?? nowSec;
     this.updatedAt = initialTimestamps?.updatedAt ?? this.createdAt;
     this.title = initialTitle;
+    this.preserveExistingMode = preserveExistingMode;
+    this.baseMode = preserveExistingMode ? undefined : settings.mode;
   }
 
   get activeTurnId(): string | undefined {
@@ -176,6 +186,11 @@ export class ThreadRuntime {
 
   get currentSettings(): AgyRunSettings {
     return this.settings;
+  }
+
+  get effectiveMode(): AgyModeId {
+    if (isAgyModeId(this.appliedMode)) return this.appliedMode;
+    return this.baseMode ?? this.settings.mode;
   }
 
   isBusy(): boolean {
@@ -228,12 +243,27 @@ export class ThreadRuntime {
 
     let turn: LiveTurn | undefined;
     try {
-      this.settings = {
-        model: req.settings.model ?? this.settings.model,
-        effort: req.settings.effort ?? this.settings.effort,
-        mode: req.settings.mode ?? this.settings.mode,
-        executionPolicy: req.settings.executionPolicy ?? this.settings.executionPolicy,
-      };
+      const preservingPermissions = req.preservePermissions === true;
+      const planMode = req.planMode === true;
+      if (!preservingPermissions) {
+        this.preserveExistingMode = false;
+        const nextExecutionPolicy = req.settings.executionPolicy ?? this.settings.executionPolicy;
+        const nextBaseMode = req.settings.mode ?? this.baseMode ?? this.settings.mode;
+        this.baseMode = nextBaseMode;
+        this.transientPlanMode = planMode && nextBaseMode !== "plan";
+        this.settings = {
+          model: req.settings.model ?? this.settings.model,
+          effort: req.settings.effort ?? this.settings.effort,
+          mode: planMode ? "plan" : nextBaseMode,
+          executionPolicy: nextExecutionPolicy,
+        };
+      } else {
+        this.settings = {
+          ...this.settings,
+          model: req.settings.model ?? this.settings.model,
+          effort: req.settings.effort ?? this.settings.effort,
+        };
+      }
       const { blocks, preview, promptHash, promptTruncated } = await toAcpPromptBlocks(req.input);
 
       if (!this.client || this.client.isClosed) {
@@ -245,8 +275,24 @@ export class ThreadRuntime {
         this.recordSessionMeta(result, false);
       }
 
+      let modeToApply: AgyModeId | undefined;
+      if (!preservingPermissions) {
+        modeToApply = this.settings.mode;
+      } else if (planMode) {
+        this.transientPlanMode = true;
+        modeToApply = "plan";
+      } else if (this.transientPlanMode) {
+        this.transientPlanMode = false;
+        modeToApply = this.baseMode;
+      } else if (!this.preserveExistingMode) {
+        modeToApply = this.baseMode ?? this.settings.mode;
+      }
+      if (modeToApply) {
+        this.settings = { ...this.settings, mode: modeToApply };
+      }
+
       const client = this.client!;
-      await this.applySessionControls(client, this.settings);
+      await this.applySessionControls(client, this.settings, { modeToApply });
 
       // 预留不可复用回合序号与发布回合之前，绕过 300ms 进程缓存重新确认当前持有者（C11 round5），
       // 防止写前判断到 sessionLoadWithReplay 之间的异步窗口内已被外部进程抢先接手。
@@ -537,10 +583,15 @@ export class ThreadRuntime {
     this.unsubPermission = undefined;
   }
 
-  private async applySessionControls(client: AcpClient, settings: AgyRunSettings): Promise<void> {
-    if (settings.mode && settings.mode !== this.appliedMode) {
-      await client.sessionSetMode(this.threadId, settings.mode);
-      this.appliedMode = settings.mode;
+  private async applySessionControls(
+    client: AcpClient,
+    settings: AgyRunSettings,
+    options?: { modeToApply?: AgyModeId | undefined },
+  ): Promise<void> {
+    const desiredMode = options && "modeToApply" in options ? options.modeToApply : settings.mode;
+    if (desiredMode && desiredMode !== this.appliedMode) {
+      await client.sessionSetMode(this.threadId, desiredMode);
+      this.appliedMode = desiredMode;
     }
     if (settings.model && settings.model !== this.appliedModel) {
       await client.sessionSetConfigOption(this.threadId, "model", settings.model);
@@ -567,6 +618,10 @@ export class ThreadRuntime {
     }
     if (open.modes?.currentModeId) {
       this.appliedMode = open.modes.currentModeId;
+      if (this.preserveExistingMode && this.baseMode === undefined && isAgyModeId(open.modes.currentModeId)) {
+        this.baseMode = open.modes.currentModeId;
+        this.settings = { ...this.settings, mode: open.modes.currentModeId };
+      }
     }
     for (const opt of open.configOptions ?? []) {
       if (opt.id === "model") this.appliedModel = opt.currentValue;
@@ -591,6 +646,10 @@ export class ThreadRuntime {
     }
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
       this.appliedMode = update.currentModeId;
+      if (this.preserveExistingMode && !this.transientPlanMode && isAgyModeId(update.currentModeId)) {
+        this.baseMode = update.currentModeId;
+        this.settings = { ...this.settings, mode: update.currentModeId };
+      }
       return;
     }
     this.currentTurn?.onUpdate(update);

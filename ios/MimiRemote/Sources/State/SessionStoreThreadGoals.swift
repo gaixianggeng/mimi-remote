@@ -6,6 +6,13 @@ extension SessionStore {
         RuntimeFeatureSupport.supportsGoals(for: runtimeProvider ?? "codex", declaredBy: threadGoalRuntimeProviders)
     }
 
+    func supportsPreserveThreadPermissions(runtimeProvider: String?) -> Bool {
+        RuntimeFeatureSupport.supportsPreserveThreadPermissions(
+            for: runtimeProvider ?? "codex",
+            declaredBy: preserveThreadPermissionRuntimeProviders
+        )
+    }
+
     func refreshSelectedThreadGoal() async {
         guard let sessionID = selectedSessionID else {
             return

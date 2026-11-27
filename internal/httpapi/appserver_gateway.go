@@ -277,8 +277,9 @@ type appServerBridgeMetadata struct {
 }
 
 type appServerChannelCapability struct {
-	IdleTakeover     bool `json:"idle_takeover,omitempty"`
-	Streaming        bool `json:"streaming"`
+	IdleTakeover              bool `json:"idle_takeover,omitempty"`
+	PreserveThreadPermissions bool `json:"preserve_thread_permissions,omitempty"`
+	Streaming                 bool `json:"streaming"`
 	History          bool `json:"history"`
 	ApprovalRequests bool `json:"approval_requests"`
 	FileDiffs        bool `json:"file_diffs"`

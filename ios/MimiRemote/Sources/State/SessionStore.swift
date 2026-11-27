@@ -196,6 +196,8 @@ final class SessionStore: ObservableObject {
     }
     /// 通道声明了 thread/goal/* 的 Runtime，与可用性一起刷新；目标入口只对这些 Runtime 展示（#791）。
     @Published var threadGoalRuntimeProviders: Set<String> = ["codex"]
+    /// 通道声明支持沿用已有会话权限（preserve_thread_permissions）的 Runtime（#1177）。
+    @Published var preserveThreadPermissionRuntimeProviders: Set<String> = ["codex", "agy"]
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?

@@ -30,9 +30,14 @@ enum RuntimeFeatureSupport {
         return normalized != "codex" && appServerRuntimeProviders.contains(normalized)
     }
 
-    /// 仅 Codex 网关允许通过 `mimiPreserveThreadPermissions: true` 继承已有线程权限设置。
-    static func supportsPreserveThreadPermissions(for provider: String?) -> Bool {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) == "codex"
+    /// Codex 与声明了 `preserve_thread_permissions` 的 Antigravity 网关允许携带
+    /// `mimiPreserveThreadPermissions: true` 继承已有线程权限设置（#1177）。
+    static func supportsPreserveThreadPermissions(
+        for provider: String?,
+        declaredBy providers: Set<String> = ["codex", "agy"]
+    ) -> Bool {
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
+        return !isDeepSeek(normalized) && providers.contains(normalized)
     }
 
     static func permissionModes(for provider: String) -> [ComposerPermissionMode] {
