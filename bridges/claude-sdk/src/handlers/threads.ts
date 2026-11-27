@@ -92,6 +92,37 @@ function compare(a: [number, string], b: [number, string]): number {
   return a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
 }
 
+function findCursorStartIndex(
+  records: readonly SessionRecord[],
+  key: (record: SessionRecord) => [number, string],
+  sign: 1 | -1,
+  cursor: ListCursor,
+): number {
+  const matches = (record: SessionRecord): boolean => {
+    const order = sign * compare(key(record), [cursor.v, cursor.id]);
+    return cursor.incl ? order >= 0 : order > 0;
+  };
+  const monotonic =
+    typeof cursor.v === "number" &&
+    Number.isFinite(cursor.v) &&
+    typeof cursor.id === "string" &&
+    records.every((record) => Number.isFinite(key(record)[0]));
+  if (!monotonic) {
+    return records.findIndex(matches);
+  }
+  let low = 0;
+  let high = records.length;
+  while (low < high) {
+    const mid = low + ((high - low) >> 1);
+    if (matches(records[mid]!)) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return low < records.length ? low : -1;
+}
+
 /** 会话的实时状态来源：占用登记与本适配器的运行时。缺省（只读模式）一律不可直接发送。 */
 export interface LiveSource {
   holders(): Promise<Map<string, SessionHolder>>;
@@ -137,12 +168,7 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
         .filter((record) => !search || `${record.name ?? ""}\n${record.preview}`.toLowerCase().includes(search))
         .sort((a, b) => sign * compare(key(a), key(b)));
 
-      const start = cursor
-        ? records.findIndex((record) => {
-            const order = sign * compare(key(record), [cursor.v, cursor.id]);
-            return cursor.incl ? order >= 0 : order > 0;
-          })
-        : 0;
+      const start = cursor ? findCursorStartIndex(records, key, sign, cursor) : 0;
       const page = start < 0 ? [] : records.slice(start, start + limit);
       logger.debug("thread.list", {
         cwd: typeof params.cwd === "string" ? params.cwd : null,
