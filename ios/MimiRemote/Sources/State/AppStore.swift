@@ -539,6 +539,7 @@ final class AppStore: ObservableObject {
         )
         var finalError: Error?
         for candidate in candidates {
+            try Task.checkCancellation()
             do {
                 if usesDefaultRouteProbe {
                     return try await prepareFastHostContext(
@@ -565,7 +566,7 @@ final class AppStore: ObservableObject {
                     hostDeviceName: adoptsHostDeviceName ? hostDeviceName : nil
                 )
             } catch {
-                if Task.isCancelled || error is CancellationError {
+                if isCancellationError(error) || Task.isCancelled {
                     throw error
                 }
                 finalError = error
@@ -1677,11 +1678,13 @@ final class AppStore: ObservableObject {
             }
             // 预热剩余时间只约束这次网关握手。它曾被当作整个 Bundle 的请求超时，提交后
             // 列表与发送都只剩几秒、超时又不淘汰连接，切过去就一直加载（#801）。
+            let apiSession = agentAPISession
             let bundle = AppServerRuntimeBundle(
                 endpoint: activeEndpoint,
                 token: token,
                 preparedConfig: config,
                 harnessFactory: nativeHarnessFactory,
+                configProvider: { try await AgentAPIClient(endpoint: activeEndpoint, token: token, session: apiSession).appServerConfig() },
                 transportFactory: gatewayTransportFactory
             )
             do {
@@ -1811,7 +1814,7 @@ final class AppStore: ObservableObject {
     }
 
     private static func isRetryableGatewayInitializationError(_ error: Error) -> Bool {
-        if isCredentialInvalidatingError(error) {
+        if isCancellationError(error) || isCredentialInvalidatingError(error) {
             return false
         }
         if isRetryableTransportError(error) {

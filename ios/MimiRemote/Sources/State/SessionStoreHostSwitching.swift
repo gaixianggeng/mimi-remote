@@ -7,6 +7,14 @@ enum PairingLinkAttempt: Equatable {
     case failed(String)
 }
 
+/// 跟踪当前持有外部配对展示所有权的尝试及其进入前的稳定反馈，防止旧取消覆盖同路由新尝试。
+struct PairingLinkAttemptOwnership {
+    let token: UUID
+    let previousRoute: ConnectionProfileRoute?
+    let previousOnboardingError: MappedPairingError?
+    let previousReportedFailure: String?
+}
+
 /// 换电脑请求之间的取代关系（#801）。一台电脑握手慢时，用户可以改选或取消，
 /// 不必等它的预热时限耗尽；配对、改地址等其它连接变更仍然互斥。
 struct ConnectionSwitchSupersession {
@@ -90,6 +98,7 @@ extension SessionStore {
 
     func resetConnectionForSettingsChange(clearData: Bool = false) {
         invalidatePreparedConnectionChange()
+        activePairingLinkAttempt = nil
         lastPairingLinkRoute = nil
         lastPairingOnboardingError = nil
         connectionTermination = nil
@@ -320,6 +329,34 @@ extension SessionStore {
         foregroundWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     ) async {
         let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
+        let attemptToken = UUID()
+        let priorFeedback: PairingLinkAttemptOwnership
+        if let active = activePairingLinkAttempt {
+            priorFeedback = PairingLinkAttemptOwnership(
+                token: attemptToken,
+                previousRoute: active.previousRoute,
+                previousOnboardingError: active.previousOnboardingError,
+                previousReportedFailure: active.previousReportedFailure
+            )
+        } else {
+            let previousReportedFailure: String?
+            if case .failed(let message) = pairingLinkAttempt {
+                previousReportedFailure = message
+            } else if reportsToFirstConnectionPage, case .failed(let message) = appStore.connectionStatus {
+                previousReportedFailure = message
+            } else if reportsToFirstConnectionPage {
+                previousReportedFailure = appStore.lastError
+            } else {
+                previousReportedFailure = nil
+            }
+            priorFeedback = PairingLinkAttemptOwnership(
+                token: attemptToken,
+                previousRoute: lastPairingLinkRoute,
+                previousOnboardingError: lastPairingOnboardingError,
+                previousReportedFailure: previousReportedFailure
+            )
+        }
+        activePairingLinkAttempt = priorFeedback
         lastPairingLinkRoute = ConnectionProfileRoute.fromPairingURL(url)
         lastPairingOnboardingError = nil
         if reportsToFirstConnectionPage {
@@ -328,7 +365,11 @@ extension SessionStore {
         await waitForForegroundResumeIfNeeded(timeoutNanoseconds: foregroundWaitTimeoutNanoseconds)
         let wasConfigured = appStore.isConfigured
         do {
+            try Task.checkCancellation()
             _ = try await applyPairingURL(url)
+            if activePairingLinkAttempt?.token == attemptToken {
+                activePairingLinkAttempt = nil
+            }
             lastPairingLinkRoute = nil
             lastPairingOnboardingError = nil
             if RelayServiceChoice.fromPairingURL(url) == .mimi {
@@ -339,7 +380,30 @@ extension SessionStore {
             }
             // 首次 URL 配对要覆盖 Tailscale / gateway 冷启动窗口；已有档案修复只做短等待。
             _ = await refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+        } catch where isCancellationError(error) {
+            // 场景切换、退后台或任务被取代导致的取消不是配对失败：只有仍持有展示所有权时才回滚，
+            // 避免旧取消清掉同路由新尝试的进度，同时恢复取消前的可见错误与路由，不露出原始取消文本。
+            guard let ownership = activePairingLinkAttempt,
+                  ownership.token == attemptToken else {
+                return
+            }
+            activePairingLinkAttempt = nil
+            lastPairingLinkRoute = ownership.previousRoute
+            lastPairingOnboardingError = ownership.previousOnboardingError
+            if reportsToFirstConnectionPage {
+                if let previousFailure = ownership.previousReportedFailure {
+                    pairingLinkAttempt = .failed(previousFailure)
+                } else {
+                    pairingLinkAttempt = .idle
+                }
+            }
         } catch let pairingError as PairingOnboardingAPIError {
+            guard activePairingLinkAttempt == nil || activePairingLinkAttempt?.token == attemptToken else {
+                return
+            }
+            if activePairingLinkAttempt?.token == attemptToken {
+                activePairingLinkAttempt = nil
+            }
             lastPairingOnboardingError = pairingError.mapped
             let message = pairingError.userFacingMessage
             // 401 短票等配对失败绝不破坏已连接的既有档案或触发凭据失效。
@@ -351,6 +415,12 @@ extension SessionStore {
                 pairingLinkAttempt = .failed(message)
             }
         } catch {
+            guard activePairingLinkAttempt == nil || activePairingLinkAttempt?.token == attemptToken else {
+                return
+            }
+            if activePairingLinkAttempt?.token == attemptToken {
+                activePairingLinkAttempt = nil
+            }
             lastPairingOnboardingError = nil
             if appStore.activeConnectionProfile == nil || !appStore.connectionStatus.isConnected {
                 appStore.connectionStatus = .failed(error.localizedDescription)
@@ -519,7 +589,7 @@ extension SessionStore {
             }
             // 被改选、取消或退后台撤销的候选，底层可能以 URLError.cancelled 等形式结束；
             // 统一按取消上报，界面不把用户自己的改选显示成切换失败（#801）。
-            if Task.isCancelled || error is CancellationError || operationGeneration != connectionChangeGeneration {
+            if isCancellationError(error) || operationGeneration != connectionChangeGeneration {
                 throw CancellationError()
             }
             throw error
@@ -579,6 +649,7 @@ extension SessionStore {
             }
         }
         connectionTermination = nil
+        activePairingLinkAttempt = nil
         lastPairingLinkRoute = nil
         lastPairingOnboardingError = nil
         appLifecycleSuspendedSessionID = nil

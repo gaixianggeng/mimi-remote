@@ -264,6 +264,7 @@ final class SessionStore: ObservableObject {
     @Published var pairingLinkAttempt: PairingLinkAttempt = .idle
     var lastPairingLinkRoute: ConnectionProfileRoute?
     var lastPairingOnboardingError: MappedPairingError?
+    var activePairingLinkAttempt: PairingLinkAttemptOwnership?
     @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
     /// 首次连接这台电脑的预热窗口。冷启动的隧道建立、agentd 网关上游就绪都允许失败重试，
     /// 窗口内的失败是过程而不是结论，界面必须给出连接过渡而不是错误态。

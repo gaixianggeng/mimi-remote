@@ -342,12 +342,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         try await codexClient.transcribeVoice(filename: filename, contentType: contentType, audioData: audioData, language: language)
     }
 
+    private func requireNativeHarnessConfigured() async throws {
+        try await bundle.requireLoadedNativeHarnessAllowed()
+    }
+
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
         let provider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
         if let native = bundle.nativeClient(for: provider) {
-            guard try await bundle.nativeHarnessConfigured() else {
-                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-            }
+            try await requireNativeHarnessConfigured()
             // modelCatalog 已经走完整的鉴权和上游链路，无需先以同一 RPC 再做健康探测。
             return try await native.modelOptions()
         }
@@ -376,7 +378,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 let secondaryOptions: [CodexAppServerModelOption]
                 if let native = bundle.nativeClient(for: secondary.provider) {
                     // 原生通道：Codex 上游不可用时依然能独立进入准备流程并给出模型目录。
-                    guard try await bundle.nativeHarnessConfigured() else { continue }
+                    guard (try await bundle.loadedNativeHarnessConfigured()) != false else { continue }
                     guard try await native.channelAvailable() else { continue }
                     secondaryOptions = try await native.modelOptions()
                 } else {
@@ -504,8 +506,9 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        // 原生通道承接的 runtime 直接走原生客户端，不经 Codex wire。
+        // 原生通道承接的 runtime 先核对宿主配置，未启用时不发 /api/harness/rpc。
         if let native = bundle.nativeClient(for: runtimeProvider) {
+            try await requireNativeHarnessConfigured()
             let page = try await native.sessionsPage(
                 projectID: projectID,
                 cursor: cursor,
@@ -553,6 +556,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
         if let native = bundle.nativeClient(for: runtimeProvider) {
+            try await requireNativeHarnessConfigured()
             let page = try await native.sessionsPage(
                 workspace: workspace,
                 cursor: cursor,
@@ -585,6 +589,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         limit: Int?
     ) async throws -> SessionsPage {
         if let native = bundle.nativeClient(for: runtimeProvider) {
+            try await requireNativeHarnessConfigured()
             let page = try await native.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
             bundle.routes.remember(page.sessions)
             return page
@@ -631,7 +636,8 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             do {
                 let page: ThreadSearchPage
                 if let native = bundle.nativeClient(for: provider) {
-                    // 原生通道与 Codex wire 完全无关：它失败只把自己记成 unavailable。
+                    // 原生通道与 Codex wire 完全无关：宿主已加载快照声明未启用时不发探测，启用后失败只把自己记成 unavailable。
+                    guard (try await bundle.loadedNativeHarnessConfigured()) != false else { continue }
                     guard try await native.channelAvailable() else { continue }
                     page = try await native.searchSessions(query: query, cursor: nil, limit: limit)
                 } else {
@@ -738,6 +744,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
         if let native = bundle.nativeClient(for: payload.turnOptions.runtimeProvider) {
+            try await requireNativeHarnessConfigured()
             guard let cwd = payload.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !cwd.isEmpty else {
                 throw HarnessNativeUnavailableError.unsupported(operation: "session/create without cwd")
@@ -806,6 +813,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func stopSession(id: String) async throws {
         if let native = bundle.nativeClient(forSessionID: id) {
+            try await requireNativeHarnessConfigured()
             try await native.cancelSession(sessionID: id)
             return
         }
@@ -870,6 +878,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         // 原生会话走 `session/page`：它的 throughSeq 只能取自本次 follow 的 snapshot，
         // 因此不能落到 Codex actor（那会 `routedNatively` 抛错，用户完全看不到历史）。
         if let native = bundle.nativeClient(forSessionID: sessionID) {
+            try await requireNativeHarnessConfigured()
             return try await native.messagesPage(
                 sessionID: sessionID,
                 before: before,

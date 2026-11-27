@@ -56,6 +56,69 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         )
     }
 
+    /// 托管连接页扫码配对被取消（如退后台取消准备任务）时，必须先按显式取消处理并返回本地化重扫提示，
+    /// 绝不暴露 `Swift.CancellationError` 原文。
+    func testManagedScannerCancellationReturnsLocalizedRescanFeedbackWithoutRawSwiftText() async throws {
+        let expectedRescan = L10n.text("ui.the_code_scan_has_been_cancelled_please_scan")
+        let link = try XCTUnwrap(URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787&token=t"))
+
+        for cancelError in [
+            CancellationError() as Error,
+            URLError(.cancelled),
+            CodexAppServerConnectionError.transport(URLError(.cancelled)),
+        ] {
+            let result = ManagedConnectionSubscriptionView.pairingScanFailureResult(
+                for: cancelError,
+                url: link,
+                hasActiveMimiEntitlement: false
+            )
+            XCTAssertEqual(result, .rejected(expectedRescan))
+            if case .rejected(let message) = result {
+                XCTAssertFalse(message.contains("CancellationError"))
+            }
+        }
+
+        // 端到端模拟退后台导致 applyPairingURL 在扫码任务仍活跃时抛出 CancellationError。
+        let suite = "MimiScannerCancel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        let appStore = MimiRemote.AppStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let controller = TailcatExperimentController(appStore: appStore, defaults: defaults, tokenStore: tokenStore)
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            tailcatExperimentController: controller,
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        let entitlements = makeRedemptionStore().store
+        sessionStore.suspendForBackground()
+
+        let result = await ManagedConnectionSubscriptionView.submitScannedConnection(
+            link.absoluteString,
+            intent: .initialConnection,
+            appStore: appStore,
+            sessionStore: sessionStore,
+            tailcatController: controller,
+            entitlementStore: entitlements
+        )
+        XCTAssertEqual(result, .rejected(expectedRescan))
+
+        // 非取消错误仍按原有网络/引导规则返回，不被误当取消。
+        let networkFailure = ManagedConnectionSubscriptionView.pairingScanFailureResult(
+            for: URLError(.cannotConnectToHost),
+            url: link,
+            hasActiveMimiEntitlement: false
+        )
+        XCTAssertEqual(networkFailure, .rejected(L10n.text("ui.managed_devices_pairing_network_error")))
+    }
+
     // MARK: - 内测兑换码（#949）
 
     private static var redemptionGrant: ManagedConnectionEntitlementGrant {

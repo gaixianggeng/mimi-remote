@@ -165,6 +165,10 @@ final class HarnessSubmissionController {
     /// 其余一律 `responseUnknown`。宁可让用户多按一次"对账"，也不能把一次可能已经
     /// 执行的写操作当成没发生。
     static func stateForFailure(_ error: Error) -> SubmissionState {
+        if error is CodexAppServerSessionRuntimeError || error is HarnessNativeUnavailableError {
+            // 本地通道门控在发送 HTTP 前即拒绝，请求从未离开客户端，按明确拒绝返回而不锁定会话。
+            return .rejected(error.localizedDescription)
+        }
         guard let transport = error as? HarnessTransportError else {
             // 认不出的错误同样按未知处理：猜错方向的代价不对称——
             // 把"可能已执行"当成"没执行"会重复副作用，反之只是多一次对账。

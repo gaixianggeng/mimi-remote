@@ -19,13 +19,16 @@ func credentialFingerprintRejectedByError(_ error: Error) -> String? {
     (error as? any CredentialInvalidatingError)?.rejectedCredentialFingerprint
 }
 
-/// 只识别传输层明确表达的取消；超时、断网和 HTTP 错误仍是需要用户处理的真实失败。
+/// 只识别传输层明确表达的取消（含 Codex 传输包装）；超时、断网和 HTTP 错误仍是需要用户处理的真实失败。
 func isCancellationError(_ error: Error) -> Bool {
     if error is CancellationError {
         return true
     }
     if (error as? HarnessTransportError) == .cancelled {
         return true
+    }
+    if case CodexAppServerConnectionError.transport(let underlying) = error {
+        return isCancellationError(underlying)
     }
     if let urlError = error as? URLError {
         return urlError.code == .cancelled
