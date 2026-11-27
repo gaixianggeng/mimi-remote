@@ -4,6 +4,7 @@ import SwiftUI
 /// 状态规则留在独立类型中，避免继续把工作区职责堆入 Shell。
 struct WorkspaceRuntimeSelectionState {
     var manualRuntime: WorkspaceSessionRuntimeChoice?
+    var manualBrowseScope: WorkspaceSessionBrowseScope?
 
     /// 能力可能在首屏之后才到达；回落只影响显示，不写回偏好或手动选择。
     /// 同时尊重用户在模型设置中开启的 Runtime 集合。
@@ -30,9 +31,52 @@ struct WorkspaceRuntimeSelectionState {
         ).first ?? effectivePreferred
     }
 
+    /// 结合已启用运行时数量、手动浏览选择与「默认展示全部运行时」开关解析当前工作区浏览范围（M8）。
+    /// 仅启用 1 个运行时时不展示「全部」，始终落回该单运行时。
+    func resolvedBrowseScope(
+        preferredRuntime: WorkspaceSessionRuntimeChoice,
+        defaultShowAllRuntimes: Bool,
+        availableRuntimeProviders: Set<String>,
+        enabledRuntimes: Set<WorkspaceSessionRuntimeChoice> = Set(WorkspaceSessionRuntimeChoice.allCases)
+    ) -> WorkspaceSessionBrowseScope {
+        let enabledOrder = WorkspaceSessionRuntimeChoice.allCases.filter { enabledRuntimes.contains($0) }
+        let effectiveEnabled = Set(enabledOrder.isEmpty ? [.codex] : enabledOrder)
+        let resolvedSingle = resolvedRuntime(
+            preferredRuntime: preferredRuntime,
+            availableRuntimeProviders: availableRuntimeProviders,
+            enabledRuntimes: effectiveEnabled
+        )
+        guard effectiveEnabled.count > 1 else {
+            return .single(resolvedSingle)
+        }
+        if let manualBrowseScope {
+            switch manualBrowseScope {
+            case .all:
+                return .all
+            case .single:
+                return .single(resolvedSingle)
+            }
+        }
+        if manualRuntime != nil {
+            return .single(resolvedSingle)
+        }
+        return defaultShowAllRuntimes ? .all : .single(resolvedSingle)
+    }
+
+    mutating func setBrowseScope(_ scope: WorkspaceSessionBrowseScope) {
+        manualBrowseScope = scope
+        switch scope {
+        case .all:
+            manualRuntime = nil
+        case let .single(choice):
+            manualRuntime = choice
+        }
+    }
+
     /// 切换电脑或修改全局偏好后，重新使用偏好；普通导航不调用此方法。
     mutating func reset() {
         manualRuntime = nil
+        manualBrowseScope = nil
     }
 }
 
@@ -80,12 +124,14 @@ struct WorkspaceWorkbenchRootView: View {
     var bottomContentMargin: CGFloat? = nil
     let onManageConnections: () -> Void
     let onOpenSession: (AgentSession) -> Void
-    @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
+    @Binding var browseScope: WorkspaceSessionBrowseScope
+    var preferredRuntime: WorkspaceSessionRuntimeChoice = .codex
     @Binding var browseSelection: WorkspaceBrowseSelectionState
 
     var body: some View {
         WorkspaceRootView(
-            selectedSessionRuntime: $selectedRuntime,
+            browseScope: $browseScope,
+            preferredRuntime: preferredRuntime,
             onStartSession: startSession,
             onOpenSession: onOpenSession,
             manageConnections: manageConnections,
@@ -102,15 +148,16 @@ struct WorkspaceWorkbenchRootView: View {
             }
         )
         .onAppear { prioritizeSessionLibrary(workspaceID: browseSelection.workspaceID) }
-        .onChange(of: selectedRuntime) { _, _ in
+        .onChange(of: browseScope) { _, _ in
             prioritizeSessionLibrary(workspaceID: browseSelection.workspaceID)
         }
     }
 
     private func prioritizeSessionLibrary(workspaceID: String?) {
         guard let workspaceID, let workspace = sessionStore.workspacesByID[workspaceID] else { return }
+        let priorityProvider = browseScope.singleRuntimeChoice?.runtimeProvider ?? preferredRuntime.runtimeProvider
         sessionStore.sessionLibraryPriorityScope = sessionStore.workspaceDirectoryScopeKey(
-            for: workspace, runtimeProvider: selectedRuntime.runtimeProvider
+            for: workspace, runtimeProvider: priorityProvider
         )
     }
 

@@ -37,9 +37,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let sessionLoadState: WorkspaceSessionLoadState
     let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
-    @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
+    @Binding var browseScope: WorkspaceSessionBrowseScope
+    var preferredRuntime: WorkspaceSessionRuntimeChoice = .codex
     let availableRuntimeProviders: Set<String>
     var runtimeDiagnostic: RuntimeChannelDiagnostic? = nil
+    var mergedCompleteness: WorkspaceMergedCompleteness? = nil
+    var mergedPartialNotice: WorkspaceMergedPartialNotice? = nil
+    var hasAttemptedLoad: Bool = false
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -148,14 +152,62 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     .padding(.bottom, 2)
             }
 
-            if let runtimeDiagnostic, !recentSessions.isEmpty {
+            if browseScope.isAll, let mergedPartialNotice, !mergedPartialNotice.isEmpty, !recentSessions.isEmpty {
+                mergedPartialNoticeBanner(mergedPartialNotice, tokens: tokens)
+            } else if !browseScope.isAll, let runtimeDiagnostic, !recentSessions.isEmpty {
                 runtimeDiagnosticBanner(runtimeDiagnostic, tokens: tokens)
             }
 
             if sessionLoadState.isLoading, !hasInitialSessionContent {
                 // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
                 recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
-            } else if recentSessions.isEmpty, let runtimeDiagnostic {
+            } else if browseScope.isAll, recentSessions.isEmpty, mergedCompleteness == .allUnavailable {
+                ContentUnavailableView {
+                    Label(
+                        L10n.text("ui.workspace_merged_all_unavailable_title"),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                } description: {
+                    Text(L10n.text("ui.workspace_merged_all_unavailable_message"))
+                } actions: {
+                    Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .accessibilityIdentifier("workspace.mergedAllUnavailable")
+            } else if browseScope.isAll, recentSessions.isEmpty, mergedCompleteness == .cachedPreview {
+                if hasAttemptedLoad {
+                    ContentUnavailableView {
+                        Label(
+                            L10n.text("ui.unable_to_load_session"),
+                            systemImage: "arrow.clockwise"
+                        )
+                    } actions: {
+                        Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 150)
+                    .accessibilityIdentifier("workspace.mergedCachedPreviewRetry")
+                } else {
+                    recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
+                }
+            } else if browseScope.isAll,
+                      recentSessions.isEmpty,
+                      mergedCompleteness != .completeExhausted,
+                      let mergedPartialNotice,
+                      !mergedPartialNotice.isEmpty {
+                // M10 空态铁律：存在真实不可用或降级通道时绝不误显「暂无会话」，展示明确诊断与重试入口。
+                ContentUnavailableView {
+                    Label(
+                        L10n.text("ui.workspace_merged_partial_empty_title"),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                } description: {
+                    Text(mergedPartialNotice.localizedMessage)
+                } actions: {
+                    Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .accessibilityIdentifier("workspace.mergedPartialEmpty")
+            } else if !browseScope.isAll, recentSessions.isEmpty, let runtimeDiagnostic {
                 ContentUnavailableView {
                     Label(runtimeDiagnostic.localizedTitle, systemImage: "exclamationmark.triangle")
                 } description: {
@@ -322,9 +374,16 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        let hierarchyGuideX = browseScope.isAll
+            ? rowDensity.horizontalPadding + rowDensity.stateGutterWidth / 2
+            : rowDensity.horizontalPadding + 4
+        let hierarchyContentInset = browseScope.isAll
+            ? rowDensity.horizontalPadding + SessionIndexRowDensity.runtimeIconInset
+            : rowDensity.horizontalPadding
+
         // 行与行之间不再画分隔线，只靠留白分开——逐行横线会把列表读成一张表格。
         // 线只保留在分组边界（小节标题上方的留白）和"显示更多"入口之前。
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
                 let session = row.session
                 let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
@@ -334,8 +393,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     onOpenSession(session)
                 } label: {
                     // 与会话 tab 同一种单行（#563）：标题 + 时间，宽屏 iPad 多一行摘要；需要处理或
-                    // 仍在运行时，状态文字占据时间的位置。顶部已按 Codex / Claude 筛选，每行来源
-                    // 相同，不再重复画来源标记，标题直接与分组标题对齐。
+                    // 仍在运行时，状态文字占据时间的位置。单运行时筛选时每行来源相同不重复画来源图标；
+                    // 「全部」汇总视图下左侧恢复运行时品牌标记，明确每条会话归属。
                     SessionIndexRow(
                         session: session,
                         foregroundActivity: foregroundActivity,
@@ -347,7 +406,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isUnread: isUnread,
                         density: rowDensity,
                         identityFallback: identityFallback,
-                        leadingSlot: .none,
+                        leadingSlot: browseScope.isAll ? .runtimeIcon : .none,
                         showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table,
                         currentDate: currentDate,
                         calendar: calendar,
@@ -360,14 +419,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .hoverEffect(.highlight)
                 .accessibilityElement(children: .combine)
                 .accessibilityValue(
-                    SessionIndexRow.accessibilityValue(
-                        status: session.displayStatus(foregroundActivity: foregroundActivity),
-                        sessionStatus: session.status,
+                    sessionAccessibilityValue(
+                        for: session,
+                        foregroundActivity: foregroundActivity,
                         isUnread: isUnread,
-                        showsNeutralHistoryStatus: false,
-                        identity: SessionListPresentation.normalizedBranch(session.gitBranchName).map {
-                            "\(L10n.text("ui.branch")) \($0)"
-                        } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: identityFallback)
+                        identityFallback: identityFallback
                     )
                 )
                 .sessionRowActions(session)
@@ -375,8 +431,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .sessionHierarchyRow(
                     row,
                     expansion: sessionStore.sessionHierarchyExpansion,
-                    guideX: rowDensity.horizontalPadding + 4,
-                    contentInset: rowDensity.horizontalPadding
+                    guideX: hierarchyGuideX,
+                    contentInset: hierarchyContentInset
                 )
             }
 
@@ -433,7 +489,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
             WorkspaceRuntimePopoverPicker(
-                selection: $selectedRuntime,
+                browseScope: $browseScope,
                 availableRuntimeProviders: availableRuntimeProviders,
                 onRetryUnavailable: onRetryUnavailable
             )
@@ -449,6 +505,25 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
+    private func sessionAccessibilityValue(
+        for session: AgentSession,
+        foregroundActivity: SessionForegroundActivity?,
+        isUnread: Bool,
+        identityFallback: SessionIndexRowIdentityFallback
+    ) -> String {
+        let identity: String? = SessionListPresentation.normalizedBranch(session.gitBranchName).map {
+            "\(L10n.text("ui.branch")) \($0)"
+        } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: identityFallback)
+        return SessionIndexRow.accessibilityValue(
+            status: session.displayStatus(foregroundActivity: foregroundActivity),
+            sessionStatus: session.status,
+            isUnread: isUnread,
+            showsNeutralHistoryStatus: false,
+            runtime: browseScope.isAll ? SessionRuntimePresentation(session: session).title : nil,
+            identity: identity
+        )
+    }
+
     private func sessionCountAccessibilityLabel(
         for group: WorkspaceSessionGroup,
         count: Int
@@ -460,61 +535,127 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         )
     }
 
-    /// 浮在列表右下角。
-    ///
-    /// 曾经在角上挂过一枚 runtime 品牌标记，用来补偿筛选器和这个按钮分处页面两端。
-    /// 实机上它读成贴在纯色圆上的一块杂物，代价大于收益，已移除；
-    /// 「会建哪种会话」改由顶部筛选器单独承担，VoiceOver 仍从 `accessibilityValue` 拿到。
+    private var orderedAvailableCreationRuntimes: [WorkspaceSessionRuntimeChoice] {
+        guard mergedCompleteness != .allUnavailable else { return [] }
+        let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: enabledRuntimesRawValue)
+        let available = WorkspaceSessionRuntimeChoice.available(
+            runtimeProviders: availableRuntimeProviders,
+            enabledRuntimes: enabledSet
+        )
+        guard available.contains(preferredRuntime) else { return available }
+        return [preferredRuntime] + available.filter { $0 != preferredRuntime }
+    }
+
+    @ViewBuilder
+    private func newSessionButtonVisual(isFloating: Bool, diameter: CGFloat, tokens: ThemeTokens) -> some View {
+        if isFloating {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.primaryActionForeground)
+                .frame(width: diameter, height: diameter)
+                .background(tokens.primaryAction, in: Circle())
+                .frame(
+                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
+                .contentShape(Circle())
+        } else {
+            // 手机上与会话 tab 顶栏的新建按钮同一种写法：磨砂圆 + 正文色加号（#563）。
+            // 过去这里是一颗紫色实心圆，同一个动作在两页长成两样。
+            WorkbenchChromeIcon(systemName: "plus")
+                .foregroundStyle(tokens.primaryText)
+                .workbenchChromeCircle(tokens: tokens)
+        }
+    }
+
+    /// 浮在列表右下角（或窄屏行内右端）：
+    /// - 单运行时模式：一键直建当前所选运行时会话；
+    /// - 「全部」模式（M9）：仅 1 个可用运行时直接创建；多个可用运行时弹出菜单让用户选择（优先项置顶）。
+    @ViewBuilder
     private func newSessionButton(tokens: ThemeTokens) -> some View {
-        // 浮起时可以画得实体一些；回到筛选行里必须收进 44pt 行高，也不该再投影——
-        // 行内元素投影会读成一枚悬在纸面上的贴纸。
         let isFloating = !hasBottomTabBar
         let diameter = WorkspaceSessionFabMetrics.diameter
+        let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: enabledRuntimesRawValue)
 
-        return Button {
-            // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
-            onStartSession(selectedRuntime)
-        } label: {
-            if isFloating {
-                Image(systemName: "plus")
-                    .font(.system(size: 24, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tokens.primaryActionForeground)
-                    .frame(width: diameter, height: diameter)
-                    .background(tokens.primaryAction, in: Circle())
-                    .frame(
-                        minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-                        minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+        switch browseScope {
+        case let .single(selectedRuntime):
+            Button {
+                onStartSession(selectedRuntime)
+            } label: {
+                newSessionButtonVisual(isFloating: isFloating, diameter: diameter, tokens: tokens)
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .disabled(
+                (runtimeDiagnostic != nil && availableRuntimeProviders.isEmpty)
+                    || !selectedRuntime.isAvailable(
+                        in: availableRuntimeProviders,
+                        enabledRuntimes: enabledSet
                     )
-                    .contentShape(Circle())
+            )
+            .shadow(
+                color: isFloating ? tokens.primaryActionShadow : .clear,
+                radius: isFloating ? 12 : 0,
+                y: isFloating ? 5 : 0
+            )
+            .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+            .accessibilityValue(selectedRuntime.title)
+            .accessibilityIdentifier("workspace.sessions.newSession")
+
+        case .all:
+            let choices = orderedAvailableCreationRuntimes
+            if choices.count == 1, let singleChoice = choices.first {
+                Button {
+                    onStartSession(singleChoice)
+                } label: {
+                    newSessionButtonVisual(isFloating: isFloating, diameter: diameter, tokens: tokens)
+                }
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                .shadow(
+                    color: isFloating ? tokens.primaryActionShadow : .clear,
+                    radius: isFloating ? 12 : 0,
+                    y: isFloating ? 5 : 0
+                )
+                .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+                .accessibilityValue(singleChoice.title)
+                .accessibilityIdentifier("workspace.sessions.newSession")
+            } else if choices.count > 1 {
+                Menu {
+                    ForEach(choices) { choice in
+                        Button {
+                            onStartSession(choice)
+                        } label: {
+                            Label(choice.listTitle, systemImage: choice.actionSystemImage)
+                        }
+                        .accessibilityIdentifier("workspace.sessions.newSession.\(choice.rawValue)")
+                    }
+                } label: {
+                    newSessionButtonVisual(isFloating: isFloating, diameter: diameter, tokens: tokens)
+                }
+                .buttonStyle(.plain)
+                .shadow(
+                    color: isFloating ? tokens.primaryActionShadow : .clear,
+                    radius: isFloating ? 12 : 0,
+                    y: isFloating ? 5 : 0
+                )
+                .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+                .accessibilityValue(L10n.text("ui.workspace_runtime_all"))
+                .accessibilityIdentifier("workspace.sessions.newSession")
             } else {
-                // 手机上与会话 tab 顶栏的新建按钮同一种写法：磨砂圆 + 正文色加号（#563）。
-                // 过去这里是一颗紫色实心圆，同一个动作在两页长成两样。
-                WorkbenchChromeIcon(systemName: "plus")
-                    .foregroundStyle(tokens.primaryText)
-                    .workbenchChromeCircle(tokens: tokens)
+                Button {} label: {
+                    newSessionButtonVisual(isFloating: isFloating, diameter: diameter, tokens: tokens)
+                }
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                .disabled(true)
+                .shadow(
+                    color: isFloating ? tokens.primaryActionShadow : .clear,
+                    radius: isFloating ? 12 : 0,
+                    y: isFloating ? 5 : 0
+                )
+                .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+                .accessibilityIdentifier("workspace.sessions.newSession")
             }
         }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .disabled(
-            (runtimeDiagnostic != nil && availableRuntimeProviders.isEmpty)
-                || !selectedRuntime.isAvailable(
-                    in: availableRuntimeProviders,
-                    enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
-                        from: enabledRuntimesRawValue
-                    )
-                )
-        )
-        .shadow(
-            color: isFloating
-                ? tokens.primaryActionShadow
-                : .clear,
-            radius: isFloating ? 12 : 0,
-            y: isFloating ? 5 : 0
-        )
-        .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
-        .accessibilityValue(selectedRuntime.title)
-        .accessibilityIdentifier("workspace.sessions.newSession")
     }
 
     /// 与 `sectionHeader` 同一档字号与墨色；差别只在它不带计数。
@@ -559,6 +700,38 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
 
+    private func mergedPartialNoticeBanner(
+        _ notice: WorkspaceMergedPartialNotice,
+        tokens: ThemeTokens
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.localizedTitle)
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(notice.localizedMessage)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(tokens.warning.opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityIdentifier("workspace.mergedPartialNoticeBanner")
+    }
+
     private func runtimeDiagnosticBanner(
         _ diagnostic: RuntimeChannelDiagnostic,
         tokens: ThemeTokens
@@ -589,5 +762,112 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .strokeBorder(tokens.warning.opacity(0.35), lineWidth: 1)
         }
         .accessibilityIdentifier("workspace.runtimeDiagnosticBanner")
+    }
+}
+
+/// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
+/// 根工作区的 Git 摘要不在这里展示：它描述的是 project.path，不能代表各会话 worktree。
+struct WorkspaceUnavailableStatusLine: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let isUnavailable: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        Group {
+            if isUnavailable {
+                Label(L10n.text("ui.need_to_retry"), systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(tokens.warning)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .font(themeStore.uiFont(.caption))
+        .foregroundStyle(tokens.secondaryText)
+        // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
+        // 这里再加一次会比筛选行和会话行多缩进一截。
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("workspace.statusLine")
+    }
+}
+
+/// 工作区「全部」汇总详情页：独立订阅 `WorkspaceMergedSessionCoordinator` 与 `SessionStore`，
+/// 避免 `WorkspaceRootView` 在分页滚动时直接计算合并投影。
+struct WorkspaceMergedDetailPageView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @ObservedObject var mergedCoordinator: WorkspaceMergedSessionCoordinator
+    @State private var didObserveLoading = false
+
+    let project: AgentProject
+    let mergedKey: WorkspaceMergedPresentationKey
+    let showsStatusLine: Bool
+    let showsInlineRuntimePicker: Bool
+    @Binding var browseScope: WorkspaceSessionBrowseScope
+    let preferredRuntime: WorkspaceSessionRuntimeChoice
+    let currentDate: () -> Date
+    let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
+    let onOpenSession: (AgentSession) -> Void
+    let bottomContentMargin: CGFloat?
+
+    var body: some View {
+        let projection = mergedCoordinator.projection(for: mergedKey, sessionStore: sessionStore)
+        let loadState = mergedCoordinator.loadState(for: mergedKey)
+        WorkspaceDetailView(
+            statusLine: WorkspaceUnavailableStatusLine(isUnavailable: showsStatusLine),
+            showsStatusLine: showsStatusLine,
+            showsInlineRuntimePicker: showsInlineRuntimePicker,
+            recentSessions: projection.visibleSessions,
+            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
+            sessionLoadState: loadState,
+            hasInitialSessionContent: projection.hasInitialContent,
+            canLoadMoreSessions: projection.canLoadMore,
+            browseScope: $browseScope,
+            preferredRuntime: preferredRuntime,
+            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            mergedCompleteness: projection.completeness,
+            mergedPartialNotice: projection.partialNotice,
+            hasAttemptedLoad: didObserveLoading,
+            onRetryUnavailable: { choice in
+                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+            },
+            currentDate: currentDate,
+            onRefreshSessions: {
+                Task {
+                    await mergedCoordinator.refresh(
+                        project: project,
+                        key: mergedKey,
+                        sessionStore: sessionStore,
+                        restartFromFirst: true
+                    )
+                }
+            },
+            onLoadMoreSessions: {
+                await mergedCoordinator.loadMore(
+                    project: project,
+                    key: mergedKey,
+                    sessionStore: sessionStore
+                )
+            },
+            onStartSession: { runtimeChoice in
+                onStartSession(project, runtimeChoice)
+            },
+            onOpenSession: onOpenSession,
+            bottomContentMargin: bottomContentMargin
+        )
+        .onAppear {
+            if loadState.isLoading {
+                didObserveLoading = true
+            }
+        }
+        .onChange(of: loadState) { _, newState in
+            if newState.isLoading {
+                didObserveLoading = true
+            }
+        }
+        .onChange(of: mergedKey) { _, newKey in
+            didObserveLoading = mergedCoordinator.loadState(for: newKey).isLoading
+        }
     }
 }

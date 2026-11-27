@@ -2186,8 +2186,10 @@ extension SessionStore {
         restartFromFirst: Bool = false,
         client fixedClient: (any SessionStoreAPIClient)? = nil,
         hostScope expectedHostScope: HostScope? = nil,
-        runtimeProvider requestedRuntimeProvider: String? = nil
+        runtimeProvider requestedRuntimeProvider: String? = nil,
+        fillsPresentationWindow: Bool? = nil
     ) async throws -> SessionListFirstPageResult {
+        let effectiveFillsPresentationWindow = fillsPresentationWindow ?? (consistency == .authoritative)
         let requestStartedAt = sessionListNow()
         let hostScope = expectedHostScope ?? appStore.activeHostScope
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
@@ -2209,7 +2211,9 @@ extension SessionStore {
             hostScope: hostScope,
             runtimeProvider: runtimeProvider
         )
-        let authoritativeProgress = consistency == .authoritative && !restartFromFirst
+        let authoritativeProgress = consistency == .authoritative
+            && !restartFromFirst
+            && effectiveFillsPresentationWindow
             ? authoritativeWorkspaceSessionFirstPageProgress(
                 workspace: workspace,
                 hostScope: hostScope,
@@ -2230,6 +2234,16 @@ extension SessionStore {
         while true {
             // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
             if let inFlight = sessionListFirstPageInFlightByKey[key] {
+                if effectiveFillsPresentationWindow && !inFlight.fillsPresentationWindow {
+                    // 单页预算请求不能替代完整展示窗补齐；先排空同工作区在途请求，避免 -32080 并发冲突。
+                    _ = try? await inFlight.task.value
+                    retireSessionListFirstPageInFlight(key: key, id: inFlight.id)
+                    guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                          !Task.isCancelled else {
+                        throw CancellationError()
+                    }
+                    continue
+                }
                 let page = try await inFlight.task.value
                 SessionListDiagnostics.completed(
                     source: source,
@@ -2330,6 +2344,7 @@ extension SessionStore {
                             || (key.consistency == .fastIndexed && entry.key.consistency == .authoritative)
                     )
                     && entry.key.limit >= key.limit
+                    && (!effectiveFillsPresentationWindow || entry.value.fillsPresentationWindow)
             })?.value {
                 let page = try await largerInFlight.task.value
                 SessionListDiagnostics.completed(
@@ -2434,7 +2449,7 @@ extension SessionStore {
                 source: source,
                 expectedHostScope: hostScope,
                 initialSessions: presentationSeedSessions,
-                fillsPresentationWindow: consistency == .authoritative,
+                fillsPresentationWindow: effectiveFillsPresentationWindow,
                 isRequestCurrent: { traversalControl.shouldContinue }
             )
         }
@@ -2442,7 +2457,8 @@ extension SessionStore {
             id: requestID,
             task: task,
             traversalControl: traversalControl,
-            requestLineage: requestLineage
+            requestLineage: requestLineage,
+            fillsPresentationWindow: effectiveFillsPresentationWindow
         )
         do {
             let page = try await task.value
@@ -2523,6 +2539,10 @@ extension SessionStore {
         }
         var pagesScanned = 0
         var lastPage = SessionsPage(sessions: [])
+        var collectedRawSortEvidence: [SessionID: RawSortEvidence] = [:]
+        var worstListMeta: SessionListMeta?
+        var worstListMetaSeverityRank = -1
+        var stoppedOnSamePageRetry = false
 
         while true {
             try Task.checkCancellation()
@@ -2559,6 +2579,23 @@ extension SessionStore {
             reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
             pagesScanned += 1
             lastPage = page
+            let pageDisposition = SessionListMeta.resolvedDisposition(
+                from: page.listMeta,
+                isControlledGlobal: false
+            )
+            let pageIntegrity = SessionListMeta.resolvedIntegrity(
+                from: page.listMeta,
+                runtimeProvider: runtimeProvider,
+                isControlledGlobal: false
+            )
+            let integrityRank = Self.listMetaIntegritySeverityRank(pageIntegrity)
+            if pagesScanned == 1 || integrityRank > worstListMetaSeverityRank {
+                worstListMetaSeverityRank = integrityRank
+                worstListMeta = page.listMeta
+            }
+            for (sessionID, evidence) in page.rawSortEvidenceBySessionID where collectedRawSortEvidence[sessionID] == nil {
+                collectedRawSortEvidence[sessionID] = evidence
+            }
 
             for rawSession in page.sessions {
                 // 稀疏列表可能暂时丢 parent/source；先恢复 Store 已知的 sticky ownership，
@@ -2587,6 +2624,12 @@ extension SessionStore {
                 }
             }
 
+            if case .samePageRetry = pageDisposition {
+                // 网关显式要求同页重试（如 git_ownership_pending）：保留该页 listMeta 与重试游标，
+                // 立即停止翻页，不因 nextCursor == requestedCursor 误抛 invalidResponse。
+                stoppedOnSamePageRetry = true
+                break
+            }
             guard !page.hasMore || page.nextCursor != nil else {
                 // has_more 没有 opaque continuation 无法安全推进，不能伪装成 exhausted。
                 throw AgentAPIError.invalidResponse
@@ -2608,7 +2651,32 @@ extension SessionStore {
             requestedCursor = nextCursor
         }
 
-        let hasMore = lastPage.hasMore && lastPage.nextCursor != nil
+        let effectiveListMeta: SessionListMeta?
+        if stoppedOnSamePageRetry, let retryMeta = lastPage.listMeta {
+            if worstListMetaSeverityRank > Self.listMetaIntegritySeverityRank(
+                SessionListMeta.resolvedIntegrity(
+                    from: retryMeta,
+                    runtimeProvider: runtimeProvider,
+                    isControlledGlobal: false
+                )
+            ) {
+                effectiveListMeta = SessionListMeta(
+                    schemaVersion: worstListMeta?.schemaVersion ?? retryMeta.schemaVersion,
+                    complete: worstListMeta?.complete,
+                    sources: worstListMeta?.sources ?? retryMeta.sources,
+                    degradedReason: worstListMeta?.degradedReason ?? retryMeta.degradedReason,
+                    degradedSources: worstListMeta?.degradedSources ?? retryMeta.degradedSources,
+                    rawPageDisposition: retryMeta.rawPageDisposition,
+                    retryReason: retryMeta.retryReason
+                )
+            } else {
+                effectiveListMeta = retryMeta
+            }
+        } else {
+            effectiveListMeta = worstListMeta
+        }
+
+        let hasMore = (lastPage.hasMore || stoppedOnSamePageRetry) && lastPage.nextCursor != nil
         SessionListDiagnostics.presentationWindowCompleted(
             source: source,
             consistency: consistency,
@@ -2620,8 +2688,23 @@ extension SessionStore {
         return SessionsPage(
             sessions: collectedSessions,
             nextCursor: hasMore ? lastPage.nextCursor : nil,
-            hasMore: hasMore
+            hasMore: hasMore,
+            listMeta: effectiveListMeta,
+            rawSortEvidenceBySessionID: collectedRawSortEvidence
         )
+    }
+
+    private static func listMetaIntegritySeverityRank(_ integrity: RuntimeSessionListIntegrity) -> Int {
+        switch integrity {
+        case .trusted:
+            return 0
+        case .unverifiedHealth:
+            return 1
+        case .unverifiedGlobalDisposition:
+            return 2
+        case .degraded:
+            return 3
+        }
     }
 
     /// 首次网络请求和 fastIndexed 路径保持调用方给定的小页；只有 authoritative 已经观察到
@@ -4059,15 +4142,19 @@ extension SessionStore {
 
     func sortedSessionsForList(_ items: [AgentSession]) -> [AgentSession] {
         let sorted = Self.sortedSessions(items)
-        let indexByID = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.element.id, $0.offset) })
-        return sorted.sorted { lhs, rhs in
-            let leftPinned = pinnedSessionIDs.contains(lhs.id)
-            let rightPinned = pinnedSessionIDs.contains(rhs.id)
-            if leftPinned != rightPinned {
-                return leftPinned
+        guard !pinnedSessionIDs.isEmpty else { return sorted }
+        var pinned: [AgentSession] = []
+        var unpinned: [AgentSession] = []
+        pinned.reserveCapacity(min(sorted.count, pinnedSessionIDs.count))
+        unpinned.reserveCapacity(sorted.count)
+        for item in sorted {
+            if pinnedSessionIDs.contains(item.id) {
+                pinned.append(item)
+            } else {
+                unpinned.append(item)
             }
-            return (indexByID[lhs.id] ?? 0) < (indexByID[rhs.id] ?? 0)
         }
+        return pinned + unpinned
     }
 
     static func projectIDs(_ items: [AgentProject]) -> Set<String> {

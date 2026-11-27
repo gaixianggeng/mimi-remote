@@ -43,7 +43,7 @@ struct SessionHierarchyForEach<Row: View>: View {
 
     var body: some View {
         let rows = SessionHierarchy.rows(families, collapsedRootIDs: expansion.collapsedRootIDs)
-        ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
+        ForEach(Array(rows.enumerated()), id: \.element.renderID) { index, entry in
             row(entry, index > 0 ? rows[index - 1].session : nil)
         }
     }

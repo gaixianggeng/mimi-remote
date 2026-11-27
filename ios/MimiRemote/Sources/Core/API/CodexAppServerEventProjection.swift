@@ -474,11 +474,34 @@ extension CodexAppServerSessionRuntime {
         fallbackProject: AgentProject?
     ) -> SessionsPage {
         let object = result?.objectValue ?? [:]
-        let sessions = (object["data"]?.arrayValue ?? [])
-            .compactMap(\.objectValue)
-            .compactMap { try? agentSession(from: $0, projects: projects, fallbackProject: fallbackProject) }
+        let rawItems = (object["data"]?.arrayValue ?? []).compactMap(\.objectValue)
+        var sessions: [AgentSession] = []
+        sessions.reserveCapacity(rawItems.count)
+        var rawEvidenceByID: [SessionID: RawSortEvidence] = [:]
+        rawEvidenceByID.reserveCapacity(rawItems.count)
+        for itemObject in rawItems {
+            guard let session = try? agentSession(
+                from: itemObject,
+                projects: projects,
+                fallbackProject: fallbackProject
+            ) else {
+                continue
+            }
+            sessions.append(session)
+            rawEvidenceByID[session.id] = RawSortEvidence.fromWireThread(
+                itemObject,
+                runtimeProvider: session.runtimeProvider ?? session.source
+            )
+        }
         let nextCursor = object["nextCursor"]?.stringValue
-        return SessionsPage(sessions: sessions, nextCursor: nextCursor, hasMore: nextCursor != nil)
+        let listMeta = SessionListMeta(json: object["listMeta"])
+        return SessionsPage(
+            sessions: sessions,
+            nextCursor: nextCursor,
+            hasMore: nextCursor != nil,
+            listMeta: listMeta,
+            rawSortEvidenceBySessionID: rawEvidenceByID
+        )
     }
 
     func threadSearchPage(

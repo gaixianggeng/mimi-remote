@@ -49,6 +49,8 @@ struct UnifiedWorkbenchShell: View {
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
     private var enabledWorkspaceRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
+    @AppStorage(WorkspaceSessionBrowseScope.defaultShowAllRuntimesPreferenceKey)
+    private var defaultShowAllWorkspaceRuntimes = false
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
     @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
     @State var sessionHistory = WorkbenchSessionHistory()
@@ -155,10 +157,15 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
             }
+            .onChange(of: defaultShowAllWorkspaceRuntimes) { _, _ in
+                workspaceRuntimeSelection.reset()
+            }
             .onChange(of: enabledWorkspaceRuntimesRawValue) { _, newValue in
                 let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: newValue)
                 if let manual = workspaceRuntimeSelection.manualRuntime,
                    !enabledSet.contains(manual) {
+                    workspaceRuntimeSelection.reset()
+                } else if enabledSet.count <= 1, workspaceRuntimeSelection.manualBrowseScope == .all {
                     workspaceRuntimeSelection.reset()
                 }
             }
@@ -1146,7 +1153,14 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         bottomContentMargin: CGFloat? = nil
     ) -> some View {
-        WorkspaceWorkbenchRootView(
+        let preferredRuntime = WorkspaceSessionRuntimeChoice.resolvedPreferred(
+            preferredRawValue: preferredWorkspaceRuntimeRawValue,
+            enabledRawValue: enabledWorkspaceRuntimesRawValue
+        )
+        let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+            from: enabledWorkspaceRuntimesRawValue
+        )
+        return WorkspaceWorkbenchRootView(
             usesCompactNavigation: layout.usesCompactNavigation,
             isPhone: layout.isPhone,
             bottomContentMargin: bottomContentMargin,
@@ -1157,21 +1171,18 @@ struct UnifiedWorkbenchShell: View {
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
             },
-            selectedRuntime: Binding(
+            browseScope: Binding(
                 get: {
-                    workspaceRuntimeSelection.resolvedRuntime(
-                        preferredRuntime: WorkspaceSessionRuntimeChoice.resolvedPreferred(
-                            preferredRawValue: preferredWorkspaceRuntimeRawValue,
-                            enabledRawValue: enabledWorkspaceRuntimesRawValue
-                        ),
+                    workspaceRuntimeSelection.resolvedBrowseScope(
+                        preferredRuntime: preferredRuntime,
+                        defaultShowAllRuntimes: defaultShowAllWorkspaceRuntimes,
                         availableRuntimeProviders: sessionStore.availableRuntimeProviders,
-                        enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
-                            from: enabledWorkspaceRuntimesRawValue
-                        )
+                        enabledRuntimes: enabledSet
                     )
                 },
-                set: { workspaceRuntimeSelection.manualRuntime = $0 }
+                set: { workspaceRuntimeSelection.setBrowseScope($0) }
             ),
+            preferredRuntime: preferredRuntime,
             browseSelection: $workspaceBrowseSelection
         )
     }
