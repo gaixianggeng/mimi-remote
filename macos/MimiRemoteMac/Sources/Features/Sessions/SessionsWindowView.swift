@@ -35,6 +35,15 @@ struct SessionsWindowView: View {
             .frame(minWidth: 560, minHeight: 420)
             .navigationTitle("会话")
             .toolbar {
+                ToolbarItem {
+                    Button {
+                        showsSharedSetup = true
+                    } label: {
+                        Label("连接 Codex 桌面版", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .help("一键配置本机 SSH，让 Codex 桌面版和手机实时共享同一条会话")
+                    .accessibilityIdentifier("sessions.codexSharedSetup")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         Task { await manualReload() }
@@ -57,7 +66,7 @@ struct SessionsWindowView: View {
                 Text(store.actionError ?? "")
             }
             .sheet(isPresented: $showsSharedSetup) {
-                CodexSharedSetupView()
+                CodexSharedSetupView(coordinator: .shared)
             }
     }
 

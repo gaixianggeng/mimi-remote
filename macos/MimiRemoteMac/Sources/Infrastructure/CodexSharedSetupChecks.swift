@@ -1,12 +1,21 @@
 import AppKit
 import Foundation
+import Observation
 
-/// 「让 Codex 桌面版接入 Mimi」三步的检查结果（#991）。
+/// 「让 Codex 桌面版接入 Mimi」三步的检查结果（#991, #376）。
 struct CodexSharedSetupStatus: Equatable, Sendable {
     enum Step: Equatable, Sendable {
         case checking
         case done
         case todo
+
+        var accessibilityStatusText: String {
+            switch self {
+            case .checking: "检查中"
+            case .todo: "待完成"
+            case .done: "已完成"
+            }
+        }
     }
 
     var remoteLogin: Step = .checking
@@ -14,26 +23,54 @@ struct CodexSharedSetupStatus: Equatable, Sendable {
     var desktopConnected: Step = .checking
     /// 桌面版没在运行，第 3 步无从判断。
     var desktopNotRunning = false
+    /// 是否存在由 Mimi 一键写入的本机 SSH 托管配置（供显示「移除本机配置」入口）。
+    var localSSHManaged = false
+    /// 经归属与 `ssh -G` 核验的 Mimi 托管别名 `mimi-local` 已确认可用。
+    var managedAliasReady = false
+    /// 旧式裸 `127.0.0.1` 免密回环路径已验证可用（仅此时才在指引中提及 127.0.0.1）。
+    var legacyLoopbackReady = false
+    /// 用户 ~/.ssh/config 里已有自定义同名 Host 别名或相关冲突。
+    var hasConflictingHostAlias = false
 
     var allDone: Bool {
         remoteLogin == .done && passwordlessLogin == .done && desktopConnected == .done
     }
 
     /// 桌面版已经经本机 SSH 连上，前两步必然已经做好，不再去试登录。
-    static func make(desktop: CodexDesktopLink.Connection, remoteLogin: Bool, passwordless: Bool) -> Self {
+    static func make(
+        desktop: CodexDesktopLink.Connection,
+        remoteLogin: Bool,
+        passwordless: Bool,
+        localSSHManaged: Bool = false,
+        managedAliasReady: Bool = false,
+        legacyLoopbackReady: Bool = false,
+        hasConflictingHostAlias: Bool = false
+    ) -> Self {
         if desktop == .shared {
-            return Self(remoteLogin: .done, passwordlessLogin: .done, desktopConnected: .done)
+            return Self(
+                remoteLogin: .done,
+                passwordlessLogin: .done,
+                desktopConnected: .done,
+                localSSHManaged: localSSHManaged,
+                managedAliasReady: managedAliasReady,
+                legacyLoopbackReady: legacyLoopbackReady,
+                hasConflictingHostAlias: hasConflictingHostAlias
+            )
         }
         return Self(
             remoteLogin: remoteLogin ? .done : .todo,
             passwordlessLogin: remoteLogin && passwordless ? .done : .todo,
             desktopConnected: .todo,
-            desktopNotRunning: desktop == .notRunning
+            desktopNotRunning: desktop == .notRunning,
+            localSSHManaged: localSSHManaged,
+            managedAliasReady: remoteLogin && managedAliasReady,
+            legacyLoopbackReady: remoteLogin && legacyLoopbackReady,
+            hasConflictingHostAlias: hasConflictingHostAlias
         )
     }
 }
 
-/// 只读检查，不改系统设置，也不写 SSH 配置。
+/// 检查与本机 SSH 共享接入状态；不修改系统开关，只在用户显式点击一键配置时写入 `~/.ssh`。
 enum CodexSharedSetupChecks {
     static let sharingSettingsURL = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")!
 
@@ -46,15 +83,52 @@ enum CodexSharedSetupChecks {
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new 127.0.0.1 true && echo "完成"
     """
 
+    struct PasswordlessProbeResult: Equatable, Sendable {
+        var managedAliasWorks: Bool = false
+        var legacyLoopbackWorks: Bool = false
+
+        var anyWorks: Bool { managedAliasWorks || legacyLoopbackWorks }
+    }
+
+    typealias TargetProber = @Sendable (_ target: String) async -> Bool
+
+    /// 只有经 Mimi 归属核验且 `ssh -G` 确认为直连当前用户 127.0.0.1:22 的托管别名才允许探测 `mimi-local`。
+    /// 冲突或未托管时绝不探测 `mimi-local`，避免误连用户的同名远端主机。
+    static func passwordlessProbeTargets(managedAliasVerified: Bool) -> [String] {
+        managedAliasVerified
+            ? [CodexLocalSSHConfigurator.hostAlias, "127.0.0.1"]
+            : ["127.0.0.1"]
+    }
+
     @MainActor
     static func check() async -> CodexSharedSetupStatus {
-        let desktop = await CodexDesktopLink.connection()
+        let inspection = await CodexLocalSSHConfigurator().inspect()
+        let managedAliasVerified = inspection.isReady
+        let desktop = await CodexDesktopLink.connection(includeManagedAlias: managedAliasVerified)
         if desktop == .shared {
-            return .make(desktop: desktop, remoteLogin: true, passwordless: true)
+            return .make(
+                desktop: desktop,
+                remoteLogin: true,
+                passwordless: true,
+                localSSHManaged: inspection.isManaged,
+                managedAliasReady: managedAliasVerified,
+                legacyLoopbackReady: !managedAliasVerified,
+                hasConflictingHostAlias: inspection.hasAnyConflict
+            )
         }
         let remoteLogin = await remoteLoginEnabled()
-        let passwordless = remoteLogin ? await passwordlessLoginWorks() : false
-        return .make(desktop: desktop, remoteLogin: remoteLogin, passwordless: passwordless)
+        let probeResult = remoteLogin
+            ? await probePasswordlessLogin(managedAliasVerified: managedAliasVerified)
+            : PasswordlessProbeResult()
+        return .make(
+            desktop: desktop,
+            remoteLogin: remoteLogin,
+            passwordless: probeResult.anyWorks,
+            localSSHManaged: inspection.isManaged,
+            managedAliasReady: managedAliasVerified && probeResult.managedAliasWorks,
+            legacyLoopbackReady: probeResult.legacyLoopbackWorks,
+            hasConflictingHostAlias: inspection.hasAnyConflict
+        )
     }
 
     /// 「远程登录」打开时本机 22 端口有人监听。
@@ -67,14 +141,416 @@ enum CodexSharedSetupChecks {
         return result?.status == 0
     }
 
-    /// 与 Codex 桌面版相同的条件：不能弹密码或指纹确认。
-    static func passwordlessLoginWorks() async -> Bool {
-        let result = try? await ProcessExecutor.shared.run(
-            executable: URL(fileURLWithPath: "/usr/bin/ssh"),
-            arguments: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "127.0.0.1", "true"],
-            timeout: .seconds(10),
-            forceKillAfterTimeout: true
+    static func probePasswordlessLogin(
+        managedAliasVerified: Bool,
+        prober: TargetProber = defaultTargetProber
+    ) async -> PasswordlessProbeResult {
+        let targets = passwordlessProbeTargets(managedAliasVerified: managedAliasVerified)
+        var outcome = PasswordlessProbeResult()
+        for target in targets {
+            let ok = await prober(target)
+            if ok {
+                if target == CodexLocalSSHConfigurator.hostAlias {
+                    outcome.managedAliasWorks = true
+                    return outcome
+                } else {
+                    outcome.legacyLoopbackWorks = true
+                    return outcome
+                }
+            }
+        }
+        return outcome
+    }
+
+    /// 构造直连当前用户本机回环 22 端口的只读探测参数：
+    /// 绑定到刚经 `ssh -G` 核验的冻结配置快照（保持与桌面代理完全一致的端点、地址族、HostKeyAlias、身份与信任输入），
+    /// 显式禁用 `NoHostAuthenticationForLocalhost`、主机密钥更新（`UpdateHostKeys=no`）与自动写入（`StrictHostKeyChecking=yes`），并执行双向 stdin/stdout 探测。
+    static func buildDirectLoopbackProbeArguments(
+        for target: String,
+        username: String,
+        configPath: String? = nil,
+        hostName: String = "127.0.0.1",
+        addressFamily: String? = nil,
+        hostKeyAlias: String? = nil
+    ) -> [String] {
+        var args: [String] = []
+        if let configPath, !configPath.isEmpty {
+            args.append(contentsOf: ["-F", configPath])
+        }
+        args.append(contentsOf: [
+            "-T",
+            "-o", "BatchMode=yes",
+            "-o", "PasswordAuthentication=no",
+            "-o", "KbdInteractiveAuthentication=no",
+            "-o", "HostName=\(hostName)",
+            "-o", "Port=22",
+            "-o", "User=\(username)",
+        ])
+        if let addressFamily, !addressFamily.isEmpty {
+            args.append(contentsOf: ["-o", "AddressFamily=\(addressFamily)"])
+        }
+        if let hostKeyAlias, !hostKeyAlias.isEmpty {
+            args.append(contentsOf: ["-o", "HostKeyAlias=\(hostKeyAlias)"])
+        }
+        args.append(contentsOf: [
+            "-o", "ProxyJump=none",
+            "-o", "ProxyCommand=none",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "-o", "ControlPersist=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "ForwardAgent=no",
+            "-o", "ForwardX11=no",
+            "-o", "CanonicalizeHostname=no",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RemoteCommand=none",
+            "-o", "KnownHostsCommand=none",
+            "-o", "VerifyHostKeyDNS=no",
+            "-o", "NoHostAuthenticationForLocalhost=no",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
+            "-o", "RequestTTY=no",
+            "-o", "SessionType=default",
+            "-o", "ForkAfterAuthentication=no",
+            "-o", "ConnectTimeout=5",
+            target,
+            CodexLocalSSHConfigurator.probeRemoteCommand,
+        ])
+        return args
+    }
+
+    static func defaultTargetProber(target: String) async -> Bool {
+        let currentUser = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentUser.isEmpty else { return false }
+        let configurator = CodexLocalSSHConfigurator(username: currentUser)
+        return await probeTarget(target, configurator: configurator)
+    }
+
+    /// 严格冻结桌面版当前真实配置（无法忠实冻结的 Include 直接报错拒绝），并按基准、/bin/cat、实际探测参数与桌面代理命令分别核验 `ssh -G`，
+    /// 确认所有画像的有效端点、地址族、HostKeyAlias、身份认证与主机信任输入完全一致后，才使用同一份冻结快照执行只读双向探测。
+    static func probeTarget(
+        _ target: String,
+        configurator: CodexLocalSSHConfigurator,
+        runProbe: CodexLocalSSHConfigurator.CommandRunner = CodexLocalSSHConfigurator.defaultCommandRunner
+    ) async -> Bool {
+        let currentUser = configurator.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentUser.isEmpty else { return false }
+
+        guard let materialized = try? configurator.materializeCurrentSSHConfigForEvaluation(includeSystemConfig: true) else {
+            return false
+        }
+        defer { materialized.cleanup() }
+
+        func validateProfile(_ effective: CodexLocalSSHConfigurator.EffectiveSSHConfig) -> Bool {
+            if target == CodexLocalSSHConfigurator.hostAlias {
+                return CodexLocalSSHConfigurator.validateEffectiveLoopbackConfig(
+                    effective,
+                    expectedUser: currentUser,
+                    expectedIdentityFile: configurator.expectedIdentityFileConfigValue,
+                    expectedKnownHostsFile: configurator.expectedKnownHostsPath
+                ) == nil
+            }
+            return CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser)
+        }
+
+        // 1. 仅针对同一份冻结快照执行 ssh -G：无命令基准 + /bin/cat + 桌面版代理命令画像（不读取实时文件）
+        guard let baseEffective = try? await configurator.resolveEffectiveSSHConfig(
+            configPath: materialized.configFileURL.path,
+            alias: target,
+            includeSystemConfig: false
+        ), validateProfile(baseEffective) else {
+            return false
+        }
+
+        guard let catEffective = try? await configurator.resolveEffectiveSSHConfig(
+            configPath: materialized.configFileURL.path,
+            alias: target,
+            includeSystemConfig: false,
+            extraOptions: ["-T"],
+            remoteCommand: [CodexLocalSSHConfigurator.probeRemoteCommand]
+        ), validateProfile(catEffective),
+              CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(baseEffective, catEffective) else {
+            return false
+        }
+
+        for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
+            guard let proxyEffective = try? await configurator.resolveEffectiveSSHConfig(
+                configPath: materialized.configFileURL.path,
+                alias: target,
+                includeSystemConfig: false,
+                extraOptions: ["-T"],
+                remoteCommand: proxyCmd
+            ), validateProfile(proxyEffective),
+                  CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, proxyEffective) else {
+                return false
+            }
+        }
+
+        // 2. 实际探测参数 `ssh -G` 核验（与后续执行共用同一份冻结快照）
+        let resolvedHostName = baseEffective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
+        let resolvedAddressFamily: String? = {
+            guard let af = baseEffective.addressFamily?.lowercased(), !af.isEmpty, af != "any" else { return nil }
+            return af
+        }()
+        let resolvedHostKeyAlias: String? = {
+            guard let alias = baseEffective.hostKeyAlias, !alias.isEmpty else { return nil }
+            return alias
+        }()
+        let arguments = buildDirectLoopbackProbeArguments(
+            for: target,
+            username: currentUser,
+            configPath: materialized.configFileURL.path,
+            hostName: resolvedHostName,
+            addressFamily: resolvedAddressFamily,
+            hostKeyAlias: resolvedHostKeyAlias
         )
-        return result?.status == 0
+        guard let probeEffective = try? await configurator.resolveEffectiveSSHConfig(rawArguments: arguments),
+              validateProfile(probeEffective),
+              CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, probeEffective) else {
+            return false
+        }
+
+        let probePayload = Data("mimi-ssh-probe-\(UUID().uuidString)\n".utf8)
+        let result = try? await runProbe(
+            URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments,
+            .seconds(10),
+            probePayload
+        )
+        return result?.status == 0 && result?.stdout == probePayload
+    }
+
+    static func passwordlessLoginWorks(managedAliasVerified: Bool = false) async -> Bool {
+        await probePasswordlessLogin(managedAliasVerified: managedAliasVerified).anyWorks
+    }
+}
+
+/// 跨「菜单栏独立窗口」与「会话窗口弹窗」共享的向导状态协调器（#376）。
+/// 统一串行化配置/撤销操作、丢弃乱序的旧检查结果，避免双入口并发写盘或旧快照覆盖错误提示。
+@MainActor
+@Observable
+final class CodexSharedSetupCoordinator {
+    static let shared = CodexSharedSetupCoordinator()
+
+    var status = CodexSharedSetupStatus()
+    var isChecking = false
+    var isConfiguringSSH = false
+    var isRemovingSSH = false
+    var actionError: String?
+    var desktopOpenFeedback: String?
+    var desktopOpenFeedbackIsError = false
+
+    var isMutating: Bool { isConfiguringSSH || isRemovingSSH }
+
+    private let checker: @MainActor () async -> CodexSharedSetupStatus
+    private let configureSSH: @Sendable () async throws -> Void
+    private let removeSSH: @Sendable () async throws -> Void
+    private let openDesktopSettings: @MainActor (_ preferSSHSubpage: Bool) async -> CodexDesktopLink.OpenSettingsResult
+    private let sharedSeenSetter: @MainActor (Bool) -> Void
+
+    private var checkGeneration: UInt64 = 0
+    private var activeCheckTask: Task<Void, Never>?
+
+    init(
+        checker: @escaping @MainActor () async -> CodexSharedSetupStatus = { await CodexSharedSetupChecks.check() },
+        configureSSH: @escaping @Sendable () async throws -> Void = { try await CodexLocalSSHConfigurator().configure() },
+        removeSSH: @escaping @Sendable () async throws -> Void = { try await CodexLocalSSHConfigurator().remove() },
+        openDesktopSettings: @escaping @MainActor (_ preferSSHSubpage: Bool) async -> CodexDesktopLink.OpenSettingsResult = {
+            await CodexDesktopLink.openSSHSettings(preferSSHSubpage: $0)
+        },
+        sharedSeenSetter: @escaping @MainActor (Bool) -> Void = {
+            UserDefaults.standard.set($0, forKey: "sessions.codexDesktopSharedSeen")
+        }
+    ) {
+        self.checker = checker
+        self.configureSSH = configureSSH
+        self.removeSSH = removeSSH
+        self.openDesktopSettings = openDesktopSettings
+        self.sharedSeenSetter = sharedSeenSetter
+    }
+
+    /// 发起一次新检查并取代任何未完成的旧检查；旧检查即便晚返回也会被丢弃。
+    func refresh(clearErrorWhenAllDone: Bool = true) async {
+        activeCheckTask?.cancel()
+        checkGeneration &+= 1
+        let generation = checkGeneration
+        isChecking = true
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let nextStatus = await self.checker()
+            guard !Task.isCancelled, self.checkGeneration == generation else { return }
+            self.status = nextStatus
+            self.isChecking = false
+            if nextStatus.allDone {
+                self.sharedSeenSetter(true)
+                if clearErrorWhenAllDone {
+                    self.actionError = nil
+                }
+            }
+        }
+        activeCheckTask = task
+        await task.value
+        if checkGeneration == generation {
+            isChecking = false
+        }
+    }
+
+    func runOneClickSSHSetup() async {
+        guard !isMutating else { return }
+        activeCheckTask?.cancel()
+        checkGeneration &+= 1
+        isChecking = false
+        isConfiguringSSH = true
+        actionError = nil
+        desktopOpenFeedback = nil
+        desktopOpenFeedbackIsError = false
+        defer { isConfiguringSSH = false }
+
+        do {
+            try await configureSSH()
+            await refresh(clearErrorWhenAllDone: true)
+        } catch {
+            actionError = error.localizedDescription
+            await refresh(clearErrorWhenAllDone: false)
+        }
+    }
+
+    func runRemoveSSHSetup() async {
+        guard !isMutating else { return }
+        activeCheckTask?.cancel()
+        checkGeneration &+= 1
+        isChecking = false
+        isRemovingSSH = true
+        actionError = nil
+        desktopOpenFeedback = nil
+        desktopOpenFeedbackIsError = false
+        defer { isRemovingSSH = false }
+
+        do {
+            try await removeSSH()
+            sharedSeenSetter(false)
+            await refresh(clearErrorWhenAllDone: true)
+        } catch {
+            actionError = error.localizedDescription
+            // 撤销出错时绝不能被后续状态检查把错误清掉。
+            await refresh(clearErrorWhenAllDone: false)
+        }
+    }
+
+    func openCodexSSHSettings() async {
+        let preferSSHSubpage = status.managedAliasReady
+        let result = await openDesktopSettings(preferSSHSubpage)
+        desktopOpenFeedback = result.feedbackMessage
+        desktopOpenFeedbackIsError = result.isFailure
+    }
+
+    /// 显式打开通用「连接」设置页作为回退入口（当 Codex 接受 SSH 子页 URL 但忽略子路由时供用户一键切换）。
+    func openCodexConnectionsSettings() async {
+        let result = await openDesktopSettings(false)
+        desktopOpenFeedback = result.feedbackMessage
+        desktopOpenFeedbackIsError = result.isFailure
+    }
+}
+
+extension CodexDesktopLink {
+    /// 打开 Codex 桌面版 SSH / 连接设置页的结果，供向导明确反馈未安装、回退或启动失败。
+    enum OpenSettingsResult: Equatable, Sendable {
+        case openedSSHSettings
+        case openedConnectionsFallback
+        case openedAppFallback
+        case notInstalled
+        case launchFailed(String)
+
+        var feedbackMessage: String? {
+            switch self {
+            case .openedSSHSettings:
+                "已将 SSH 设置页链接发送给 Codex 桌面版；如未自动跳转，可点击「打开连接设置」或手动进入「设置 → 连接 → SSH」。"
+            case .openedConnectionsFallback:
+                "已将「连接」设置页链接发送给 Codex 桌面版，请进入 SSH 子页继续添加主机。"
+            case .openedAppFallback:
+                "已打开 Codex 桌面版，请手动进入「设置 → 连接 → SSH」继续添加主机。"
+            case .notInstalled:
+                "没有找到 Codex 桌面版，请先安装 Codex 桌面版后再试。"
+            case .launchFailed(let detail):
+                detail.isEmpty ? "没能打开 Codex 桌面版。" : "没能打开 Codex 桌面版：\(detail)"
+            }
+        }
+
+        var isFailure: Bool {
+            switch self {
+            case .notInstalled, .launchFailed:
+                true
+            case .openedSSHSettings, .openedConnectionsFallback, .openedAppFallback:
+                false
+            }
+        }
+    }
+
+    static let sshSettingsURL = URL(string: "codex://settings/connections/ssh")!
+    static let connectionsSettingsURL = URL(string: "codex://settings/connections")!
+
+    @MainActor
+    static func openSSHSettings(
+        preferSSHSubpage: Bool = true,
+        findApp: @MainActor () -> URL? = {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID)
+        },
+        openURL: @MainActor (URL, URL) async throws -> Void = { url, appURL in
+            _ = try await NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        },
+        openApp: @MainActor (URL) async throws -> Void = { appURL in
+            _ = try await NSWorkspace.shared.openApplication(
+                at: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        }
+    ) async -> OpenSettingsResult {
+        guard let appURL = findApp() else {
+            return .notInstalled
+        }
+        if preferSSHSubpage {
+            do {
+                try await openURL(sshSettingsURL, appURL)
+                return .openedSSHSettings
+            } catch {
+                // 旧版桌面版若不识别 SSH 子页，回退到通用连接页。
+            }
+        }
+        do {
+            try await openURL(connectionsSettingsURL, appURL)
+            return .openedConnectionsFallback
+        } catch {
+            do {
+                try await openApp(appURL)
+                return .openedAppFallback
+            } catch let launchError {
+                return .launchFailed(launchError.localizedDescription)
+            }
+        }
+    }
+
+    @MainActor
+    static func openConnectionsSettings() async -> OpenSettingsResult {
+        await openSSHSettings(preferSSHSubpage: false)
+    }
+
+    @MainActor
+    static func open(threadID: String) async throws {
+        guard let url = url(threadID: threadID) else {
+            throw AgentClientError.commandFailed("会话 ID 不合法。")
+        }
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID) else {
+            throw AgentClientError.commandFailed("没有找到 Codex 桌面版。")
+        }
+        do {
+            _ = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        } catch {
+            throw AgentClientError.commandFailed("没能打开 Codex 桌面版：\(error.localizedDescription)")
+        }
     }
 }
