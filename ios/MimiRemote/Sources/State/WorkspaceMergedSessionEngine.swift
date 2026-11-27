@@ -322,13 +322,20 @@ struct WorkspaceMergedSessionEngine: Equatable {
     /// 计算下一步最值得推进的流：
     /// 1) 优先未加载首屏的 `.idle` 流；
     /// 2) 其次在所有 `canFetchMore == true` 的流中选择 `verifiedTailBoundMs` 最大（即最可能包含最新会话）的流，
-    ///    解决 90/10 偏斜展开并确保已耗尽流（如 DeepSeek）增量为 0。
+    ///    解决 90/10 偏斜展开并确保已耗尽流（如 DeepSeek）增量为 0；
+    /// 3) 当 `onlyHealthyForStrict == true` 时，跳过非严格健康流（如旧版服务端 `.unverifiedHealth` 或降级流），
+    ///    避免已满足可见条数时仍反复翻页拉取无法提升严格水位的流并触发网关限流。
     func nextRuntimeToFetch(
-        excluding inFlight: Set<WorkspaceSessionRuntimeChoice> = []
+        excluding inFlight: Set<WorkspaceSessionRuntimeChoice> = [],
+        onlyHealthyForStrict: Bool = false
     ) -> WorkspaceSessionRuntimeChoice? {
         let candidates = enabledRuntimes.filter { runtime in
             guard !inFlight.contains(runtime), let stream = streams[runtime] else { return false }
-            return stream.canFetchMore
+            guard stream.canFetchMore else { return false }
+            if onlyHealthyForStrict && stream.status != .idle {
+                return stream.isHealthyForStrictPrefix
+            }
+            return true
         }
         guard !candidates.isEmpty else { return nil }
 
@@ -577,6 +584,11 @@ struct WorkspaceMergedSessionEngine: Equatable {
         )
     }
 
+    /// 恢复单个流的既有快照（用于手动刷新遇瞬态限流/取消时保留已有结果，不闪出误报失败态）。
+    mutating func restoreStream(_ runtime: WorkspaceSessionRuntimeChoice, from snapshot: StreamState) {
+        streams[runtime] = snapshot
+    }
+
     /// 判断是否仍需向远端补页以填满严格前缀（覆盖首屏、展开与 P1-2b 晚页补标回撤 `20 → 19 → 20`）。
     func needsMorePages(
         targetVisibleCount: Int,
@@ -592,12 +604,18 @@ struct WorkspaceMergedSessionEngine: Equatable {
         if anyUnloaded {
             return true
         }
-        guard nextRuntimeToFetch() != nil else { return false }
         if proj.completeness == .complete || proj.completeness == .completeExhausted {
             return false
         }
-        return proj.strictCommittedCount < targetVisibleCount
-            || proj.totalLoadedListableCount < targetVisibleCount
+        if proj.totalLoadedListableCount < targetVisibleCount {
+            return nextRuntimeToFetch() != nil
+        }
+        if proj.strictCommittedCount < targetVisibleCount {
+            // 可见条数已满时，只继续推进严格健康流；非严格健康流（如旧版服务端未带 listMeta）
+            // 无法提升严格前缀计数，绝不能反复翻页触发网关限流。
+            return nextRuntimeToFetch(onlyHealthyForStrict: true) != nil
+        }
+        return false
     }
 
     /// 跨路严格全序：epochMs DESC → runtimeTieRank ASC → streamOrdinal ASC → sessionID DESC。

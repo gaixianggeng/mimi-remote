@@ -2523,6 +2523,8 @@ extension SessionStore {
         }
         var pagesScanned = 0
         var lastPage = SessionsPage(sessions: [])
+        var collectedRawSortEvidence: [SessionID: RawSortEvidence] = [:]
+        var degradedListMeta: SessionListMeta?
 
         while true {
             try Task.checkCancellation()
@@ -2559,6 +2561,12 @@ extension SessionStore {
             reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
             pagesScanned += 1
             lastPage = page
+            if let meta = page.listMeta, meta.complete == false, degradedListMeta == nil {
+                degradedListMeta = meta
+            }
+            for (sessionID, evidence) in page.rawSortEvidenceBySessionID where collectedRawSortEvidence[sessionID] == nil {
+                collectedRawSortEvidence[sessionID] = evidence
+            }
 
             for rawSession in page.sessions {
                 // 稀疏列表可能暂时丢 parent/source；先恢复 Store 已知的 sticky ownership，
@@ -2620,7 +2628,9 @@ extension SessionStore {
         return SessionsPage(
             sessions: collectedSessions,
             nextCursor: hasMore ? lastPage.nextCursor : nil,
-            hasMore: hasMore
+            hasMore: hasMore,
+            listMeta: degradedListMeta ?? lastPage.listMeta,
+            rawSortEvidenceBySessionID: collectedRawSortEvidence
         )
     }
 

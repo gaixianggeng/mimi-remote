@@ -111,6 +111,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         restartFromFirst: Bool = false
     ) async {
         let invocationID = UUID()
+        let previousStreams = slots[key]?.engine.streams ?? [:]
         var slot = slots[key] ?? Slot(
             engine: WorkspaceMergedSessionEngine(
                 hostScope: key.hostScope,
@@ -124,12 +125,15 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         slot.errorMessage = nil
         slots[key] = slot
 
-        if restartFromFirst, !sessionStore.availableRuntimeProviders.isEmpty {
-            let enabledSet = Set(key.enabledRuntimes)
-            let unavailableChoices = key.enabledRuntimes.filter {
-                !$0.isAvailable(in: sessionStore.availableRuntimeProviders, enabledRuntimes: enabledSet)
+        // 仅在主机尚无可用通道或某通道此前发生真实故障时重探可用性；
+        // 不在每次下拉刷新时重探主机主动关闭的通道（避免制造多余 503 与延迟）。
+        if restartFromFirst {
+            let shouldRecheckAll = sessionStore.availableRuntimeProviders.isEmpty
+            let runtimesToProbe = key.enabledRuntimes.filter { runtime in
+                if shouldRecheckAll { return true }
+                return previousStreams[runtime]?.status.isUnavailableOrFailed == true
             }
-            for runtime in unavailableChoices {
+            for runtime in runtimesToProbe {
                 guard !Task.isCancelled else { break }
                 _ = await sessionStore.retryRuntimeAvailability(runtime.runtimeProvider)
             }
@@ -145,10 +149,20 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             key: key,
             invocationID: invocationID,
             sessionStore: sessionStore,
-            restartFromFirst: restartFromFirst
+            restartFromFirst: restartFromFirst,
+            previousStreamsForFallback: previousStreams
         )
 
         guard var finalSlot = slots[key], finalSlot.activeInvocationID == invocationID else { return }
+        // 若刷新在部分流仍在加载前被取消（例如 SwiftUI .refreshable 提前收起），恢复旧快照避免退化成空白。
+        for (runtime, prevStream) in previousStreams where prevStream.hasLoadedAnyPage {
+            if let current = finalSlot.engine.streams[runtime],
+               !current.hasLoadedAnyPage,
+               !current.status.isHostDisabled,
+               !current.status.isUnavailableOrFailed {
+                finalSlot.engine.restoreStream(runtime, from: prevStream)
+            }
+        }
         finalSlot.isLoading = false
         slots[key] = finalSlot
     }
@@ -235,7 +249,8 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         key: WorkspaceMergedPresentationKey,
         invocationID: UUID,
         sessionStore: SessionStore,
-        restartFromFirst: Bool
+        restartFromFirst: Bool,
+        previousStreamsForFallback: [WorkspaceSessionRuntimeChoice: WorkspaceMergedSessionEngine.StreamState] = [:]
     ) async {
         // 以有限波次调度并发请求（每波最多同时跑 budget.maxConcurrentRPCs == 2 路），
         // 每收到一批响应即归并、传播子会话归属并重新评估是否已填满目标展示窗口。
@@ -254,6 +269,12 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             let canonicalByKey = canonicalSessionMap(cached, hostScope: key.hostScope)
             let archivedKeys = archivedCanonicalKeys(sessionStore: sessionStore, hostScope: key.hostScope)
 
+            let currentProjection = slot.engine.projection(
+                targetVisibleCount: slot.visibleLimit,
+                cachedFallbackSessions: cached,
+                canonicalByKey: canonicalByKey,
+                archivedKeys: archivedKeys
+            )
             guard slot.engine.needsMorePages(
                 targetVisibleCount: slot.visibleLimit,
                 canonicalByKey: canonicalByKey,
@@ -262,10 +283,16 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 return
             }
 
+            let anyIdle = slot.engine.enabledRuntimes.contains { slot.engine.streams[$0]?.status == .idle }
+            let onlyHealthyForStrict = !anyIdle && currentProjection.totalLoadedListableCount >= slot.visibleLimit
+
             // 收集本波可并发拉取的运行时（受 SessionListRPCBudgetLedger 原子并发与总预算硬限制）。
             var wave: [(runtime: WorkspaceSessionRuntimeChoice, cursor: String?, excluding: Set<SessionID>, isFirstPage: Bool)] = []
             var planned: Set<WorkspaceSessionRuntimeChoice> = []
-            while let nextRuntime = slot.engine.nextRuntimeToFetch(excluding: planned) {
+            while let nextRuntime = slot.engine.nextRuntimeToFetch(
+                excluding: planned,
+                onlyHealthyForStrict: onlyHealthyForStrict
+            ) {
                 let reserveOutcome = slot.budget.reserve(runtimeProvider: nextRuntime.runtimeProvider)
                 switch reserveOutcome {
                 case .reserved:
@@ -300,19 +327,41 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 for taskSpec in wave {
                     group.addTask { @MainActor in
                         defer { budget.finish(runtimeProvider: taskSpec.runtime.runtimeProvider) }
+                        let pageLimit = taskSpec.isFirstPage
+                            ? SessionStore.initialSessionPageLimit
+                            : SessionStore.expandedSessionPageLimit
                         do {
                             let page = try await sessionStore.workspaceRuntimeSessionsPage(
                                 projectID: project.id,
                                 runtimeProvider: taskSpec.runtime.runtimeProvider,
                                 cursor: taskSpec.cursor,
-                                limit: taskSpec.isFirstPage
-                                    ? SessionStore.initialSessionPageLimit
-                                    : SessionStore.expandedSessionPageLimit,
+                                limit: pageLimit,
                                 excludingListableSessionIDs: taskSpec.excluding,
                                 restartFromFirst: restartFromFirst && taskSpec.isFirstPage
                             )
                             return (taskSpec.runtime, taskSpec.isFirstPage, .success(page))
                         } catch {
+                            // 若遇到网关瞬态 -32080（同请求仍在执行 / 极短窗口），退避等待一次再重试。
+                            if let policyFailure = sessionStore.sessionListPolicyFailure(from: error),
+                               policyFailure.retryAfterNanoseconds <= 2_000_000_000,
+                               !Task.isCancelled {
+                                try? await Task.sleep(nanoseconds: policyFailure.retryAfterNanoseconds)
+                                if !Task.isCancelled {
+                                    do {
+                                        let retried = try await sessionStore.workspaceRuntimeSessionsPage(
+                                            projectID: project.id,
+                                            runtimeProvider: taskSpec.runtime.runtimeProvider,
+                                            cursor: taskSpec.cursor,
+                                            limit: pageLimit,
+                                            excludingListableSessionIDs: taskSpec.excluding,
+                                            restartFromFirst: restartFromFirst && taskSpec.isFirstPage
+                                        )
+                                        return (taskSpec.runtime, taskSpec.isFirstPage, .success(retried))
+                                    } catch {
+                                        return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
+                                    }
+                                }
+                            }
                             return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
                         }
                     }
@@ -344,10 +393,25 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                     )
                 case let .failure(error):
                     if isCancellationError(error) {
-                        if let existing = updatedSlot.engine.streams[runtime], existing.hasLoadedAnyPage {
+                        if let previous = previousStreamsForFallback[runtime], previous.hasLoadedAnyPage {
+                            updatedSlot.engine.restoreStream(runtime, from: previous)
+                        } else if let existing = updatedSlot.engine.streams[runtime], existing.hasLoadedAnyPage {
                             updatedSlot.engine.markFailed(runtime, message: UserFacingError(error).message)
                         } else {
                             updatedSlot.engine.resetStreamToIdle(runtime)
+                        }
+                    } else if sessionStore.sessionListPolicyFailure(from: error) != nil {
+                        // 短时间连续下拉触发网关 -32080 限流时，若该通道已有已加载列表则保留旧数据，
+                        // 不把正常限流渲染成“运行时不可用/返回了部分结果”的误报横幅。
+                        if let previous = previousStreamsForFallback[runtime], previous.hasLoadedAnyPage {
+                            updatedSlot.engine.restoreStream(runtime, from: previous)
+                        } else if let existing = updatedSlot.engine.streams[runtime], existing.hasLoadedAnyPage {
+                            var preserved = existing
+                            preserved.status = preserved.hasMore ? .ready : .exhausted
+                            updatedSlot.engine.restoreStream(runtime, from: preserved)
+                        } else {
+                            updatedSlot.engine.markFailed(runtime, message: UserFacingError(error).message)
+                            updatedSlot.errorMessage = UserFacingError(error).message
                         }
                     } else if isRuntimeUnavailableError(error) {
                         updatedSlot.engine.markUnavailable(runtime, reason: UserFacingError(error).message)

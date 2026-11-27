@@ -189,6 +189,31 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
         XCTAssertNil(hostDisabledProjection.partialNotice)
         XCTAssertEqual(hostDisabledProjection.visibleSessions.map(\.id), ["x1", "a1"])
 
+        // Legacy unverified stream with hasMore == true must NOT be auto-pumped once visible target is met.
+        var noStormEngine = WorkspaceMergedSessionEngine(
+            hostScope: hostScope,
+            enabledRuntimes: [.codex, .agy]
+        )
+        noStormEngine.ingestPage(
+            runtime: .codex,
+            page: makePage(runtime: "codex", items: [("x1", 1_700_000_020_000, nil, nil)], hasMore: false),
+            isRefresh: true
+        )
+        let agyPage1: [(id: String, epochMs: Int64, parentThreadID: String?, isSubagent: Bool?)] =
+            (1...20).map { i in
+                ("a-\(i)", 1_700_000_000_000 + Int64((21 - i) * 100), nil, nil)
+            }
+        noStormEngine.ingestPage(
+            runtime: .agy,
+            page: makePage(runtime: "agy", items: agyPage1, nextCursor: "agy-p2", hasMore: true, listMeta: nil),
+            isRefresh: true
+        )
+        XCTAssertFalse(
+            noStormEngine.needsMorePages(targetVisibleCount: 20),
+            "Once Page 1 already satisfies target visible count, unverified Agy must not trigger follow-up RPC storms"
+        )
+        XCTAssertNil(noStormEngine.nextRuntimeToFetch(onlyHealthyForStrict: true))
+
         // All unavailable must produce .allUnavailable (never .completeExhausted).
         var unavailableEngine = WorkspaceMergedSessionEngine(
             hostScope: hostScope,

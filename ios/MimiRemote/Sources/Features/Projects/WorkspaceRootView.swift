@@ -527,32 +527,24 @@ struct WorkspaceRootView: View {
             )
         }
         .task(id: neighborPrefetchScope) {
-            guard !isInNoHostEmptyState else { return }
+            // 「全部」视图每切一个工作区都会并发请求多个运行时；不预先拉取左右相邻工作区，
+            // 避免首屏进入或紧接着下拉刷新时消耗网关 thread/list 预算。
+            guard !isInNoHostEmptyState, !browseScope.isAll else { return }
             // 当前页优先：等它自己的 task 先占住 single-flight，再补相邻页。
             for project in neighborWorkspaceProjects {
                 guard !Task.isCancelled else { return }
-                if browseScope.isAll {
-                    let neighborKey = workspaceMergedPresentationKey(for: project)
-                    guard !mergedCoordinator.hasLoadedFirstPage(for: neighborKey) else { continue }
-                    await mergedCoordinator.refresh(
-                        project: project,
-                        key: neighborKey,
-                        sessionStore: sessionStore
-                    )
-                } else {
-                    let presentationKey = workspaceSessionPresentationKey(for: project)
-                    // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
-                    // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
-                    guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
-                        cachedPageState: runtimeSessionPagesByKey[presentationKey]
-                    ) else {
-                        continue
-                    }
-                    await refreshWorkspaceSessions(
-                        project: project,
-                        presentationKey: presentationKey
-                    )
+                let presentationKey = workspaceSessionPresentationKey(for: project)
+                // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
+                // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
+                guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
+                    cachedPageState: runtimeSessionPagesByKey[presentationKey]
+                ) else {
+                    continue
                 }
+                await refreshWorkspaceSessions(
+                    project: project,
+                    presentationKey: presentationKey
+                )
             }
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
