@@ -930,9 +930,78 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(ConversationView.shouldAllowTopUnderlap(reduceTransparency: true))
     }
 
+    func testWideComposerGlassDoesNotSitOnSolidPlate() {
+        // iPad mini 竖屏走宽档输入卡，且 phoneConversationKeyboardVisible 保持 nil。
+        // 玻璃风格下这张卡必须自己折射正文：关掉底部全宽 soft edge、不再铺画布底板，
+        // 并像顶栏胶囊一样放进 GlassEffectContainer。否则卡片采到雾带或底板，看起来仍是实色。
+        let glass = ComposerCardResolvedSurface.resolve(
+            usesFloatingGlass: true,
+            interfaceStyle: .glass,
+            reduceTransparency: false,
+            increasedContrast: false,
+            supportsLiquidGlass: true
+        )
+        XCTAssertEqual(glass, .liquidGlass)
+        let wide = ConversationComposerChromeUnderlay.resolve(
+            surface: glass,
+            usesPhoneIntegratedChrome: false
+        )
+        XCTAssertTrue(wide.hidesBottomScrollEdge)
+        XCTAssertFalse(wide.paintsBackingPlate)
+        XCTAssertTrue(wide.groupsLiquidGlass)
+
+        let phone = ConversationComposerChromeUnderlay.resolve(
+            surface: glass,
+            usesPhoneIntegratedChrome: true
+        )
+        XCTAssertFalse(phone.hidesBottomScrollEdge)
+        XCTAssertTrue(phone.paintsBackingPlate)
+        XCTAssertFalse(phone.groupsLiquidGlass)
+
+        let legacy = ComposerCardResolvedSurface.resolve(
+            usesFloatingGlass: true,
+            interfaceStyle: .glass,
+            reduceTransparency: false,
+            increasedContrast: false,
+            supportsLiquidGlass: false
+        )
+        XCTAssertEqual(legacy, .ultraThinMaterial)
+        let legacyWide = ConversationComposerChromeUnderlay.resolve(
+            surface: legacy,
+            usesPhoneIntegratedChrome: false
+        )
+        XCTAssertTrue(legacyWide.hidesBottomScrollEdge)
+        XCTAssertFalse(legacyWide.paintsBackingPlate)
+        XCTAssertFalse(legacyWide.groupsLiquidGlass)
+
+        let classic = ConversationComposerChromeUnderlay.resolve(
+            usesFloatingGlass: true,
+            interfaceStyle: .classic,
+            reduceTransparency: false,
+            increasedContrast: false,
+            usesPhoneIntegratedChrome: false,
+            supportsLiquidGlass: true
+        )
+        XCTAssertFalse(classic.hidesBottomScrollEdge)
+        XCTAssertTrue(classic.paintsBackingPlate)
+        XCTAssertFalse(classic.groupsLiquidGlass)
+
+        let increasedContrast = ConversationComposerChromeUnderlay.resolve(
+            usesFloatingGlass: true,
+            interfaceStyle: .glass,
+            reduceTransparency: false,
+            increasedContrast: true,
+            usesPhoneIntegratedChrome: false,
+            supportsLiquidGlass: true
+        )
+        XCTAssertFalse(increasedContrast.hidesBottomScrollEdge)
+        XCTAssertTrue(increasedContrast.paintsBackingPlate)
+        XCTAssertFalse(increasedContrast.groupsLiquidGlass)
+    }
+
     func testTranslucentComposerBackdropRequiresSystemSoftScrollEdge() {
-        // 半透明底衬最深只有 10–12%，真正虚化正文的是 soft scroll edge。iPhone 与 iPad
-        // 共用这条规则，悬浮玻璃才有正文可折射。没有 soft edge 的 iOS 18–25 必须退回实色。
+        // 半透明底衬只覆盖仍铺底板的路径。宽档玻璃卡不铺这块底板，见
+        // testWideComposerGlassDoesNotSitOnSolidPlate。没有 soft edge 的 iOS 18–25 必须退回实色。
         XCTAssertTrue(
             ConversationView.usesTranslucentComposerBackdrop(
                 reduceTransparency: false,

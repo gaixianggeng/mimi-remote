@@ -924,7 +924,8 @@ struct ComposerView: View {
                     usesFloatingGlass: composerUsesFloatingGlassSurface,
                     voiceAccentBorderColor: nil,
                     solidBorderColor: tokens.border.opacity(0.58),
-                    borderWidth: 0.75
+                    borderWidth: 0.75,
+                    presentsInGlassContainer: composerChromeUnderlay.groupsLiquidGlass
                 )
             )
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1150,7 +1151,7 @@ struct ComposerView: View {
     }
 
     /// iPhone 与 iPad 的输入卡共用这一层表面。玻璃是否落地由 `ComposerCardResolvedSurface`
-    /// 决定；正文经半透明底衬延伸到卡片后方，玻璃才有内容可折射。
+    /// 决定。宽档玻璃卡放进 `GlassEffectContainer`，正文直接滑到卡片后面，不再隔一层底板。
     func composerCardSurfaceModifier(
         shape: RoundedRectangle,
         tokens: ThemeTokens
@@ -1164,7 +1165,20 @@ struct ComposerView: View {
             usesFloatingGlass: composerUsesFloatingGlassSurface,
             voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
             solidBorderColor: composerCardBorderColor(tokens),
-            borderWidth: composerCardBorderWidth
+            borderWidth: composerCardBorderWidth,
+            presentsInGlassContainer: composerChromeUnderlay.groupsLiquidGlass
+        )
+    }
+
+    /// 与会话页底衬共用同一判定。宽档（`phoneConversationKeyboardVisible == nil`）
+    /// 在玻璃模式下把卡片放进玻璃容器，并要求列表不要再铺底板。
+    var composerChromeUnderlay: ConversationComposerChromeUnderlay {
+        ConversationComposerChromeUnderlay.resolve(
+            usesFloatingGlass: composerUsesFloatingGlassSurface,
+            interfaceStyle: themeStore.interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased,
+            usesPhoneIntegratedChrome: phoneKeyboardVisible != nil
         )
     }
 

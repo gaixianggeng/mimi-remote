@@ -7,6 +7,7 @@ struct ConversationView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
     @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
     @Environment(\.workbenchUsesFloatingCapsuleHeader) private var usesFloatingCapsuleHeader
@@ -91,7 +92,8 @@ struct ConversationView: View {
                     // 宽屏侧栏布局不叠：详情列顶部被提亮后会比相邻侧栏亮一档，界线压在分栏缝上。
                     // iPhone 悬浮胶囊顶栏也不叠全宽雾带：由居中玻璃胶囊直接折射后方滚过的内容，
                     // 两侧保持清澈以突出悬浮感。
-                    deepensTopScrollEdge: usesCompactNavigation && !usesFloatingCapsuleHeader
+                    deepensTopScrollEdge: usesCompactNavigation && !usesFloatingCapsuleHeader,
+                    hidesBottomScrollEdge: composerChromeUnderlay.hidesBottomScrollEdge
                 )
             }
             // 测量层必须先占满 NavigationStack 实际分配的详情列，再把结果回写给
@@ -187,15 +189,24 @@ struct ConversationView: View {
         !reduceTransparency
     }
 
-    /// 半透明底衬只有在系统自带 soft scroll edge 时才成立：它最深也只有 10–12%，
-    /// 真正把正文虚化掉的是滚动边缘效果。没有 soft edge 的 iOS 18–25 会让正文
-    /// 以近乎全对比度从输入卡下沿滚过去，所以旧系统必须退回实色。
-    /// iPhone 与 iPad 共用这条规则，悬浮玻璃才有正文可折射；按设备分叉会让 iPad 玻璃发白。
+    /// 半透明底衬只给仍铺底板的路径用（手机集成底栏、实色卡）。它最深也只有 10–12%。
+    /// 没有 soft edge 的 iOS 18–25 会让正文以近乎全对比度从实色卡下沿滚过去，所以旧系统必须退回实色。
+    /// 宽档玻璃卡不走这里：底板和全宽 soft edge 会把正文挡在卡片外面，玻璃只能采到一片灰。
     static func usesTranslucentComposerBackdrop(
         reduceTransparency: Bool,
         hasSoftScrollEdge: Bool
     ) -> Bool {
         !reduceTransparency && hasSoftScrollEdge
+    }
+
+    private var composerChromeUnderlay: ConversationComposerChromeUnderlay {
+        ConversationComposerChromeUnderlay.resolve(
+            usesFloatingGlass: true,
+            interfaceStyle: themeStore.interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased,
+            usesPhoneIntegratedChrome: phoneKeyboardVisible != nil
+        )
     }
 
     static var systemProvidesSoftScrollEdge: Bool {
@@ -368,18 +379,23 @@ struct ConversationView: View {
     }
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {
-        let usesTranslucentBackdrop = Self.usesTranslucentComposerBackdrop(
+        let underlay = composerChromeUnderlay
+        let usesTranslucentBackdrop = underlay.paintsBackingPlate && Self.usesTranslucentComposerBackdrop(
             reduceTransparency: reduceTransparency,
             hasSoftScrollEdge: Self.systemProvidesSoftScrollEdge
         )
         return Group {
-            if !usesTranslucentBackdrop {
+            if !underlay.paintsBackingPlate {
+                // 宽档玻璃卡自己折射正文。这里再铺画布或渐变，玻璃采到的就是这块底板，
+                // 看起来和实色输入卡一样，气泡会被齐边切断。
+                Color.clear
+            } else if !usesTranslucentBackdrop {
                 // 降低透明度，以及没有 soft scroll edge 的旧系统，都使用确定性实色。
                 tokens.conversationCanvasBackground
             } else {
                 // 只保留一条连续衰减。此前在 inset 上沿额外拼接 28pt 渐变，交界处会从
                 // 32% 背景色突然跳回透明，在深色代码块上形成一条明显的亮带。
-                // 字形虚化继续交给 Composer 自身的 Material，避免叠加第二层采样。
+                // 字形虚化继续交给 Composer 自身的玻璃，避免叠加第二层采样。
                 LinearGradient(
                     colors: [
                         .clear,
@@ -391,8 +407,57 @@ struct ConversationView: View {
                 )
             }
         }
-        .ignoresSafeArea(edges: phoneKeyboardVisible == nil ? .bottom : [])
+        .ignoresSafeArea(
+            edges: underlay.paintsBackingPlate && phoneKeyboardVisible == nil ? .bottom : []
+        )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+/// 输入卡与正文的叠放。手机集成底栏保持现状；宽档玻璃卡必须让正文滑到卡片下面，
+/// 由卡片自己虚化。再叠全宽 soft edge 或画布底板时，卡片只能采到一片均匀的灰，
+/// 和实色 `#323232` 输入卡无法区分。顶栏胶囊和浮动 Tab 栏已经按这个规则处理。
+struct ConversationComposerChromeUnderlay: Equatable {
+    var hidesBottomScrollEdge: Bool
+    var paintsBackingPlate: Bool
+    var groupsLiquidGlass: Bool
+
+    static func resolve(
+        surface: ComposerCardResolvedSurface,
+        usesPhoneIntegratedChrome: Bool
+    ) -> Self {
+        guard !usesPhoneIntegratedChrome, surface != .solidCard else {
+            return Self(
+                hidesBottomScrollEdge: false,
+                paintsBackingPlate: true,
+                groupsLiquidGlass: false
+            )
+        }
+        return Self(
+            hidesBottomScrollEdge: true,
+            paintsBackingPlate: false,
+            groupsLiquidGlass: surface == .liquidGlass
+        )
+    }
+
+    static func resolve(
+        usesFloatingGlass: Bool,
+        interfaceStyle: ThemeInterfaceStyle,
+        reduceTransparency: Bool,
+        increasedContrast: Bool,
+        usesPhoneIntegratedChrome: Bool,
+        supportsLiquidGlass: Bool = WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+    ) -> Self {
+        resolve(
+            surface: ComposerCardResolvedSurface.resolve(
+                usesFloatingGlass: usesFloatingGlass,
+                interfaceStyle: interfaceStyle,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: increasedContrast,
+                supportsLiquidGlass: supportsLiquidGlass
+            ),
+            usesPhoneIntegratedChrome: usesPhoneIntegratedChrome
+        )
     }
 }

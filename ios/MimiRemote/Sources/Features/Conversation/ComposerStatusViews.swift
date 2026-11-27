@@ -1238,6 +1238,9 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
     let solidBorderColor: Color
     let borderWidth: CGFloat
     var explicitResolvedSurface: ComposerCardResolvedSurface? = nil
+    /// 宽档卡片放进 `GlassEffectContainer`，与顶栏胶囊同一套采样。
+    /// 手机集成底栏不包：那里的玻璃已经能折射正文，多一层容器会改掉现有效果。
+    var presentsInGlassContainer: Bool = false
 
     @Environment(\.themeInterfaceStyle) private var interfaceStyle
 
@@ -1264,13 +1267,7 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
         switch resolvedSurface {
         case .liquidGlass:
             if #available(iOS 26.0, *) {
-                content
-                    .glassEffect(.regular, in: shape)
-                    .overlay {
-                        if let voiceAccentBorderColor {
-                            shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
-                        }
-                    }
+                liquidGlassSurface(content)
             } else {
                 ultraThinMaterialSurface(content)
             }
@@ -1296,6 +1293,28 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
                 .overlay {
                     shape.strokeBorder(voiceAccentBorderColor ?? solidBorderColor, lineWidth: borderWidth)
                 }
+        }
+    }
+
+    @ViewBuilder
+    private func liquidGlassSurface(_ content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            let glass = content
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    if let voiceAccentBorderColor {
+                        shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
+                    }
+                }
+            // safeAreaInset 里单独的 glassEffect 采不到列表，只会铺成一块均匀灰底。
+            // 顶栏胶囊能透出正文，是因为它放在 GlassEffectContainer 里。
+            if presentsInGlassContainer {
+                GlassEffectContainer(spacing: 0) { glass }
+            } else {
+                glass
+            }
+        } else {
+            ultraThinMaterialSurface(content)
         }
     }
 
