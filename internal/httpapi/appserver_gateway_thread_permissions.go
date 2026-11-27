@@ -229,8 +229,10 @@ func mergeHistoricalBaseline(connOld appServerGatewayAllowedThread, hasConn bool
 }
 
 // mergeCrossPageAllowedThread 用于 thread/list 阶段 B 将历史基线与本页已完整收敛的 pageMerged 合并：
-// - pathRestored 仅解除历史瞬态 cwdMissing 只读，绝不清除 readOnlyPermanent 或 explicitDirectInputDenied；
-// - 列表页不得凭自身 canAcceptDirectInput=true 放宽已有 explicitDirectInputDenied（仅 thread/read 可在空闲后恢复）。
+//   - pathRestored 仅解除历史瞬态 cwdMissing 只读，绝不清除 readOnlyPermanent 或省略字段时的 explicitDirectInputDenied；
+//   - pushSeededOnly 保持到经作用域校验的 thread/read 确认恢复为止，不被普通列表页清除；
+//   - 当本页在无结构只读、无目录缺失、无同页禁写冲突时明确给出 canAcceptDirectInput=true（rawDirectInputAllow），
+//     视为上游最新所有权释放的肯定证据，解除 historical.explicitDirectInputDenied 并推进版本号。
 func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedThread, allocVersion func() uint64) appServerGatewayAllowedThread {
 	historical = normalizeAllowedThreadRestrictionBits(historical)
 	pageMerged = normalizeAllowedThreadRestrictionBits(pageMerged)
@@ -243,13 +245,22 @@ func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedT
 		pageMerged.cwdMissing = true
 	}
 	pageMerged.readOnly = pageMerged.readOnlyPermanent || pageMerged.cwdMissing
-	// 真实列表响应到达，清除推送补种标记。
-	pageMerged.pushSeededOnly = false
+	// 列表页不清除 pushSeededOnly，保留至经作用域校验的 thread/read 确认恢复。
+	pageMerged.pushSeededOnly = historical.pushSeededOnly
+	pageMerged.clearPushSeeded = false
 
-	// 版本与独立禁写：列表页只允许新增禁写或保留历史，绝不清除历史 explicitDirectInputDenied。
+	// 版本与独立禁写：
+	// 1) 同页显式禁写 -> 固化禁写并推进版本；
+	// 2) 非只读且非补种时收到上游显式 canAcceptDirectInput=true -> 视为最新肯定证据（例如桌面端持有方已退出），解除禁写并推进版本；
+	// 3) 省略 canAcceptDirectInput -> 即使目录恢复也继承历史禁写与版本。
 	pageMerged.explicitDirectInputVersion = historical.explicitDirectInputVersion
 	if pageMerged.explicitDirectInputDenied || pageMerged.rawDirectInput == rawDirectInputDeny {
 		pageMerged.explicitDirectInputDenied = true
+		if allocVersion != nil {
+			pageMerged.explicitDirectInputVersion = allocVersion()
+		}
+	} else if pageMerged.rawDirectInput == rawDirectInputAllow && !pageMerged.readOnly && !pageMerged.pushSeededOnly {
+		pageMerged.explicitDirectInputDenied = false
 		if allocVersion != nil {
 			pageMerged.explicitDirectInputVersion = allocVersion()
 		}
@@ -260,6 +271,9 @@ func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedT
 	if pageMerged.readOnly || pageMerged.explicitDirectInputDenied {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = false
+	} else if pageMerged.rawDirectInput == rawDirectInputAllow && !pageMerged.pushSeededOnly {
+		pageMerged.directInputKnown = true
+		pageMerged.canAcceptDirectInput = true
 	} else if !pathRestored && !pageMerged.directInputKnown && historical.directInputKnown {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = historical.canAcceptDirectInput
@@ -315,7 +329,8 @@ func mergeGatewayAllowedThreadWithVersion(
 	}
 	incoming.readOnly = incoming.readOnlyPermanent || incoming.cwdMissing
 
-	// 推送补种不得降级已存在的真实运行时主表条目；真实运行时条目到达后清除 pushSeededOnly。
+	// 推送补种不得降级已存在的真实运行时主表条目；只有经作用域校验的 thread/read（或 start/fork）
+	// 显式置位 clearPushSeeded 时才解除 pushSeededOnly，thread/resume 与普通列表不得绕过该门禁。
 	if incoming.pushSeededOnly {
 		incoming.pushSeededOnly = existing.pushSeededOnly
 		if !existing.pushSeededOnly {
@@ -327,11 +342,15 @@ func mergeGatewayAllowedThreadWithVersion(
 				incoming.canAcceptDirectInput = existing.canAcceptDirectInput
 			}
 			incoming.rawDirectInput = rawDirectInputUnknown
+			incoming.clearPushSeeded = false
 			return incoming
 		}
-	} else {
+	} else if incoming.clearPushSeeded {
 		incoming.pushSeededOnly = false
+	} else {
+		incoming.pushSeededOnly = existing.pushSeededOnly
 	}
+	incoming.clearPushSeeded = false
 
 	switch rawInput {
 	case rawDirectInputDeny:
@@ -391,6 +410,7 @@ func applyFloorToAllowedThread(thread appServerGatewayAllowedThread, hasThread b
 	if !hasFloor {
 		return thread, hasThread
 	}
+	affirmativeAllow := !floor.readOnlyPermanent && !floor.explicitDirectInputDenied && floor.explicitDirectInputVersion > 0
 	floorEntry := appServerGatewayAllowedThread{
 		id:                         thread.id,
 		runtimeID:                  thread.runtimeID,
@@ -402,8 +422,8 @@ func applyFloorToAllowedThread(thread appServerGatewayAllowedThread, hasThread b
 		readOnly:                   floor.readOnlyPermanent,
 		explicitDirectInputDenied:  floor.explicitDirectInputDenied,
 		explicitDirectInputVersion: floor.explicitDirectInputVersion,
-		directInputKnown:           floor.readOnlyPermanent || floor.explicitDirectInputDenied,
-		canAcceptDirectInput:       false,
+		directInputKnown:           floor.readOnlyPermanent || floor.explicitDirectInputDenied || affirmativeAllow,
+		canAcceptDirectInput:       affirmativeAllow,
 	}
 	if !hasThread {
 		return floorEntry, true
@@ -508,6 +528,109 @@ func (p *appServerGatewayPolicy) syncRestrictionEvictionEpochLocked(now time.Tim
 		p.allowedThreads[id] = eff
 	}
 	p.restrictionEvictionEpoch = p.router.gatewayRestrictionEvictionEpoch
+}
+
+// observeThreadStatusDirectInputNotification 同步处理上游 thread/status/changed 通知中的
+// canAcceptDirectInput 变更（例如 Claude 桌面端持有方退出并释放所有权后推送 canAcceptDirectInput:true）。
+// 严禁凭通知新建未授权线程，严禁解除结构性只读（readOnlyPermanent）或目录缺失（cwdMissing）或 pushSeededOnly。
+func (p *appServerGatewayPolicy) observeThreadStatusDirectInputNotification(frame *appServerGatewayFrame) {
+	if p == nil || frame == nil || strings.TrimSpace(frame.Method) != "thread/status/changed" {
+		return
+	}
+	var params struct {
+		ThreadID             string          `json:"threadId"`
+		CanAcceptDirectInput *bool           `json:"canAcceptDirectInput"`
+		ClaudeOwner          json.RawMessage `json:"claudeOwner"`
+	}
+	if json.Unmarshal(frame.Params, &params) != nil {
+		return
+	}
+	threadID := strings.TrimSpace(params.ThreadID)
+	if threadID == "" || params.CanAcceptDirectInput == nil {
+		return
+	}
+	hasOwner := false
+	trimmedOwner := bytes.TrimSpace(params.ClaudeOwner)
+	if len(trimmedOwner) > 0 && !bytes.Equal(trimmedOwner, []byte("null")) {
+		hasOwner = true
+	}
+	// 有活跃 claudeOwner 时不得按 true 放行。
+	allowDirect := *params.CanAcceptDirectInput && !hasOwner
+	now := p.now()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.router == nil {
+		existing, ok := p.allowedThreads[threadID]
+		if !ok || existing.pushSeededOnly {
+			return
+		}
+		incoming := existing
+		if allowDirect {
+			incoming.rawDirectInput = rawDirectInputAllow
+		} else {
+			incoming.rawDirectInput = rawDirectInputDeny
+		}
+		merged := mergeGatewayAllowedThreadWithVersion(existing, true, incoming, nil)
+		merged.lastSeen = now
+		p.allowedThreads[threadID] = merged
+		return
+	}
+	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+	if runtimeID == "" {
+		runtimeID = "codex"
+	}
+	key := gatewayThreadCacheKey(runtimeID, threadID)
+	p.router.gatewayThreadsMu.Lock()
+	defer p.router.gatewayThreadsMu.Unlock()
+	p.syncRestrictionEvictionEpochLocked(now)
+	connOld, hasConn := p.allowedThreads[threadID]
+	globalOld, hasMain, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
+	if !hasConn && !hasMain {
+		return
+	}
+	historical, ok := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal)
+	if !ok || historical.pushSeededOnly {
+		return
+	}
+	if hasConn && !hasMain {
+		historical.id = connOld.id
+		historical.runtimeID = connOld.runtimeID
+		historical.cwd = connOld.cwd
+		historical.scopeID = connOld.scopeID
+		historical.pushSeededOnly = connOld.pushSeededOnly
+		historical.autoTitleEligible = connOld.autoTitleEligible
+	}
+	if historical.pushSeededOnly {
+		return
+	}
+	incoming := historical
+	if allowDirect {
+		incoming.rawDirectInput = rawDirectInputAllow
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = !historical.readOnly
+	} else {
+		incoming.rawDirectInput = rawDirectInputDeny
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = false
+	}
+	allocVer := func() uint64 {
+		p.router.nextGatewayThreadDirectInputVersion++
+		return p.router.nextGatewayThreadDirectInputVersion
+	}
+	merged := mergeGatewayAllowedThreadWithVersion(historical, true, incoming, allocVer)
+	merged.lastSeen = now
+	p.allowedThreads[threadID] = merged
+
+	globalCopy := merged
+	globalCopy.autoTitleEligible = false
+	if p.router.gatewayThreads == nil {
+		p.router.gatewayThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	p.router.gatewayThreads[key] = globalCopy
+	p.router.recordGatewayThreadRestrictionLocked(key, globalCopy, now)
+	p.router.gatewayThreadsMutationEpoch++
+	p.router.pruneGatewayThreadsLocked(now)
 }
 
 // applyFinalThreadPermissions 统一将阶段 B 收敛后的最终权限写回 Global 或 Scoped 响应条目。

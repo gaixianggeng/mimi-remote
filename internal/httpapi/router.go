@@ -102,10 +102,10 @@ type Router struct {
 	agyRuntimeQuotaCheckedAt time.Time
 	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
 	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
-	accountTokenUsageMu       sync.RWMutex
-	accountTokenUsageResult   json.RawMessage
-	accountTokenUsageCachedAt time.Time
-	accountTokenUsageCacheTTL time.Duration
+	accountTokenUsageMu                 sync.RWMutex
+	accountTokenUsageResult             json.RawMessage
+	accountTokenUsageCachedAt           time.Time
+	accountTokenUsageCacheTTL           time.Duration
 	gatewayThreadsMu                    sync.Mutex
 	gatewayThreads                      map[string]appServerGatewayAllowedThread
 	gatewayThreadsMutationEpoch         uint64
@@ -113,15 +113,15 @@ type Router struct {
 	gatewayThreadRestrictions           map[string]gatewayThreadRestrictionFloor
 	gatewayRestrictionEvictionEpoch     uint64
 	gatewayGitOwnership                 gatewayGitOwnershipCache
-	mimiTaskClaimsMu          sync.Mutex
-	mimiTaskClaims            map[string]mimiTaskDynamicClaim
-	codexGatewayMu            sync.Mutex
-	codexGatewayClosing       bool
-	codexGatewayNextID        uint64
-	codexGateways             map[uint64]*codexGatewayConnection
-	codexGatewayWG            sync.WaitGroup
-	appServerSSH              AppServerTransport
-	sharedLocalSocketSafety   func() error
+	mimiTaskClaimsMu                    sync.Mutex
+	mimiTaskClaims                      map[string]mimiTaskDynamicClaim
+	codexGatewayMu                      sync.Mutex
+	codexGatewayClosing                 bool
+	codexGatewayNextID                  uint64
+	codexGateways                       map[uint64]*codexGatewayConnection
+	codexGatewayWG                      sync.WaitGroup
+	appServerSSH                        AppServerTransport
+	sharedLocalSocketSafety             func() error
 	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
 	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
 	// 全部消失，上游请求继续 fail closed。
@@ -162,21 +162,25 @@ type Router struct {
 	managedPairing    managedPairingService
 	tailcatLocalToken string
 	// 覆盖一次远程升级的完整流程，防止本机控制或自建 claim 在确认检查后插队。
-	tailcatControlMu              sync.Mutex
-	tailcatActivation             tailcatActivationStore
+	tailcatControlMu                     sync.Mutex
+	tailcatActivation                    tailcatActivationStore
 	managedWorktreesMu                   sync.Mutex
 	managedWorktrees                     map[string]managedWorktree
 	managedWorktreeColdCache             map[string]managedWorktree
 	managedWorktreePendingRegistryDelete map[string]pendingRegistryDeleteEntry
+	managedWorktreeDeleting              map[string]int
 	managedWorktreeRecentDeletions       []deletedManagedWorktreeRecord
 	managedWorktreeDeletionFloorEpoch    uint64
 	managedWorktreeNextGen               uint64
 	managedWorktreeLifecycleEpoch        atomic.Uint64
-	managedWorktreeCleanupMu             sync.Mutex
-	managedWorktreeCleanupPlans          map[string]worktreeCleanupPlan
-	managedWorktreeCleanupDelete         managedWorktreeCleanupDeleteFunc
-	managedWorktreePendingUses           map[string]int
-	managedWorktreeRegistryRemove        func(string) error
+	// managedWorktreeCommitMu 仅保护纯内存生命周期提交边界（微秒级，绝不跨 Git/磁盘 I/O 持有），
+	// 与串行慢速批量清理的 managedWorktreeCleanupMu 分离，避免无关会话列表被慢速清理阻塞。
+	managedWorktreeCommitMu       sync.Mutex
+	managedWorktreeCleanupMu      sync.Mutex
+	managedWorktreeCleanupPlans   map[string]worktreeCleanupPlan
+	managedWorktreeCleanupDelete  managedWorktreeCleanupDeleteFunc
+	managedWorktreePendingUses    map[string]int
+	managedWorktreeRegistryRemove func(string) error
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob

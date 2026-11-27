@@ -620,6 +620,41 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 		workspaceObjID = worktree.WorkspaceObjectID
 	}
 
+	// 在真正调用慢速 git worktree remove 之前，先在短持的 managedWorktreeCommitMu 下
+	// 复查运行态会话并登记 deleting 屏障，随即释放 commit 锁，既阻断针对本 checkout 的并发授权，
+	// 又绝不阻塞无关工作区的 thread/list。
+	r.managedWorktreeCommitMu.Lock()
+	if !force && r.managedWorktreeHasRunningSessionForCheckout(worktree, checkoutRoot) {
+		r.managedWorktreeCommitMu.Unlock()
+		return managedWorktree{}, fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+	}
+	r.managedWorktreesMu.Lock()
+	if r.managedWorktreeDeleting == nil {
+		r.managedWorktreeDeleting = map[string]int{}
+	}
+	r.managedWorktreeDeleting[filepath.Clean(checkoutRoot)]++
+	if filepath.Clean(worktree.Path) != filepath.Clean(checkoutRoot) {
+		r.managedWorktreeDeleting[filepath.Clean(worktree.Path)]++
+	}
+	r.managedWorktreeLifecycleEpoch.Add(1)
+	r.managedWorktreesMu.Unlock()
+	r.managedWorktreeCommitMu.Unlock()
+
+	defer func() {
+		r.managedWorktreesMu.Lock()
+		for _, k := range []string{filepath.Clean(checkoutRoot), filepath.Clean(worktree.Path)} {
+			if n := r.managedWorktreeDeleting[k]; n <= 1 {
+				delete(r.managedWorktreeDeleting, k)
+			} else {
+				r.managedWorktreeDeleting[k] = n - 1
+			}
+			if filepath.Clean(worktree.Path) == filepath.Clean(checkoutRoot) {
+				break
+			}
+		}
+		r.managedWorktreesMu.Unlock()
+	}()
+
 	args := []string{"worktree", "remove", checkoutRoot}
 	if _, _, err := runGitCommand(ctx, commandDir, 32*1024, args...); err != nil {
 		return managedWorktree{}, err
@@ -648,14 +683,14 @@ func (r *Router) registerManagedWorktree(worktree managedWorktree) error {
 	// 只有 registry 已经原子落盘后才能开放到内存 allowlist；否则 API 虽然
 	// 返回失败，当前进程却仍会把一个无法跨重启恢复的 checkout 当成已管理。
 	worktree.LastUsedPersistedAt = worktree.LastUsedAt
-	r.managedWorktreeNextGen++
-	worktree.InstanceGen = r.managedWorktreeNextGen
 	if checkoutRoot, ok := storedManagedWorktreeCheckoutPath(worktree); ok {
 		worktree.CheckoutObjectID, _ = filesystemObjectIdentity(checkoutRoot)
 	}
 	worktree.WorkspaceObjectID, _ = filesystemObjectIdentity(worktree.Path)
 
 	r.managedWorktreesMu.Lock()
+	r.managedWorktreeNextGen++
+	worktree.InstanceGen = r.managedWorktreeNextGen
 	if r.managedWorktrees == nil {
 		r.managedWorktrees = map[string]managedWorktree{}
 	}

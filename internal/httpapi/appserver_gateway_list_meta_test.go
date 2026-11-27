@@ -114,6 +114,11 @@ func TestSanitizeThreadListMetaMatrix(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "rejects_null_complete_even_with_valid_degraded_fields",
+			raw:     `{"schemaVersion":1,"complete":null,"degradedReason":"other_timeout","degradedSources":["other"]}`,
+			wantErr: true,
+		},
+		{
 			name:    "rejects_complete_true_with_degradedReason",
 			raw:     `{"schemaVersion":1,"complete":true,"degradedReason":"db_locked"}`,
 			wantErr: true,
@@ -710,5 +715,50 @@ func TestGlobalThreadListContinuationZeroBillingAnd512Cap(t *testing.T) {
 	policy.mu.Unlock()
 	if afterDupCount != afterContCount+1 {
 		t.Fatalf("duplicate cursor must bill request count: afterCont=%d afterDup=%d", afterContCount, afterDupCount)
+	}
+
+	// Fill historyContinuations to its 512 cap and verify the next issued cursor receives NO billing exemption!
+	policy.mu.Lock()
+	if policy.historyContinuations == nil {
+		policy.historyContinuations = map[string]time.Time{}
+	}
+	future := time.Now().Add(time.Minute)
+	for i := len(policy.historyContinuations); i < appServerGatewayHistoryContinuationMax; i++ {
+		policy.historyContinuations[fmt.Sprintf("cap-filler-%d", i)] = future
+	}
+	// Reset request budget window counter so the next two requests don't trip max-requests limit.
+	b := policy.historyBudgets[key]
+	b.requests = 0
+	policy.historyBudgets[key] = b
+	policy.mu.Unlock()
+
+	req4 := []byte(`{"id":4,"method":"thread/list","params":{"limit":20}}`)
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, req4); policyErr != nil {
+		t.Fatalf("req4 failed: %+v", policyErr)
+	}
+	resp4 := []byte(fmt.Sprintf(`{"id":4,"result":{"data":[{"id":"t-4","cwd":%q}],"nextCursor":"up-over-512"}}`, projectDir))
+	out4, forward4, err4 := policy.observeUpstreamFrame(websocket.TextMessage, resp4)
+	if !forward4 || err4 != nil {
+		t.Fatalf("resp4 failed: forward=%v err=%+v", forward4, err4)
+	}
+	var p4 struct {
+		Result struct {
+			NextCursor string `json:"nextCursor"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(out4, &p4)
+	policy.mu.Lock()
+	beforeCapReqCount := policy.historyBudgets[key].requests
+	policy.mu.Unlock()
+
+	req5 := []byte(fmt.Sprintf(`{"id":5,"method":"thread/list","params":{"limit":20,"cursor":%q}}`, p4.Result.NextCursor))
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, req5); policyErr != nil {
+		t.Fatalf("req5 over 512 cap failed: %+v", policyErr)
+	}
+	policy.mu.Lock()
+	afterCapReqCount := policy.historyBudgets[key].requests
+	policy.mu.Unlock()
+	if afterCapReqCount != beforeCapReqCount+1 {
+		t.Fatalf("cursor issued when continuation table is full (512) must NOT be exempt: before=%d after=%d", beforeCapReqCount, afterCapReqCount)
 	}
 }

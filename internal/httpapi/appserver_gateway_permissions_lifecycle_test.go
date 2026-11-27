@@ -3,9 +3,11 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +34,14 @@ func TestExactPathWithinCaseSensitivityAndUNC(t *testing.T) {
 	if exactPathWithin("/tmp/foo", "/tmp/foobar") {
 		t.Fatal("prefix sibling must NOT match")
 	}
+	if runtime.GOOS != "windows" {
+		if exactPathWithin(`/tmp/a\b`, `/tmp/a/b`) {
+			t.Fatal("POSIX literal backslash must NOT be treated as path separator")
+		}
+		if !exactPathWithin(`/tmp/a\b`, `/tmp/a\b/child`) {
+			t.Fatal("POSIX literal backslash child must match")
+		}
+	}
 	if exactPathWithin(`\\HOST\share`, `\\host\share\sub`) {
 		t.Fatal("UNC host case mismatch must NOT match")
 	}
@@ -41,10 +51,10 @@ func TestExactPathWithinCaseSensitivityAndUNC(t *testing.T) {
 }
 
 func TestWorktreeRegistryDeleteFailureImmediatelyRevokesAuthAndFilesReadOnly(t *testing.T) {
-	stateRoot := t.TempDir()
-	t.Setenv("MIMI_REMOTE_STATE_DIR", stateRoot)
+	worktreesRoot := t.TempDir()
 	repoDir := t.TempDir()
 	checkoutDir := filepath.Join(t.TempDir(), "wt-checkout")
+	siblingCaseDir := filepath.Join(filepath.Dir(checkoutDir), "WT-checkout")
 	subDir := filepath.Join(checkoutDir, "pkg")
 	if err := os.MkdirAll(subDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -58,10 +68,17 @@ func TestWorktreeRegistryDeleteFailureImmediatelyRevokesAuthAndFilesReadOnly(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	var failRegistryRemove atomic.Bool
 	router := &Router{
-		cfg:            config.Config{},
+		cfg:            config.Config{WorktreesRoot: worktreesRoot},
 		projects:       registry,
 		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		managedWorktreeRegistryRemove: func(file string) error {
+			if failRegistryRemove.Load() {
+				return errors.New("simulated registry unlink failure")
+			}
+			return os.Remove(file)
+		},
 	}
 
 	wt := managedWorktree{
@@ -86,23 +103,18 @@ func TestWorktreeRegistryDeleteFailureImmediatelyRevokesAuthAndFilesReadOnly(t *
 	if err := router.registerManagedWorktree(wtSubOnly); err != nil {
 		t.Fatal(err)
 	}
-	// Make registry directory unwritable so registryRemove fails.
 	regFile, err := router.managedWorktreeRegistryFile(realCheckout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	regDir := filepath.Dir(regFile)
-	if err := os.Chmod(regDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(regDir, 0o700) })
 
-	// Unregister realCheckout while registry file deletion fails.
+	// Unregister realCheckout while registry file deletion fails via test hook (sandbox-safe!).
+	failRegistryRemove.Store(true)
 	router.managedWorktreeCleanupMu.Lock()
 	removeErr := router.unregisterManagedWorktreeLocked(wt, realCheckout, "", "")
 	router.managedWorktreeCleanupMu.Unlock()
 	if removeErr == nil {
-		t.Fatal("expected registry removal error when registry dir is read-only")
+		t.Fatal("expected simulated registry removal error")
 	}
 
 	// Immediately revoked across exact path, subdir, generic scope, disk fallback, and Stage A!
@@ -124,11 +136,13 @@ func TestWorktreeRegistryDeleteFailureImmediatelyRevokesAuthAndFilesReadOnly(t *
 	if router.hasManagedWorktreeForLexicalPath(realCheckout) {
 		t.Fatal("files.go lexical check must treat revoked checkout as unauthorized")
 	}
-
-	// Restore permissions and verify pruneMissingManagedWorktrees cleans pending registry delete.
-	if err := os.Chmod(regDir, 0o700); err != nil {
-		t.Fatal(err)
+	// Case-exact revocation must NOT revoke distinct case-sensitive sibling!
+	if router.isManagedWorktreeRevokedPath(siblingCaseDir) {
+		t.Fatalf("case-exact revocation must NOT revoke distinct case sibling %s", siblingCaseDir)
 	}
+
+	// Allow removal and verify pruneMissingManagedWorktrees cleans pending registry delete.
+	failRegistryRemove.Store(false)
 	router.pruneMissingManagedWorktrees()
 	if _, statErr := os.Stat(regFile); !os.IsNotExist(statErr) {
 		t.Fatalf("expected pending registry file %s to be cleaned up, statErr=%v", regFile, statErr)
@@ -136,8 +150,7 @@ func TestWorktreeRegistryDeleteFailureImmediatelyRevokesAuthAndFilesReadOnly(t *
 }
 
 func TestLegacyWorktreeWithoutCheckoutPathBlocksDeleteEvenWhenMigrationWriteFails(t *testing.T) {
-	stateRoot := t.TempDir()
-	t.Setenv("MIMI_REMOTE_STATE_DIR", stateRoot)
+	worktreesRoot := t.TempDir()
 	repoDir := t.TempDir()
 	checkoutDir := filepath.Join(t.TempDir(), "legacy-wt")
 	subDir := filepath.Join(checkoutDir, "sub")
@@ -154,7 +167,7 @@ func TestLegacyWorktreeWithoutCheckoutPathBlocksDeleteEvenWhenMigrationWriteFail
 		t.Fatal(err)
 	}
 	router := &Router{
-		cfg:            config.Config{},
+		cfg:            config.Config{WorktreesRoot: worktreesRoot},
 		projects:       registry,
 		gatewayThreads: map[string]appServerGatewayAllowedThread{},
 	}
@@ -178,14 +191,14 @@ func TestLegacyWorktreeWithoutCheckoutPathBlocksDeleteEvenWhenMigrationWriteFail
 		t.Fatal(err)
 	}
 
-	// Verify Stage A reads legacy record WITHOUT writing to disk (make regDir read-only first!).
+	// Verify Stage A reads legacy record WITHOUT writing to disk (make isolated temp regDir read-only!).
 	regDir := filepath.Dir(regFile)
 	if err := os.Chmod(regDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(regDir, 0o700) })
 
-	// 1) files.go lexical check must NOT attempt migration write and must return true for realSub, false for sibling.
+	// 1) files.go lexical check must NOT attempt migration write and must return true for realSub.
 	if !router.hasManagedWorktreeForLexicalPath(realSub) {
 		t.Fatal("legacy worktree must be visible to read-only lexical check")
 	}
@@ -219,8 +232,7 @@ func TestLegacyWorktreeWithoutCheckoutPathBlocksDeleteEvenWhenMigrationWriteFail
 }
 
 func TestStageAMidProbeDeletionTriggersBoundedReprobeAndPreservesSibling(t *testing.T) {
-	stateRoot := t.TempDir()
-	t.Setenv("MIMI_REMOTE_STATE_DIR", stateRoot)
+	worktreesRoot := t.TempDir()
 	repoDir := t.TempDir()
 	registry, err := projects.NewRegistry([]config.ProjectConfig{
 		{ID: "repo", Name: "Repo", Path: repoDir},
@@ -229,7 +241,7 @@ func TestStageAMidProbeDeletionTriggersBoundedReprobeAndPreservesSibling(t *test
 		t.Fatal(err)
 	}
 	router := &Router{
-		cfg:            config.Config{},
+		cfg:            config.Config{WorktreesRoot: worktreesRoot},
 		projects:       registry,
 		gatewayThreads: map[string]appServerGatewayAllowedThread{},
 	}
@@ -515,6 +527,26 @@ func TestRestrictionFloorEvictionEpochAndPushSeededOnlyGuards(t *testing.T) {
 		t.Fatalf("pushSeededOnly must not endorse conn write cache after eviction epoch: %+v", got)
 	}
 
+	// Verify neither thread/list nor thread/resume clears pushSeededOnly!
+	listID := json.RawMessage(`911`)
+	_ = policy.rememberPendingThreadRequest(&listID, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	listResp := []byte(fmt.Sprintf(`{"id":911,"result":{"data":[{"id":"t-push","cwd":%q}],"nextCursor":null}}`, projectDir))
+	if _, forward, err := policy.observeUpstreamFrame(websocket.TextMessage, listResp); !forward || err != nil {
+		t.Fatalf("list on pushSeededOnly failed: forward=%v err=%+v", forward, err)
+	}
+	if got, ok := policy.allowedThread("t-push"); !ok || !got.pushSeededOnly {
+		t.Fatalf("thread/list must NOT clear pushSeededOnly: ok=%v %+v", ok, got)
+	}
+	resumeID := json.RawMessage(`912`)
+	_ = policy.rememberPendingThreadRequest(&resumeID, appServerGatewayPendingThreadRequest{method: "thread/resume", threadID: "t-push", cwd: projectDir, scopeID: "demo"})
+	resumeResp := []byte(fmt.Sprintf(`{"id":912,"result":{"thread":{"id":"t-push","cwd":%q,"canAcceptDirectInput":true}}}`, projectDir))
+	if _, forward, err := policy.observeUpstreamFrame(websocket.TextMessage, resumeResp); !forward || err != nil {
+		t.Fatalf("resume on pushSeededOnly failed: forward=%v err=%+v", forward, err)
+	}
+	if got, ok := policy.allowedThread("t-push"); !ok || !got.pushSeededOnly {
+		t.Fatalf("thread/resume must NOT clear pushSeededOnly: ok=%v %+v", ok, got)
+	}
+
 	// thread/read recovers t-push cleanly once upstream confirms writable!
 	readID := json.RawMessage(`92`)
 	_ = policy.rememberPendingThreadRequest(&readID, appServerGatewayPendingThreadRequest{method: "thread/read", threadID: "t-push"})
@@ -579,5 +611,188 @@ func TestStageBPermissionBaselineDriftRetriesAndExhaustionDrops(t *testing.T) {
 	_, forward2, err2 := policy2.observeUpstreamFrame(websocket.TextMessage, resp2)
 	if forward2 || err2 != nil {
 		t.Fatalf("exhausting 4 Stage B permission retries must silently drop: forward=%v err=%+v", forward2, err2)
+	}
+}
+
+func TestOwnershipReleaseNotificationFreshListAndEvictedFloorAllow(t *testing.T) {
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "demo", Name: "Demo", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) Claude desktop owner exits -> thread/status/changed notification re-enables sending on existing connection,
+	//    AND fresh thread/list with explicit canAcceptDirectInput=true also re-enables sending (preserving structural readOnly!).
+	router := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policy := newAppServerGatewayPolicy(router, "claude")
+
+	id1 := json.RawMessage(`201`)
+	_ = policy.rememberPendingThreadRequest(&id1, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	heldResp := []byte(fmt.Sprintf(`{"id":201,"result":{"data":[{"id":"t-held-notif","cwd":%q,"canAcceptDirectInput":false,"claudeOwner":{"pid":11}},{"id":"t-held-list","cwd":%q,"canAcceptDirectInput":false,"claudeOwner":{"pid":22}},{"id":"t-sub-ro","parentThreadId":"p-1","cwd":%q,"canAcceptDirectInput":false,"claudeOwner":{"pid":33}}],"nextCursor":null}}`, projectDir, projectDir, projectDir))
+	if _, forward, pErr := policy.observeUpstreamFrame(websocket.TextMessage, heldResp); !forward || pErr != nil {
+		t.Fatalf("held list failed: forward=%v err=%+v", forward, pErr)
+	}
+
+	// Owner release notification for t-held-notif & t-sub-ro.
+	releaseNotif := []byte(`{"method":"thread/status/changed","params":{"threadId":"t-held-notif","status":{"type":"idle"},"canAcceptDirectInput":true,"claudeOwner":null}}`)
+	if _, forward, pErr := policy.observeUpstreamFrame(websocket.TextMessage, releaseNotif); !forward || pErr != nil {
+		t.Fatalf("release notif failed: forward=%v err=%+v", forward, pErr)
+	}
+	releaseSubNotif := []byte(`{"method":"thread/status/changed","params":{"threadId":"t-sub-ro","status":{"type":"idle"},"canAcceptDirectInput":true,"claudeOwner":null}}`)
+	if _, forward, pErr := policy.observeUpstreamFrame(websocket.TextMessage, releaseSubNotif); !forward || pErr != nil {
+		t.Fatalf("release sub notif failed: forward=%v err=%+v", forward, pErr)
+	}
+	if st, ok := policy.allowedThread("t-held-notif"); !ok || st.explicitDirectInputDenied || !st.canAcceptDirectInput {
+		t.Fatalf("t-held-notif should be writable after owner release notification: ok=%v %+v", ok, st)
+	}
+	if st, ok := policy.allowedThread("t-sub-ro"); !ok || !st.readOnly || st.canAcceptDirectInput {
+		t.Fatalf("structural readOnly subagent must stay readOnly even after owner release: ok=%v %+v", ok, st)
+	}
+
+	// Fresh thread/list explicitly reporting canAcceptDirectInput=true for t-held-list (no claudeOwner).
+	id2 := json.RawMessage(`202`)
+	_ = policy.rememberPendingThreadRequest(&id2, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	freshResp := []byte(fmt.Sprintf(`{"id":202,"result":{"data":[{"id":"t-held-list","cwd":%q,"canAcceptDirectInput":true}],"nextCursor":null}}`, projectDir))
+	if _, forward, pErr := policy.observeUpstreamFrame(websocket.TextMessage, freshResp); !forward || pErr != nil {
+		t.Fatalf("fresh list failed: forward=%v err=%+v", forward, pErr)
+	}
+	if st, ok := policy.allowedThread("t-held-list"); !ok || st.explicitDirectInputDenied || !st.canAcceptDirectInput {
+		t.Fatalf("t-held-list should become writable after fresh explicit allow list: ok=%v %+v", ok, st)
+	}
+
+	// 2) Evicted main cache entry with newer explicit allow in restriction floor:
+	//    connA has deny v1, connB writes allow v2, main entry evicted -> connA MUST see allow v2 (NOT unknown false)!
+	router2 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	connA := newAppServerGatewayPolicy(router2, "claude")
+	connB := newAppServerGatewayPolicy(router2, "claude")
+	connA.allowThread(appServerGatewayAllowedThread{
+		id: "t-floor-allow", runtimeID: "claude", cwd: projectDir, scopeID: "demo",
+		directInputKnown: true, canAcceptDirectInput: false, rawDirectInput: rawDirectInputDeny,
+	})
+	connB.allowThread(appServerGatewayAllowedThread{
+		id: "t-floor-allow", runtimeID: "claude", cwd: projectDir, scopeID: "demo",
+		directInputKnown: true, canAcceptDirectInput: true, rawDirectInput: rawDirectInputAllow,
+	})
+	// Evict main gatewayThreads entry while keeping gatewayThreadRestrictions floor!
+	router2.gatewayThreadsMu.Lock()
+	delete(router2.gatewayThreads, gatewayThreadCacheKey("claude", "t-floor-allow"))
+	router2.gatewayThreadsMu.Unlock()
+
+	if st, ok := connA.allowedThread("t-floor-allow"); !ok || st.explicitDirectInputDenied || !st.directInputKnown || !st.canAcceptDirectInput {
+		t.Fatalf("connA must see newer affirmative allow from restriction floor after main cache eviction: ok=%v %+v", ok, st)
+	}
+	// An omitted list row on connA must preserve allow v2 (not revert to denied at v2)!
+	id3 := json.RawMessage(`203`)
+	_ = connA.rememberPendingThreadRequest(&id3, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	omittedResp := []byte(fmt.Sprintf(`{"id":203,"result":{"data":[{"id":"t-floor-allow","cwd":%q}],"nextCursor":null}}`, projectDir))
+	if _, forward, pErr := connA.observeUpstreamFrame(websocket.TextMessage, omittedResp); !forward || pErr != nil {
+		t.Fatalf("omitted list failed: forward=%v err=%+v", forward, pErr)
+	}
+	if st, ok := connA.allowedThread("t-floor-allow"); !ok || st.explicitDirectInputDenied || !st.canAcceptDirectInput {
+		t.Fatalf("omitted list row after main cache eviction must preserve newer allow v2: ok=%v %+v", ok, st)
+	}
+}
+
+func TestThreadListDoesNotBlockOnBatchCleanupMutexAndFollowsRetargetedProjectSymlink(t *testing.T) {
+	// 1) Holding managedWorktreeCleanupMu (simulating slow batch Git cleanup) MUST NOT block unrelated thread/list!
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "demo", Name: "Demo", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		cfg:            config.Config{WorktreesRoot: t.TempDir()},
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := newAppServerGatewayPolicy(router, "codex")
+	id := json.RawMessage(`301`)
+	_ = policy.rememberPendingThreadRequest(&id, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+
+	router.managedWorktreeCleanupMu.Lock()
+	done := make(chan bool, 1)
+	go func() {
+		resp := []byte(fmt.Sprintf(`{"id":301,"result":{"data":[{"id":"t-unblocked","cwd":%q}],"nextCursor":null}}`, projectDir))
+		_, forward, pErr := policy.observeUpstreamFrame(websocket.TextMessage, resp)
+		done <- (forward && pErr == nil)
+	}()
+	select {
+	case ok := <-done:
+		router.managedWorktreeCleanupMu.Unlock()
+		if !ok {
+			t.Fatal("unrelated thread/list should succeed while cleanup mutex is held")
+		}
+	case <-time.After(1 * time.Second):
+		router.managedWorktreeCleanupMu.Unlock()
+		t.Fatal("unrelated thread/list blocked on managedWorktreeCleanupMu!")
+	}
+
+	// 2) Retargeting a configured project symlink updates Global discovery attribution from repoV1 to repoV2!
+	if runtime.GOOS == "windows" {
+		return
+	}
+	relaxGlobalListGitWait(t)
+	base := t.TempDir()
+	repoV1 := filepath.Join(base, "repo-v1")
+	repoV2 := filepath.Join(base, "repo-v2")
+	browseRoot := filepath.Join(base, "browse")
+	if err := os.MkdirAll(repoV1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repoV2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(browseRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{repoV1, repoV2} {
+		runGitTestCommand(t, repo, "init")
+		runGitTestCommand(t, repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "init")
+	}
+	wtV1 := filepath.Join(browseRoot, "wt-v1")
+	wtV2 := filepath.Join(browseRoot, "wt-v2")
+	runGitTestCommand(t, repoV1, "worktree", "add", "--detach", wtV1)
+	runGitTestCommand(t, repoV2, "worktree", "add", "--detach", wtV2)
+
+	projLink := filepath.Join(base, "proj-link")
+	if err := os.Symlink(repoV1, projLink); err != nil {
+		t.Fatal(err)
+	}
+	regSym, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "sym-proj", Name: "SymProj", Path: projLink},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retarget symlink to repoV2 AFTER startup!
+	if err := os.Remove(projLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repoV2, projLink); err != nil {
+		t.Fatal(err)
+	}
+
+	routerSym := &Router{
+		cfg:            config.Config{BrowseRoots: []string{browseRoot}, WorktreesRoot: t.TempDir()},
+		projects:       regSym,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policySym := newAppServerGatewayPolicy(routerSym, "codex")
+	idSym := json.RawMessage(`302`)
+	_ = policySym.rememberPendingThreadRequest(&idSym, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	respSym := []byte(fmt.Sprintf(`{"id":302,"result":{"data":[{"id":"t-wt-v1","cwd":%q},{"id":"t-wt-v2","cwd":%q}],"nextCursor":null}}`, wtV1, wtV2))
+	outSym, forwardSym, errSym := policySym.observeUpstreamFrame(websocket.TextMessage, respSym)
+	if !forwardSym || errSym != nil {
+		t.Fatalf("symlink retarget list failed: forward=%v err=%+v", forwardSym, errSym)
+	}
+	if bytes.Contains(outSym, []byte("t-wt-v1")) {
+		t.Fatalf("worktree of old symlink target repoV1 must NOT be attributed after retarget: %s", outSym)
+	}
+	if !bytes.Contains(outSym, []byte("t-wt-v2")) {
+		t.Fatalf("worktree of new symlink target repoV2 MUST be attributed after retarget: %s", outSym)
 	}
 }

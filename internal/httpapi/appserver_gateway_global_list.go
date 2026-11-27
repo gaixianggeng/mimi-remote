@@ -314,7 +314,8 @@ func (p *appServerGatewayPolicy) resolveGlobalListBrowseProjects(ctx context.Con
 func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) (map[string]projects.Project, bool) {
 	grouped := map[string][]projects.Project{}
 	out := map[string]projects.Project{}
-	registered := p.router.projects.ListCached()
+	// 阶段 A 锁外解析 Git 归属时刷新已登记项目的规范路径，避免配置符号链接改指后仍归属到旧仓库。
+	registered := p.router.projects.List()
 	paths := make([]string, 0, len(registered))
 	for _, project := range registered {
 		paths = append(paths, project.RealPath)

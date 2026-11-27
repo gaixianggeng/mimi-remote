@@ -463,12 +463,19 @@ func TestStageBTTLAbortCancelsMediaReservationWithZeroWrites(t *testing.T) {
 	now := time.Date(2026, 11, 27, 13, 0, 0, 0, time.UTC)
 	policy.nowFunc = func() time.Time { return now }
 
-	// Advance clock past TTL right before Stage B commit!
+	// Verify that a real reservation exists BEFORE Stage B commit and is cancelled on TTL expiry!
+	observedReservedBeforeCommit := 0
+	observedEntriesBeforeCommit := -1
 	policy.onStageBBeforeFinalCommitLock = func(int) {
+		router.historyMedia.mu.Lock()
+		observedReservedBeforeCommit = router.historyMedia.reservedEntries
+		observedEntriesBeforeCommit = len(router.historyMedia.entries)
+		router.historyMedia.mu.Unlock()
 		now = now.Add(appServerGatewayPendingThreadTTL + time.Second)
 	}
 
-	req := []byte(`{"id":1,"method":"thread/list","params":{"limit":20}}`)
+	// Use a SCOPED thread/list so turns/inline images are preserved and actually staged!
+	req := []byte(fmt.Sprintf(`{"id":1,"method":"thread/list","params":{"cwd":%q,"limit":20}}`, projectDir))
 	if _, pErr := policy.validateClientFrame(websocket.TextMessage, req); pErr != nil {
 		t.Fatal(pErr)
 	}
@@ -478,10 +485,14 @@ func TestStageBTTLAbortCancelsMediaReservationWithZeroWrites(t *testing.T) {
 	if forward || pErr != nil {
 		t.Fatalf("expired Stage B must silently drop: forward=%v err=%+v", forward, pErr)
 	}
+	if observedReservedBeforeCommit != 1 || observedEntriesBeforeCommit != 0 {
+		t.Fatalf("expected 1 staged reservation and 0 written entries before commit, got reserved=%d entries=%d", observedReservedBeforeCommit, observedEntriesBeforeCommit)
+	}
 	router.historyMedia.mu.Lock()
 	mediaCount := len(router.historyMedia.entries)
+	mediaReserved := router.historyMedia.reservedEntries
 	router.historyMedia.mu.Unlock()
-	if mediaCount != 0 {
-		t.Fatalf("aborted Stage B must cancel media reservation leaving 0 entries, got %d", mediaCount)
+	if mediaCount != 0 || mediaReserved != 0 {
+		t.Fatalf("aborted Stage B must cancel media reservation leaving 0 entries & 0 reserved, got entries=%d reserved=%d", mediaCount, mediaReserved)
 	}
 }

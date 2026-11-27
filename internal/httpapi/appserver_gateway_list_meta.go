@@ -164,8 +164,12 @@ func sanitizeThreadListMeta(raw json.RawMessage) (map[string]any, bool, error) {
 	if !hasComplete {
 		return nil, false, fmt.Errorf("thread/list listMeta 缺少 complete")
 	}
+	trimmedComplete := bytes.TrimSpace(rawComplete)
+	if !bytes.Equal(trimmedComplete, []byte("true")) && !bytes.Equal(trimmedComplete, []byte("false")) {
+		return nil, false, fmt.Errorf("thread/list listMeta.complete 必须是布尔值")
+	}
 	var complete bool
-	if err := json.Unmarshal(rawComplete, &complete); err != nil {
+	if err := json.Unmarshal(trimmedComplete, &complete); err != nil {
 		return nil, false, fmt.Errorf("thread/list listMeta.complete 必须是布尔值")
 	}
 

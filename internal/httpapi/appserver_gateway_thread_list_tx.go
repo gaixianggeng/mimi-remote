@@ -312,20 +312,22 @@ func (p *appServerGatewayPolicy) recheckOrCleanThreadListBindingLocked(
 }
 
 type threadListStageACandidate struct {
-	sourceIndex                     int
-	itemFields                      map[string]json.RawMessage
-	wire                            appServerGatewayThreadWire
-	threadID                        string
-	scope                           gatewayScope
-	managedDep                      *managedWorktreeDependency
-	ancestorObjectIDs               map[string]struct{}
-	underManagedRoot                bool
-	resolvedProjectID               string
-	syntheticAgyMissingBrowseProj   bool
-	syntheticProject                projects.Project
-	readOnlyBrowseScope             bool
-	relatedThreads                  []appServerGatewayAllowedThread
-	statusRaw                       json.RawMessage
+	sourceIndex                   int
+	itemFields                    map[string]json.RawMessage
+	wire                          appServerGatewayThreadWire
+	threadID                      string
+	scope                         gatewayScope
+	managedDep                    *managedWorktreeDependency
+	ancestorObjectIDs             map[string]struct{}
+	underManagedRoot              bool
+	resolvedProjectID             string
+	resolvedProject               projects.Project
+	hasStageAResolvedProject      bool
+	syntheticAgyMissingBrowseProj bool
+	syntheticProject              projects.Project
+	readOnlyBrowseScope           bool
+	relatedThreads                []appServerGatewayAllowedThread
+	statusRaw                     json.RawMessage
 }
 
 type threadListStageACandidates struct {
@@ -379,7 +381,8 @@ func (r *Router) gatewayReadOnlyScopeForThreadListStageA(
 		// 独立探测托管 checkout 生命周期依赖（仅用于收紧复验，绝不扩大正向授权）。
 		dep, _ = r.probeManagedWorktreeLifecycleDepStageA(cleanReal, ancestorObjIDs)
 
-		if project, found := r.projects.FindByCanonicalPathInMemory(cleanReal); found {
+		// 阶段 A 锁外按刷新后的已配置项目规范路径匹配（支持运行期符号链接改指，且不写共享 pathMatchCache）。
+		if project, found := findRefreshedConfiguredProjectForCanonicalPath(r.projects, cleanReal); found {
 			return gatewayScope{id: project.ID, realPath: cleanReal, project: project}, dep, ancestorObjIDs, underManagedRoot, true
 		}
 		if wt, found := r.probeManagedWorktreeForThreadListStageA(cleanReal); found {
@@ -671,6 +674,8 @@ func (p *appServerGatewayPolicy) prepareGlobalThreadListStageA(
 			ancestorObjectIDs:             entry.ancestorObjIDs,
 			underManagedRoot:              entry.underManagedRoot,
 			resolvedProjectID:             project.ID,
+			resolvedProject:               project,
+			hasStageAResolvedProject:      strings.TrimSpace(project.ID) != "",
 			syntheticAgyMissingBrowseProj: syntheticAgy,
 			syntheticProject:              project,
 			readOnlyBrowseScope:           entry.scope.browse,
@@ -793,18 +798,20 @@ func (p *appServerGatewayPolicy) prepareScopedThreadListStageA(
 			scope.id,
 		)
 		candidates = append(candidates, threadListStageACandidate{
-			sourceIndex:         idx,
-			itemFields:          itemFields,
-			wire:                wire,
-			threadID:            threadID,
-			scope:               scope,
-			managedDep:          dep,
-			ancestorObjectIDs:   ancestorObjIDs,
-			underManagedRoot:    underManagedRoot,
-			resolvedProjectID:   scope.project.ID,
-			readOnlyBrowseScope: readOnlyBrowseScope,
-			relatedThreads:      related,
-			statusRaw:           statusRaw,
+			sourceIndex:              idx,
+			itemFields:               itemFields,
+			wire:                     wire,
+			threadID:                 threadID,
+			scope:                    scope,
+			managedDep:               dep,
+			ancestorObjectIDs:        ancestorObjIDs,
+			underManagedRoot:         underManagedRoot,
+			resolvedProjectID:        scope.project.ID,
+			resolvedProject:          scope.project,
+			hasStageAResolvedProject: strings.TrimSpace(scope.project.ID) != "",
+			readOnlyBrowseScope:      readOnlyBrowseScope,
+			relatedThreads:           related,
+			statusRaw:                statusRaw,
 		})
 	}
 
@@ -902,75 +909,55 @@ type committedThreadListRow struct {
 	finalThread appServerGatewayAllowedThread
 }
 
-// finalizeThreadListSuccessStageB 执行严格遵守全包锁图（cleanupMu → p.mu → 单把叶锁）的阶段 B 提交。
+// finalizeThreadListSuccessStageB 执行严格遵守全包锁图（managedWorktreeCommitMu → p.mu → 单把叶锁）的阶段 B 提交：
+//   - 绝不获取串行慢速 Git/磁盘批量清理的 managedWorktreeCleanupMu，避免无关会话列表被慢速清理阻塞；
+//   - 在获取短持生命周期提交锁 managedWorktreeCommitMu 之前先完成响应构造与暂存模式媒体/输出预留；
+//   - 最终在 managedWorktreeCommitMu → p.mu → gatewayThreadsMu 短临界区内复验 worktree 生命周期、
+//     TTL、sink 与权限基线并原子提交。
 func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 	binding threadListRequestBinding,
 	stageA threadListStageACandidates,
 	stageAAttempt int,
 ) (decision upstreamFrameDecision, needStageAReprobe bool) {
-	// 1b-1：凡可提交阶段 B 恒取 r.managedWorktreeCleanupMu（锁序最顶层，纯内存微秒级）。
-	cleanupHeld := false
-	if p.router != nil {
-		p.router.managedWorktreeCleanupMu.Lock()
-		cleanupHeld = true
-	}
-	releaseOuter := func() {
-		if cleanupHeld {
-			p.router.managedWorktreeCleanupMu.Unlock()
-			cleanupHeld = false
-		}
-	}
-	defer releaseOuter()
-
-	p.mu.Lock()
-	muLocked := true
-	releaseMu := func() {
-		if muLocked {
-			p.mu.Unlock()
-			muLocked = false
-		}
-	}
-	defer releaseMu()
-
-	if !p.recheckOrCleanThreadListBindingLocked(binding, p.now(), cleanupHeld) {
-		return upstreamFrameDecision{}, false
-	}
-
-	// 1) 纯内存托管工作树与删除记录复验（仅短持 managedWorktreesMu，绝不与 gatewayThreadsMu 嵌套）。
-	lifecycleChanged := p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != stageA.worktreeLifecycleEpoch
-	if p.router != nil && !binding.pendingThread.globalDiscovery && !stageA.anchorInvalidated {
-		if stageA.anchorDep != nil {
-			if _, ok := p.router.verifyManagedWorktreeDepInMemoryLocked(*stageA.anchorDep); !ok {
-				stageA.anchorInvalidated = true
-			}
-		}
-		if !stageA.anchorInvalidated && stageA.anchorRealPath != "" {
-			matched, floorExceeded := p.router.matchesDeletedOrRevokedManagedWorktreeLocked(
-				stageA.anchorRealPath,
-				stageA.anchorAncestorObjIDs,
-				stageA.worktreeLifecycleEpoch,
-			)
-			if matched || floorExceeded {
-				stageA.anchorInvalidated = true
-			} else if lifecycleChanged && (len(stageA.anchorAncestorObjIDs) == 0 || stageA.anchorUnderManagedRoot) {
-				// 1b-1 (v21/v23)：代次已变且锚点身份不足或位于托管根未命中精确删除 → 释放锁并在锁外重取证。
-				releaseMu()
-				releaseOuter()
-				return upstreamFrameDecision{}, true
-			}
-		}
-	}
-
-	// 2) Pass 1a：纯内存作用域与项目复验 + 同页严格单调收敛（永不触发 pathRestored）。
 	type verifiedRow struct {
 		candidate   threadListStageACandidate
 		liveProject projects.Project
 	}
-	verifiedRows := make([]verifiedRow, 0, len(stageA.candidates))
-	pageMergedByID := make(map[string]appServerGatewayAllowedThread, len(stageA.candidates))
-	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
 
-	if !stageA.anchorInvalidated {
+	verifyStageBCandidates := func() (
+		verifiedRows []verifiedRow,
+		pageMergedByID map[string]appServerGatewayAllowedThread,
+		reprobe bool,
+		anchorInvalidated bool,
+	) {
+		anchorInvalidated = stageA.anchorInvalidated
+		lifecycleChanged := p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != stageA.worktreeLifecycleEpoch
+		if p.router != nil && !binding.pendingThread.globalDiscovery && !anchorInvalidated {
+			if stageA.anchorDep != nil {
+				if _, ok := p.router.verifyManagedWorktreeDepInMemoryLocked(*stageA.anchorDep); !ok {
+					anchorInvalidated = true
+				}
+			}
+			if !anchorInvalidated && stageA.anchorRealPath != "" {
+				matched, floorExceeded := p.router.matchesDeletedOrRevokedManagedWorktreeLocked(
+					stageA.anchorRealPath,
+					stageA.anchorAncestorObjIDs,
+					stageA.worktreeLifecycleEpoch,
+				)
+				if matched || floorExceeded {
+					anchorInvalidated = true
+				} else if lifecycleChanged && (len(stageA.anchorAncestorObjIDs) == 0 || stageA.anchorUnderManagedRoot) {
+					return nil, nil, true, anchorInvalidated
+				}
+			}
+		}
+
+		verifiedRows = make([]verifiedRow, 0, len(stageA.candidates))
+		pageMergedByID = make(map[string]appServerGatewayAllowedThread, len(stageA.candidates))
+		runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+		if anchorInvalidated {
+			return verifiedRows, pageMergedByID, false, anchorInvalidated
+		}
 		for _, cand := range stageA.candidates {
 			if p.router != nil {
 				if cand.managedDep != nil {
@@ -987,9 +974,7 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 					continue
 				}
 				if lifecycleChanged && (len(cand.ancestorObjectIDs) == 0 || cand.underManagedRoot) {
-					releaseMu()
-					releaseOuter()
-					return upstreamFrameDecision{}, true
+					return nil, nil, true, anchorInvalidated
 				}
 			}
 
@@ -1035,15 +1020,43 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 				liveProject: liveProject,
 			})
 		}
+		return verifiedRows, pageMergedByID, false, anchorInvalidated
 	}
 
-	// 3) 有界权限基线复验循环（最多 4 次）：消除读基线与最终提交之间跨连接权限漂移。
-	redactOnly := binding.pendingHistory != nil && binding.pendingHistory.redactOnly
-	for permAttempt := 0; permAttempt < 4; permAttempt++ {
-		// Step 3a：短持 gatewayThreadsMu 读取最新权限基线并记录 observedEpoch，立即释放。
-		observedEpoch, historicalBaseByID := p.snapshotHistoricalBaselinesLocked(pageMergedByID, runtimeID)
+	releasePendingManagedUseIfAny := func() {
+		if binding.pendingThread.managedWorktreePath != "" && p.router != nil {
+			p.router.releaseManagedWorktreePendingUse(binding.pendingThread.managedWorktreePath)
+		}
+	}
 
-		// Step 3b：不持有任何叶锁计算本页最终权限、构造响应、预备暂存媒体/输出并检查 cap。
+	// 1) 快速前置复验（不持 managedWorktreeCleanupMu 也不持 managedWorktreeCommitMu）。
+	p.mu.Lock()
+	if !p.recheckOrCleanThreadListBindingLocked(binding, p.now(), false) {
+		p.mu.Unlock()
+		return upstreamFrameDecision{}, false
+	}
+	verifiedRows, pageMergedByID, needReprobe, _ := verifyStageBCandidates()
+	if needReprobe {
+		p.mu.Unlock()
+		return upstreamFrameDecision{}, true
+	}
+	p.mu.Unlock()
+
+	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+	redactOnly := binding.pendingHistory != nil && binding.pendingHistory.redactOnly
+
+	// 2) 有界权限基线复验循环（最多 4 次）：先锁外构造与暂存，再短持 managedWorktreeCommitMu → p.mu → gatewayThreadsMu 原子提交。
+	for permAttempt := 0; permAttempt < 4; permAttempt++ {
+		// Step 2a：短持 p.mu → gatewayThreadsMu 读取最新权限基线与 observedEpoch，立即释放。
+		p.mu.Lock()
+		if !p.recheckOrCleanThreadListBindingLocked(binding, p.now(), false) {
+			p.mu.Unlock()
+			return upstreamFrameDecision{}, false
+		}
+		observedEpoch, historicalBaseByID := p.snapshotHistoricalBaselinesLocked(pageMergedByID, runtimeID)
+		p.mu.Unlock()
+
+		// Step 2b：在获取任何路由级 worktree 提交锁之前，无锁构造响应并完成媒体/输出暂存与硬上限检查。
 		finalThreadByID := make(map[string]appServerGatewayAllowedThread, len(pageMergedByID))
 		for id, pageMerged := range pageMergedByID {
 			if base, hasBase := historicalBaseByID[id]; hasBase {
@@ -1064,13 +1077,16 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 
 		rawForwardPayload, marshalErr := p.buildThreadListResponsePayload(binding, stageA, committed)
 		if marshalErr != nil {
-			return p.abortLockedWithPolicyError(binding, malformedThreadListPolicyError(binding.frameID, marshalErr.Error()), cleanupHeld), false
+			p.mu.Lock()
+			dec := p.abortLockedWithPolicyError(binding, malformedThreadListPolicyError(binding.frameID, marshalErr.Error()), false)
+			p.mu.Unlock()
+			releasePendingManagedUseIfAny()
+			return dec, false
 		}
 
-		// 暂存模式图片脱敏与大输出脱水（短持 historyMedia.mu / historyOutput.mu，零叶锁嵌套，零写入零淘汰）。
+		// 暂存模式图片脱敏与大输出脱水（零持有 managedWorktreeCommitMu / p.mu / gatewayThreadsMu）。
 		stagedPayload, mediaRes, outputRes := p.router.stageRedactAndDehydrateThreadListPayload(rawForwardPayload, redactOnly)
 
-		// 记录诊断指标（不扣预算）。
 		overHardCap := !redactOnly && appServerGatewayHistoryResponseCapBytes > 0 && len(stagedPayload) > appServerGatewayHistoryResponseCapBytes
 		if binding.pendingHistory != nil {
 			p.recordHistoryResponseMetrics(binding.pendingHistory.method, len(stagedPayload), overHardCap)
@@ -1079,24 +1095,44 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			mediaRes.cancel()
 			outputRes.cancel()
 			capErr := p.historyResponseTooLargeError(binding.frameID, *binding.pendingHistory, len(stagedPayload))
-			return p.abortLockedWithPolicyError(binding, capErr, cleanupHeld), false
+			p.mu.Lock()
+			dec := p.abortLockedWithPolicyError(binding, capErr, false)
+			p.mu.Unlock()
+			releasePendingManagedUseIfAny()
+			return dec, false
 		}
 
 		if p.onStageBBeforeFinalCommitLock != nil {
 			p.onStageBBeforeFinalCommitLock(permAttempt)
 		}
 
-		// Step 3c：唯一提交边界 — 获取 gatewayThreadsMu，取最终 now，复验 TTL、sink 与整份权限基线。
+		// Step 2c：唯一短持提交边界 — managedWorktreeCommitMu → p.mu → gatewayThreadsMu（全纯内存微秒级）。
+		if p.router != nil {
+			p.router.managedWorktreeCommitMu.Lock()
+		}
+		p.mu.Lock()
+
+		// 在 commit 锁下复验 worktree 生命周期是否变化；若在暂存期间发生删除/撤权/deleting，取消暂存并触发阶段 A 重探。
+		if p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != stageA.worktreeLifecycleEpoch {
+			reverifiedRows, _, commitNeedReprobe, _ := verifyStageBCandidates()
+			if commitNeedReprobe || len(reverifiedRows) != len(verifiedRows) {
+				p.mu.Unlock()
+				p.router.managedWorktreeCommitMu.Unlock()
+				mediaRes.cancel()
+				outputRes.cancel()
+				return upstreamFrameDecision{}, true
+			}
+		}
+
 		var finalNow time.Time
 		baselineDrifted := false
 		bindingDead := false
 		if p.router != nil {
 			p.router.gatewayThreadsMu.Lock()
 			finalNow = p.now()
-			if !p.recheckOrCleanThreadListBindingLocked(binding, finalNow, cleanupHeld) {
+			if !p.recheckOrCleanThreadListBindingLocked(binding, finalNow, false) {
 				bindingDead = true
 			} else if p.router.gatewayThreadsMutationEpoch != observedEpoch {
-				// 复验整份受影响 ID 的历史基线（含 readOnlyPermanent / explicitDirectInputVersion / pushSeededOnly）。
 				p.syncRestrictionEvictionEpochLocked(finalNow)
 				for id := range pageMergedByID {
 					currBase, hasCurr := p.readSingleHistoricalBaselineLocked(id, runtimeID, finalNow)
@@ -1109,21 +1145,22 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			}
 
 			if bindingDead || baselineDrifted {
-				// 严格先释放 gatewayThreadsMu，绝不持 gatewayThreadsMu 调用其他叶锁！
 				p.router.gatewayThreadsMu.Unlock()
+				if !bindingDead && permAttempt >= 3 {
+					delete(p.pendingThreads, binding.key)
+				}
+				p.mu.Unlock()
+				p.router.managedWorktreeCommitMu.Unlock()
 				mediaRes.cancel()
 				outputRes.cancel()
 				if bindingDead {
+					releasePendingManagedUseIfAny()
 					return upstreamFrameDecision{}, false
 				}
 				if permAttempt < 3 {
 					continue
 				}
-				// 4 次冲突耗尽：严格丢弃，绝不发出过时权限帧。
-				delete(p.pendingThreads, binding.key)
-				if binding.pendingThread.managedWorktreePath != "" {
-					p.router.releaseManagedWorktreePendingUseLocked(binding.pendingThread.managedWorktreePath)
-				}
+				releasePendingManagedUseIfAny()
 				return upstreamFrameDecision{}, false
 			}
 
@@ -1131,7 +1168,6 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 				p.onStageBAfterFinalLockBeforeWrite()
 			}
 
-			// 不可失败提交点：为含 rawDirectInputDeny 的线程分配新版本号并整页写入全局表与底板。
 			allocVer := func() uint64 {
 				p.router.nextGatewayThreadDirectInputVersion++
 				return p.router.nextGatewayThreadDirectInputVersion
@@ -1145,6 +1181,9 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 					merged.pushSeededOnly = false
 					if merged.explicitDirectInputDenied || pageMerged.rawDirectInput == rawDirectInputDeny {
 						merged.explicitDirectInputDenied = true
+						merged.explicitDirectInputVersion = allocVer()
+					} else if pageMerged.rawDirectInput == rawDirectInputAllow && !merged.readOnly {
+						merged.explicitDirectInputDenied = false
 						merged.explicitDirectInputVersion = allocVer()
 					}
 					merged.rawDirectInput = rawDirectInputUnknown
@@ -1163,27 +1202,24 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			}
 			p.router.gatewayThreadsMutationEpoch++
 			p.router.pruneGatewayThreadsLocked(finalNow)
-			// 立即释放 gatewayThreadsMu，保证后续所有叶锁零嵌套！
 			p.router.gatewayThreadsMu.Unlock()
 		} else {
 			finalNow = p.now()
-			if !p.recheckOrCleanThreadListBindingLocked(binding, finalNow, cleanupHeld) {
+			if !p.recheckOrCleanThreadListBindingLocked(binding, finalNow, false) {
+				p.mu.Unlock()
 				mediaRes.cancel()
 				outputRes.cancel()
 				return upstreamFrameDecision{}, false
 			}
 		}
 
-		// 写入连接级 p.allowedThreads（已在 p.mu 下）。
 		for id, merged := range finalThreadByID {
 			p.allowedThreads[id] = merged
 		}
 
-		// 依次提交暂存媒体/输出缓存（各自短持单一叶锁，绝不嵌套）。
 		mediaRelease := mediaRes.commit()
 		outputRelease := outputRes.commit()
 
-		// 登记 Global 游标 token（若有）。
 		if binding.pendingThread.globalDiscovery && stageA.preGeneratedToken != "" {
 			upstreamToStore := ""
 			if stageA.incomplete {
@@ -1197,18 +1233,12 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			p.globalListCursors[stageA.preGeneratedToken] = upstreamToStore
 		}
 
-		// 删除原 pending 并释放 managed lease（已在 cleanupMu → p.mu 下）。
 		delete(p.pendingThreads, binding.key)
-		if binding.pendingThread.managedWorktreePath != "" && p.router != nil {
-			p.router.releaseManagedWorktreePendingUseLocked(binding.pendingThread.managedWorktreePath)
-		}
 
-		// 仅在最终确定转发的提交点记录连接级预算、P1-3c 续页资格与全局预算。
 		var histForGlobal *appServerGatewayPendingHistoryRequest
 		if binding.pendingHistory != nil && !binding.pendingHistory.redactOnly {
 			hist := *binding.pendingHistory
 			p.recordHistoryResponseBudgetLocked(hist, len(stagedPayload), finalNow)
-			// P1-3c：仅当非同页重试、存在前进游标且表未满 512 时登记免计次续页资格。
 			if !stageA.incomplete && stageA.hasNextCursor &&
 				stageA.trimmedNextCursor != "" &&
 				stageA.trimmedNextCursor != strings.TrimSpace(hist.cursor) {
@@ -1223,13 +1253,15 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			histForGlobal = &hist
 		}
 
-		// 沿既有锁序 p.mu → gatewayHistoryBudgetMu 记全局预算。
 		if histForGlobal != nil && p.router != nil {
 			p.router.recordHistoryGlobalResponseBudget(*histForGlobal, len(stagedPayload))
 		}
 
-		releaseMu()
-		releaseOuter()
+		p.mu.Unlock()
+		if p.router != nil {
+			p.router.managedWorktreeCommitMu.Unlock()
+		}
+		releasePendingManagedUseIfAny()
 
 		var combinedRelease func(grace time.Duration)
 		if mediaRelease != nil || outputRelease != nil {
@@ -1382,16 +1414,24 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		return gatewayScope{}, projects.Project{}, false
 	}
 
-	// 2) 若候选原本在项目作用域内：纯内存复验 FindByCanonicalPathInMemory；撤权后按 browse_roots 降级或裁出。
+	// 2) 若候选原本在项目作用域内：纯内存复验 FindByCanonicalPathInMemory 或核验阶段 A 已刷新的配置项目（支持项目符号链接改指）。
 	if !cand.scope.browse {
 		if project, found := p.router.projects.FindByCanonicalPathInMemory(cand.scope.realPath); found {
 			return gatewayScope{id: project.ID, realPath: cand.scope.realPath, project: project, missing: cand.scope.missing}, project, true
+		}
+		if cand.hasStageAResolvedProject && cand.resolvedProjectID != "" {
+			if _, stillRegistered := p.router.projects.GetCached(cand.resolvedProjectID); stillRegistered {
+				return gatewayScope{id: cand.resolvedProject.ID, realPath: cand.scope.realPath, project: cand.resolvedProject, missing: cand.scope.missing}, cand.resolvedProject, true
+			}
 		}
 		if realPathWithinAny(canonicalBrowseRoots, cand.scope.realPath) {
 			if isGlobal {
 				// Global 降级到 browse_roots 仍需归属某已登记项目（纯内存校验）。
 				if cand.resolvedProjectID != "" {
 					if project, found := p.router.projects.GetCached(cand.resolvedProjectID); found {
+						if cand.hasStageAResolvedProject {
+							project = cand.resolvedProject
+						}
 						return gatewayScope{id: workspaceIDForRealPath(cand.scope.realPath), realPath: cand.scope.realPath, browse: true, missing: cand.scope.missing}, project, true
 					}
 				}
@@ -1414,9 +1454,40 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		if !found {
 			return gatewayScope{}, projects.Project{}, false
 		}
+		if cand.hasStageAResolvedProject {
+			project = cand.resolvedProject
+		}
 		return gatewayScope{id: workspaceIDForRealPath(cand.scope.realPath), realPath: cand.scope.realPath, browse: true, missing: cand.scope.missing}, project, true
 	}
 	return gatewayScope{id: workspaceIDForRealPath(cand.scope.realPath), realPath: cand.scope.realPath, browse: true, missing: cand.scope.missing}, projects.Project{}, true
+}
+
+// findRefreshedConfiguredProjectForCanonicalPath 供阶段 A 锁外处理“配置项目路径为符号链接且运行期改指”的场景：
+// 仅按当前已配置项目列表刷新规范路径，绝不写入或淘汰共享 pathMatchCache。
+func findRefreshedConfiguredProjectForCanonicalPath(reg *projects.Registry, canonicalPath string) (projects.Project, bool) {
+	if reg == nil || strings.TrimSpace(canonicalPath) == "" {
+		return projects.Project{}, false
+	}
+	cleanTarget := filepath.Clean(canonicalPath)
+	var best projects.Project
+	bestLen := -1
+	for _, project := range reg.List() {
+		if project.Missing || strings.TrimSpace(project.RealPath) == "" {
+			continue
+		}
+		realRoot := filepath.Clean(project.RealPath)
+		if !realPathWithin(realRoot, cleanTarget) {
+			continue
+		}
+		if len(realRoot) > bestLen {
+			best = project
+			bestLen = len(realRoot)
+		}
+	}
+	if bestLen < 0 {
+		return projects.Project{}, false
+	}
+	return best, true
 }
 
 func (p *appServerGatewayPolicy) buildThreadListResponsePayload(

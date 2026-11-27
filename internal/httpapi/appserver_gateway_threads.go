@@ -367,6 +367,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrameDecision(messageType int, p
 		p.notifyMessage(&frame)
 		p.observeLiveActivityNotification(&frame)
 		p.trackUpstreamTurnLifecycle(&frame)
+		p.observeThreadStatusDirectInputNotification(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
 			payload = filtered
@@ -1580,7 +1581,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			// 与全局发现一致：只在 browse_roots 内可见或目录已缺失的会话只读。
 			readOnlyBrowseScope = scope.browse
 		}
-		out = append(out, buildAllowedThreadFromWire(
+		built := buildAllowedThreadFromWire(
 			strings.TrimSpace(id),
 			normalizeAppServerRuntimeID(p.runtimeID),
 			scope.realPath,
@@ -1591,7 +1592,11 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			readOnlyBrowseScope,
 			scope.missing,
 			pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
-		))
+		)
+		if pending.method == "thread/read" || pending.method == "thread/start" || pending.method == "thread/fork" {
+			built.clearPushSeeded = true
+		}
+		out = append(out, built)
 		out = append(out, relatedThreadsForParent(
 			receiverThreadIDsFromWireTurns(item.Turns),
 			normalizeAppServerRuntimeID(p.runtimeID),

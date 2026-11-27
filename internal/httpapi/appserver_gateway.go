@@ -341,19 +341,19 @@ type appServerGatewayPolicy struct {
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
 	// activeServerTurns 让 Claude 观察者在客户端断开时继承真实运行态，避免把仍在
 	// 执行、尚未产生审批的 turn 误判为空闲并提前关闭 bridge 读端。
-	activeServerTurns             map[string]struct{}
-	pendingHistory                map[string]appServerGatewayPendingHistoryRequest
-	historyBudgets                map[string]appServerGatewayHistoryBudget
-	historyContinuations          map[string]time.Time
-	allowedThreads                map[string]appServerGatewayAllowedThread
-	globalListCursors             map[string]string
-	beforePendingRemember         func()
-	beforeManagedComplete         func()
-	onAfterResponseClaim          func()
-	onStageAAfterPathProbe        func(attempt int)
-	onStageBBeforeFinalCommitLock func(attempt int)
+	activeServerTurns                 map[string]struct{}
+	pendingHistory                    map[string]appServerGatewayPendingHistoryRequest
+	historyBudgets                    map[string]appServerGatewayHistoryBudget
+	historyContinuations              map[string]time.Time
+	allowedThreads                    map[string]appServerGatewayAllowedThread
+	globalListCursors                 map[string]string
+	beforePendingRemember             func()
+	beforeManagedComplete             func()
+	onAfterResponseClaim              func()
+	onStageAAfterPathProbe            func(attempt int)
+	onStageBBeforeFinalCommitLock     func(attempt int)
 	onStageBAfterFinalLockBeforeWrite func()
-	mimiTaskToolsEnabled          bool
+	mimiTaskToolsEnabled              bool
 }
 
 type appServerGatewayPendingThreadRequest struct {
@@ -479,10 +479,13 @@ type appServerGatewayAllowedThread struct {
 	explicitDirectInputDenied  bool
 	explicitDirectInputVersion uint64
 	pushSeededOnly             bool
-	rawDirectInput             rawDirectInputState
-	cwdMissing                 bool
-	autoTitleEligible          bool
-	lastSeen                   time.Time
+	// clearPushSeeded 仅在经作用域校验的 thread/read（或 thread/start / thread/fork）响应中置位，
+	// 防止普通 thread/list 或 thread/resume 绕过 thread/read 恢复门禁清除 pushSeededOnly。
+	clearPushSeeded   bool
+	rawDirectInput    rawDirectInputState
+	cwdMissing        bool
+	autoTitleEligible bool
+	lastSeen          time.Time
 }
 
 type appServerGatewayThreadWire struct {

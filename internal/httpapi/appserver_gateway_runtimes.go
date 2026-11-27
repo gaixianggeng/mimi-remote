@@ -79,10 +79,10 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		Aliases: []string{"anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge"},
 		Methods: appServerClaudeAllowedMethods,
 		Capabilities: appServerChannelCapability{
-			Streaming:                   true,
-			History:                     true,
-			ApprovalRequests:            true,
-			FileDiffs:                   true,
+			Streaming:        true,
+			History:          true,
+			ApprovalRequests: true,
+			FileDiffs:        true,
 			// RateLimits 由 bridge 探测结果决定，这里只是默认关闭的基线。
 			RateLimits:                  false,
 			GlobalListPageDispositionV1: true,

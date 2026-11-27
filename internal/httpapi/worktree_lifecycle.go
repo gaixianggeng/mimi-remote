@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -58,7 +59,9 @@ func (r *Router) unregisterManagedWorktreeLocked(
 		workspaceObjID = worktree.WorkspaceObjectID
 	}
 
-	// 1) 在定位/删除磁盘 registry 文件之前先原子吊销内存授权并推进生命周期代次。
+	// 1) 在定位/删除磁盘 registry 文件之前，于微秒级 managedWorktreeCommitMu 下原子吊销
+	// 内存授权并推进生命周期代次，随即释放 commit 锁，绝不跨磁盘 I/O 持有。
+	r.managedWorktreeCommitMu.Lock()
 	r.managedWorktreesMu.Lock()
 	if prev, ok := r.managedWorktrees[path]; ok {
 		if worktree.Path == "" {
@@ -108,6 +111,7 @@ func (r *Router) unregisterManagedWorktreeLocked(
 		}
 	}
 	r.managedWorktreesMu.Unlock()
+	r.managedWorktreeCommitMu.Unlock()
 
 	// 2) 删除磁盘 registry 文件。失败时保留待删表供重试，但授权已永久吊销。
 	file, err := r.managedWorktreeRegistryFile(path)
@@ -158,17 +162,40 @@ func (r *Router) isManagedWorktreeRevokedPath(realPath string) bool {
 }
 
 // isManagedWorktreeRevokedPathLocked 要求调用方已持有 managedWorktreesMu。
-// 使用完整 checkout 根与工作区路径检查撤权，只做收紧拦截，不扩张正向授权。
+// 严格使用逐段大小写精确的 exactPathWithin（绝不调用大小写不敏感的 realPathWithin），
+// 并在提供祖先对象身份时额外按真实文件系统对象身份识别同一目录别名，避免在 Windows
+// 大小写敏感目录上误撤权不同大小写的兄弟目录。
 func (r *Router) isManagedWorktreeRevokedPathLocked(realPath string) bool {
+	return r.isManagedWorktreeRevokedOrDeletingLocked(realPath, nil)
+}
+
+func (r *Router) isManagedWorktreeRevokedOrDeletingLocked(realPath string, ancestorObjIDs map[string]struct{}) bool {
+	for deletingPath := range r.managedWorktreeDeleting {
+		if exactPathWithin(deletingPath, realPath) {
+			return true
+		}
+	}
 	if len(r.managedWorktreePendingRegistryDelete) == 0 {
 		return false
 	}
 	for revokedPath, entry := range r.managedWorktreePendingRegistryDelete {
-		if realPathWithin(revokedPath, realPath) || exactPathWithin(revokedPath, realPath) {
+		if exactPathWithin(revokedPath, realPath) {
 			return true
 		}
-		if entry.checkoutPath != "" && (realPathWithin(entry.checkoutPath, realPath) || exactPathWithin(entry.checkoutPath, realPath)) {
+		if entry.checkoutPath != "" && exactPathWithin(entry.checkoutPath, realPath) {
 			return true
+		}
+		if len(ancestorObjIDs) > 0 {
+			if entry.checkoutObjectID != "" {
+				if _, hit := ancestorObjIDs[entry.checkoutObjectID]; hit {
+					return true
+				}
+			}
+			if entry.workspaceObjectID != "" {
+				if _, hit := ancestorObjIDs[entry.workspaceObjectID]; hit {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -209,10 +236,10 @@ func (r *Router) managedWorktreeMapFromRegistryReadOnlyLocked() map[string]manag
 }
 
 // probeManagedWorktreeForThreadListStageA 供 thread/list 阶段 A 做 100% 无写盘的托管工作树正向探测：
-// - 热态查 r.managedWorktrees 与 r.managedWorktreeColdCache（严格按 .Path 匹配，排除已撤权路径）；
-// - 冷启动持 managedWorktreeCleanupMu 只读扫描 registry（不迁移、不 touch），命中后仅写入隔离的
-//   r.managedWorktreeColdCache（永不写入 r.managedWorktrees，避免遮蔽 allManagedWorktreeMap 迁移结果）；
-// - 项目校验使用纯内存 r.projects.GetCached（不刷新磁盘可用性）。
+//   - 热态查 r.managedWorktrees 与 r.managedWorktreeColdCache（严格按 .Path 匹配，排除已撤权路径）；
+//   - 冷启动持 managedWorktreeCleanupMu 只读扫描 registry（不迁移、不 touch），命中后仅写入隔离的
+//     r.managedWorktreeColdCache（永不写入 r.managedWorktrees，避免遮蔽 allManagedWorktreeMap 迁移结果）；
+//   - 项目校验使用纯内存 r.projects.GetCached（不刷新磁盘可用性）。
 func (r *Router) probeManagedWorktreeForThreadListStageA(realPath string) (managedWorktree, bool) {
 	if r == nil || strings.TrimSpace(realPath) == "" {
 		return managedWorktree{}, false
@@ -241,39 +268,13 @@ func (r *Router) probeManagedWorktreeForThreadListStageA(realPath string) (manag
 	}
 	r.managedWorktreesMu.Unlock()
 
-	// 冷启动只读热身路径（锁外无 p.mu / gatewayThreadsMu，锁序安全）。
-	r.managedWorktreeCleanupMu.Lock()
-	defer r.managedWorktreeCleanupMu.Unlock()
-
-	r.managedWorktreesMu.Lock()
-	if r.isManagedWorktreeRevokedPathLocked(realPath) {
-		r.managedWorktreesMu.Unlock()
-		return managedWorktree{}, false
-	}
-	if wt, ok := managedWorktreeForPathInMap(r.managedWorktrees, realPath); ok && !r.isManagedWorktreeRevokedPathLocked(wt.Path) {
-		r.managedWorktreesMu.Unlock()
-		if project, found := r.projects.GetCached(wt.RootProject.ID); found {
-			wt.RootProject = project
-			return wt, true
-		}
-		return managedWorktree{}, false
-	}
-	if wt, ok := managedWorktreeForPathInMap(r.managedWorktreeColdCache, realPath); ok && !r.isManagedWorktreeRevokedPathLocked(wt.Path) {
-		r.managedWorktreesMu.Unlock()
-		if project, found := r.projects.GetCached(wt.RootProject.ID); found {
-			wt.RootProject = project
-			return wt, true
-		}
-		return managedWorktree{}, false
-	}
-	r.managedWorktreesMu.Unlock()
-
+	// 冷启动只读热身路径（零写盘、不抢慢速 managedWorktreeCleanupMu，避免被批量清理阻塞）：
+	// 先记录读取前的生命周期代次，锁外只读扫描 registry/*.json，再在 managedWorktreesMu 下
+	// 复核撤权/deleting 屏障与代次后仅写入隔离的 managedWorktreeColdCache。
+	epochBefore := r.managedWorktreeLifecycleEpoch.Load()
 	diskItems := r.managedWorktreeMapFromRegistryReadOnlyLocked()
 	wt, ok := managedWorktreeForPathInMap(diskItems, realPath)
 	if !ok {
-		return managedWorktree{}, false
-	}
-	if r.isManagedWorktreeRevokedPath(wt.Path) {
 		return managedWorktree{}, false
 	}
 	if _, statErr := os.Stat(wt.Path); statErr != nil {
@@ -284,14 +285,28 @@ func (r *Router) probeManagedWorktreeForThreadListStageA(realPath string) (manag
 		return managedWorktree{}, false
 	}
 	wt.RootProject = project
-	r.managedWorktreeNextGen++
-	wt.InstanceGen = r.managedWorktreeNextGen
 	if checkoutRoot, ok := storedManagedWorktreeCheckoutPath(wt); ok {
 		wt.CheckoutObjectID, _ = filesystemObjectIdentity(checkoutRoot)
 	}
 	wt.WorkspaceObjectID, _ = filesystemObjectIdentity(wt.Path)
 
 	r.managedWorktreesMu.Lock()
+	if r.isManagedWorktreeRevokedPathLocked(realPath) || r.isManagedWorktreeRevokedPathLocked(wt.Path) || r.managedWorktreeLifecycleEpoch.Load() != epochBefore {
+		r.managedWorktreesMu.Unlock()
+		return managedWorktree{}, false
+	}
+	if existing, ok := r.managedWorktrees[wt.Path]; ok {
+		r.managedWorktreesMu.Unlock()
+		existing.RootProject = project
+		return existing, true
+	}
+	if existing, ok := r.managedWorktreeColdCache[wt.Path]; ok {
+		r.managedWorktreesMu.Unlock()
+		existing.RootProject = project
+		return existing, true
+	}
+	r.managedWorktreeNextGen++
+	wt.InstanceGen = r.managedWorktreeNextGen
 	if r.managedWorktreeColdCache == nil {
 		r.managedWorktreeColdCache = map[string]managedWorktree{}
 	}
@@ -447,6 +462,11 @@ func (r *Router) matchesDeletedOrRevokedManagedWorktreeLocked(
 		}
 		return false
 	}
+	for deletingPath := range r.managedWorktreeDeleting {
+		if exactPathWithin(deletingPath, realPath) {
+			return true, floorExceeded
+		}
+	}
 	for _, pending := range r.managedWorktreePendingRegistryDelete {
 		if matchEntry(pending.checkoutPath, pending.worktree.Path, pending.checkoutObjectID, pending.workspaceObjectID) {
 			return true, floorExceeded
@@ -538,12 +558,39 @@ func splitExactPath(raw string) (prefix string, segments []string, ok bool) {
 	if trimmed == "" {
 		return "", nil, false
 	}
-	// 统一按 POSIX 根、Windows 盘符根（如 C:\）或 UNC 根（如 \\host\share）解析，
-	// 全部分段保持原始字节大小写，不做 EqualFold。
-	norm := strings.ReplaceAll(trimmed, `\`, `/`)
-	switch {
-	case strings.HasPrefix(norm, "//"):
-		rest := strings.TrimPrefix(norm, "//")
+	// 仅对 Windows UNC（\\...）、Windows 盘符（C:\... 或 C:/...）或 Windows 宿主路径
+	// 将反斜杠视为分隔符；POSIX 根路径（/...）按原生 `/` 切分，保留文件名中的字面 `\`。
+	isWinUNC := strings.HasPrefix(trimmed, `\\`)
+	isWinDrive := len(trimmed) >= 2 && isASCIIAlpha(trimmed[0]) && trimmed[1] == ':' &&
+		(len(trimmed) == 2 || trimmed[2] == '\\' || trimmed[2] == '/')
+	if isWinUNC || isWinDrive || runtime.GOOS == "windows" {
+		norm := strings.ReplaceAll(trimmed, `\`, `/`)
+		switch {
+		case strings.HasPrefix(norm, "//"):
+			rest := strings.TrimPrefix(norm, "//")
+			parts := splitNonEmptyExactSegments(rest)
+			if len(parts) < 2 {
+				return "", nil, false
+			}
+			prefix = "//" + parts[0] + "/" + parts[1]
+			segments = cleanExactSegments(parts[2:])
+			return prefix, segments, true
+		case len(norm) >= 3 && isASCIIAlpha(norm[0]) && norm[1] == ':' && norm[2] == '/':
+			prefix = norm[:3]
+			segments = cleanExactSegments(splitNonEmptyExactSegments(norm[3:]))
+			return prefix, segments, true
+		case len(norm) == 2 && isASCIIAlpha(norm[0]) && norm[1] == ':':
+			return norm + "/", nil, true
+		case strings.HasPrefix(norm, "/"):
+			prefix = "/"
+			segments = cleanExactSegments(splitNonEmptyExactSegments(norm[1:]))
+			return prefix, segments, true
+		default:
+			return "", nil, false
+		}
+	}
+	if strings.HasPrefix(trimmed, "//") {
+		rest := strings.TrimPrefix(trimmed, "//")
 		parts := splitNonEmptyExactSegments(rest)
 		if len(parts) < 2 {
 			return "", nil, false
@@ -551,19 +598,13 @@ func splitExactPath(raw string) (prefix string, segments []string, ok bool) {
 		prefix = "//" + parts[0] + "/" + parts[1]
 		segments = cleanExactSegments(parts[2:])
 		return prefix, segments, true
-	case len(norm) >= 3 && isASCIIAlpha(norm[0]) && norm[1] == ':' && norm[2] == '/':
-		prefix = norm[:3]
-		segments = cleanExactSegments(splitNonEmptyExactSegments(norm[3:]))
-		return prefix, segments, true
-	case len(norm) == 2 && isASCIIAlpha(norm[0]) && norm[1] == ':':
-		return norm + "/", nil, true
-	case strings.HasPrefix(norm, "/"):
-		prefix = "/"
-		segments = cleanExactSegments(splitNonEmptyExactSegments(norm[1:]))
-		return prefix, segments, true
-	default:
-		return "", nil, false
 	}
+	if strings.HasPrefix(trimmed, "/") {
+		prefix = "/"
+		segments = cleanExactSegments(splitNonEmptyExactSegments(trimmed[1:]))
+		return prefix, segments, true
+	}
+	return "", nil, false
 }
 
 func isASCIIAlpha(b byte) bool {
