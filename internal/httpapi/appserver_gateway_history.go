@@ -16,9 +16,15 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	if key == "" {
 		return &appServerGatewayPolicyError{id: id, message: fmt.Sprintf("%s 请求缺少 id", method)}
 	}
-	now := time.Now()
 	pending.fingerprint = gatewayHistoryRequestFingerprint(p.runtimeID, pending)
 	pending.inflightOwner = fmt.Sprintf("%p\x00%s", p, key)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return &appServerGatewayPolicyError{id: id, message: "app-server gateway 连接已关闭"}
+	}
+	now := time.Now()
+	p.pruneHistoryLocked(now)
 	if !p.reserveHistoryInflight(pending) {
 		return &appServerGatewayPolicyError{
 			id:      id,
@@ -30,9 +36,6 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	}
 	budgetKey := gatewayHistoryBudgetKey(gatewayHistoryBudgetSubject(pending), pending.method, pending.itemsView)
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.pruneHistoryLocked(now)
 	if p.pendingHistory == nil {
 		p.pendingHistory = map[string]appServerGatewayPendingHistoryRequest{}
 	}
@@ -471,32 +474,14 @@ func (p *appServerGatewayPolicy) consumePendingHistoryRequest(id *json.RawMessag
 	request, ok := p.pendingHistory[key]
 	if ok {
 		delete(p.pendingHistory, key)
-	}
-	p.mu.Unlock()
-	if ok {
 		p.releaseHistoryInflight(request)
 	}
+	p.mu.Unlock()
 	return request, ok
 }
 
 func (p *appServerGatewayPolicy) cancelPendingHistoryRequest(id *json.RawMessage) {
 	_, _ = p.consumePendingHistoryRequest(id)
-}
-
-func (p *appServerGatewayPolicy) releaseAllHistoryInflight() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	requests := make([]appServerGatewayPendingHistoryRequest, 0, len(p.pendingHistory))
-	for key, request := range p.pendingHistory {
-		requests = append(requests, request)
-		delete(p.pendingHistory, key)
-	}
-	p.mu.Unlock()
-	for _, request := range requests {
-		p.releaseHistoryInflight(request)
-	}
 }
 
 func (p *appServerGatewayPolicy) recordHistoryResponseBudget(request appServerGatewayPendingHistoryRequest, responseBytes int) {

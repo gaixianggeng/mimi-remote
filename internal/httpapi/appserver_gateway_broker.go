@@ -573,7 +573,6 @@ func (b *codexGatewayBroker) close(reason string) {
 	// 会话结束后没人能再代替用户回答，剩余句柄必须作废、通知必须撤下。
 	b.router.resolveApprovalNotifications("codex", b.key, "")
 	_ = b.upstream.Close()
-	b.policy.releaseAllHistoryInflight()
 	b.policy.close()
 	b.router.forgetCodexGatewayBroker(b.key, b)
 	sink.finish(reason)

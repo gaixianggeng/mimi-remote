@@ -1388,6 +1388,10 @@ func (p *appServerGatewayPolicy) close() {
 		return
 	}
 	p.closed = true
+	for _, request := range p.pendingHistory {
+		p.releaseHistoryInflight(request)
+	}
+	p.pendingHistory = nil
 	paths := make([]string, 0, len(p.pendingThreads))
 	for key, pending := range p.pendingThreads {
 		if pending.managedWorktreePath != "" {
