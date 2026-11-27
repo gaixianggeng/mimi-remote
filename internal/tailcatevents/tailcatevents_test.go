@@ -82,7 +82,7 @@ func TestRecordSidecarLineDropsUnsafeValues(t *testing.T) {
 func TestPlainSidecarLinesAreRedacted(t *testing.T) {
 	output, flush := installTestSink(t)
 	key := "nodekey:" + strings.Repeat("ab", 32)
-	if RecordSidecarLine("Tailcat 实验失败：dial 203.0.113.9:8443 [2001:db8::1]:41641 " + key) {
+	if RecordSidecarLine("Tailcat 失败：dial 203.0.113.9:8443 [2001:db8::1]:41641 " + key) {
 		t.Fatal("普通文本不是结构化事件")
 	}
 	flush()
@@ -92,7 +92,7 @@ func TestPlainSidecarLinesAreRedacted(t *testing.T) {
 			t.Fatalf("未脱敏 %q：%s", secret, text)
 		}
 	}
-	if !strings.Contains(text, "event=sidecar_log") || !strings.Contains(text, "Tailcat 实验失败") {
+	if !strings.Contains(text, "event=sidecar_log") || !strings.Contains(text, "Tailcat 失败") {
 		t.Fatalf("错误摘要应保留：%s", text)
 	}
 }

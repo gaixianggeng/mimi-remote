@@ -44,7 +44,7 @@ ios/MimiRemote/Generated/TailcatMobile.xcframework
 
 ### 2. 在 Mac 开启 Tailcat 并生成二维码
 
-在 Mac 版 Mimi 的设置中开启“内置连接（Tailcat）”。状态必须显示 sidecar 正在运行。中继节点可选“Tailcat 默认”或“自定义”。自定义模式填写完整的 DERP Map HTTPS 地址，再点击“应用中继配置”。切换成功后需要重新生成二维码并扫码；切换失败时会自动恢复原中继。
+在 Mac 版 Mimi 的设置中开启“内置连接（Tailcat）”。状态必须显示 sidecar 正在运行。中继节点可选“默认 Tailcat 自带”或“自建中转”（也可选“Mimi 中转”）。选择自建中转时填写完整的 DERP Map HTTPS 地址，再点击“使用此地址”。切换成功后需要重新生成二维码并扫码；切换失败时会自动恢复原中继。
 
 也可以用命令行执行同一控制流程：
 

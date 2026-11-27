@@ -211,7 +211,7 @@ func TestTailcatSidecarLogWriterForwardsCompleteLines(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(previous) })
 
 	writer := &tailcatSidecarLogWriter{}
-	if _, err := writer.Write([]byte("Tailcat 实验失败：中继不可达\r\npair: 短期")); err != nil {
+	if _, err := writer.Write([]byte("Tailcat 失败：中继不可达\r\npair: 短期")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := writer.Write([]byte("配对节点启动耗时 6.2s\n\n")); err != nil {
@@ -220,7 +220,7 @@ func TestTailcatSidecarLogWriterForwardsCompleteLines(t *testing.T) {
 
 	output := captured.String()
 	for _, want := range []string{
-		"tailcat sidecar: Tailcat 实验失败：中继不可达",
+		"tailcat sidecar: Tailcat 失败：中继不可达",
 		"tailcat sidecar: pair: 短期配对节点启动耗时 6.2s",
 	} {
 		if !strings.Contains(output, want) {
