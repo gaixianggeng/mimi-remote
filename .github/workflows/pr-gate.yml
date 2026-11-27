@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 2
     outputs:
       go: ${{ steps.scope.outputs.go }}
+      darwin_go: ${{ steps.scope.outputs.darwin_go }}
       ios: ${{ steps.scope.outputs.ios }}
       rust: ${{ steps.scope.outputs.rust }}
       macos: ${{ steps.scope.outputs.macos }}
@@ -68,6 +69,32 @@ jobs:
     if: needs.scope.outputs.go == 'true'
     uses: ./.github/workflows/go-ci.yml
 
+  darwin-go:
+    name: Darwin Go
+    needs: scope
+    if: needs.scope.outputs.darwin_go == 'true'
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Test affected macOS backend packages
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git diff --name-only -z --no-renames "$BASE_SHA...$HEAD_SHA" |
+              python3 scripts/test-darwin-go.py
+          else
+            python3 scripts/test-darwin-go.py --all
+          fi
+
   ios:
     name: iOS
     needs: scope
@@ -106,6 +133,7 @@ jobs:
       - codex-protocol
       - repository-safety
       - go
+      - darwin-go
       - ios
       - rust
       - macos
@@ -122,6 +150,8 @@ jobs:
           SAFETY_RESULT: ${{ needs.repository-safety.result }}
           GO_REQUIRED: ${{ needs.scope.outputs.go }}
           GO_RESULT: ${{ needs.go.result }}
+          DARWIN_GO_REQUIRED: ${{ needs.scope.outputs.darwin_go }}
+          DARWIN_GO_RESULT: ${{ needs.darwin-go.result }}
           IOS_REQUIRED: ${{ needs.scope.outputs.ios }}
           IOS_RESULT: ${{ needs.ios.result }}
           RUST_REQUIRED: ${{ needs.scope.outputs.rust }}
@@ -163,6 +193,7 @@ jobs:
           require_success "Codex protocol" "$PROTOCOL_RESULT"
           require_success "Repository safety" "$SAFETY_RESULT"
           require_scoped_success "Go and release" "$GO_REQUIRED" "$GO_RESULT"
+          require_scoped_success "Darwin Go" "$DARWIN_GO_REQUIRED" "$DARWIN_GO_RESULT"
           require_scoped_success "iOS" "$IOS_REQUIRED" "$IOS_RESULT"
           require_scoped_success "Rust bridge" "$RUST_REQUIRED" "$RUST_RESULT"
           require_scoped_success "Mac App" "$MACOS_REQUIRED" "$MACOS_RESULT"
@@ -178,6 +209,7 @@ jobs:
             echo "| Codex protocol | always | \`$PROTOCOL_RESULT\` |"
             echo "| Repository safety | always | \`$SAFETY_RESULT\` |"
             echo "| Go and release | \`$GO_REQUIRED\` | \`$GO_RESULT\` |"
+            echo "| Darwin Go | \`$DARWIN_GO_REQUIRED\` | \`$DARWIN_GO_RESULT\` |"
             echo "| iOS | \`$IOS_REQUIRED\` | \`$IOS_RESULT\` |"
             echo "| Rust bridge | \`$RUST_REQUIRED\` | \`$RUST_RESULT\` |"
             echo "| Mac App | \`$MACOS_REQUIRED\` | \`$MACOS_RESULT\` |"
