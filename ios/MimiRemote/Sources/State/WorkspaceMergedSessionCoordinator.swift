@@ -62,7 +62,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         sessionStore: SessionStore
     ) -> WorkspaceMergedProjection {
         let enabledProviders = key.enabledRuntimes.map(\.runtimeProvider)
-        let cachedFallback = sessionStore.directoryScopedSessions(
+        let cachedFallback = sessionStore.directoryScopedSessionsUnsorted(
             workspaceID: key.workspaceID,
             runtimeProviders: enabledProviders
         )
@@ -70,9 +70,12 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             cachedFallback,
             hostScope: key.hostScope
         )
+        let slot = slots[key]
         let archivedKeys = archivedCanonicalKeys(
             sessionStore: sessionStore,
-            hostScope: key.hostScope
+            hostScope: key.hostScope,
+            engine: slot?.engine,
+            canonicalByKey: canonicalByKey
         )
         let createdSessions = newlyCreatedSessions(
             for: key,
@@ -80,7 +83,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             sessionStore: sessionStore
         )
 
-        if let slot = slots[key] {
+        if let slot {
             return slot.engine.projection(
                 targetVisibleCount: slot.visibleLimit,
                 cachedFallbackSessions: cachedFallback,
@@ -110,8 +113,13 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         sessionStore: SessionStore,
         restartFromFirst: Bool = false
     ) async {
+        pruneStaleEnabledRuntimeSlots(keeping: key)
         let invocationID = UUID()
-        let previousStreams = slots[key]?.engine.streams ?? [:]
+        var previousStreams = slots[key]?.engine.streams ?? [:]
+        for (runtime, var stream) in previousStreams where stream.status == .loading {
+            stream.status = stream.hasLoadedAnyPage ? (stream.hasMore ? .ready : .exhausted) : .idle
+            previousStreams[runtime] = stream
+        }
         var slot = slots[key] ?? Slot(
             engine: WorkspaceMergedSessionEngine(
                 hostScope: key.hostScope,
@@ -120,6 +128,8 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             budget: SessionListRPCBudgetLedger(),
             visibleLimit: SessionStore.initialSessionPageLimit
         )
+        slot.engine.normalizeLoadingStreams()
+        slot.budget = SessionListRPCBudgetLedger()
         slot.isLoading = true
         slot.activeInvocationID = invocationID
         slot.errorMessage = nil
@@ -140,7 +150,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         }
         guard var currentSlot = slots[key], currentSlot.activeInvocationID == invocationID else { return }
         currentSlot.engine.resetForRefresh(availableRuntimeProviders: sessionStore.availableRuntimeProviders)
-        currentSlot.budget.reset()
+        currentSlot.budget = SessionListRPCBudgetLedger()
         currentSlot.visibleLimit = SessionStore.initialSessionPageLimit
         slots[key] = currentSlot
 
@@ -154,6 +164,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         )
 
         guard var finalSlot = slots[key], finalSlot.activeInvocationID == invocationID else { return }
+        finalSlot.engine.normalizeLoadingStreams()
         // 若刷新在部分流仍在加载前被取消（例如 SwiftUI .refreshable 提前收起），恢复旧快照避免退化成空白。
         for (runtime, prevStream) in previousStreams where prevStream.hasLoadedAnyPage {
             if let current = finalSlot.engine.streams[runtime],
@@ -167,6 +178,44 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         slots[key] = finalSlot
     }
 
+    /// 响应冷启动/切主机后 `sessionStore.availableRuntimeProviders` 的异步探测扩展：
+    /// 仅把当前为 `.hostDisabled` 但已变为可用的运行时恢复为 `.idle` 并补拉首屏，不清空已加载的流。
+    func reconcileAvailableRuntimeProviders(
+        project: AgentProject,
+        key: WorkspaceMergedPresentationKey,
+        sessionStore: SessionStore
+    ) async {
+        pruneStaleEnabledRuntimeSlots(keeping: key)
+        guard var slot = slots[key] else { return }
+        let outcome = slot.engine.reconcileAvailableRuntimeProviders(
+            sessionStore.availableRuntimeProviders
+        )
+        guard outcome.didMutate else { return }
+        guard outcome.didReviveAnyStream else {
+            slots[key] = slot
+            return
+        }
+
+        slot.engine.normalizeLoadingStreams()
+        let invocationID = UUID()
+        slot.activeInvocationID = invocationID
+        slot.budget = SessionListRPCBudgetLedger()
+        slots[key] = slot
+
+        await pumpPages(
+            project: project,
+            key: key,
+            invocationID: invocationID,
+            sessionStore: sessionStore,
+            restartFromFirst: false
+        )
+
+        guard var finalSlot = slots[key], finalSlot.activeInvocationID == invocationID else { return }
+        finalSlot.engine.normalizeLoadingStreams()
+        finalSlot.isLoading = false
+        slots[key] = finalSlot
+    }
+
     func loadMore(
         project: AgentProject,
         key: WorkspaceMergedPresentationKey,
@@ -176,6 +225,8 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             await refresh(project: project, key: key, sessionStore: sessionStore, restartFromFirst: false)
             return
         }
+        pruneStaleEnabledRuntimeSlots(keeping: key)
+        slot.engine.normalizeLoadingStreams()
         let invocationID = UUID()
         let previousLimit = slot.visibleLimit
         let targetLimit = WorkspaceSessionPresentation.nextVisibleLimit(
@@ -184,7 +235,7 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         )
         slot.visibleLimit = targetLimit
         slot.activeInvocationID = invocationID
-        slot.budget.reset()
+        slot.budget = SessionListRPCBudgetLedger()
         slots[key] = slot
 
         await pumpPages(
@@ -196,7 +247,33 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         )
 
         guard var updated = slots[key], updated.activeInvocationID == invocationID else { return }
-        let proj = projection(for: key, sessionStore: sessionStore)
+        updated.engine.normalizeLoadingStreams()
+        updated.isLoading = false
+        let enabledProviders = key.enabledRuntimes.map(\.runtimeProvider)
+        let cachedFallback = sessionStore.directoryScopedSessionsUnsorted(
+            workspaceID: key.workspaceID,
+            runtimeProviders: enabledProviders
+        )
+        let canonicalByKey = canonicalSessionMap(cachedFallback, hostScope: key.hostScope)
+        let archivedKeys = archivedCanonicalKeys(
+            sessionStore: sessionStore,
+            hostScope: key.hostScope,
+            engine: updated.engine,
+            canonicalByKey: canonicalByKey
+        )
+        let createdSessions = newlyCreatedSessions(
+            for: key,
+            cachedFallback: cachedFallback,
+            sessionStore: sessionStore
+        )
+        let proj = updated.engine.projection(
+            targetVisibleCount: updated.visibleLimit,
+            cachedFallbackSessions: cachedFallback,
+            canonicalByKey: canonicalByKey,
+            archivedKeys: archivedKeys,
+            newlyCreatedSessions: createdSessions,
+            budgetExhausted: updated.budget.isTotalBudgetExhausted
+        )
         updated.visibleLimit = WorkspaceSessionPresentation.committedVisibleLimit(
             current: previousLimit,
             target: targetLimit,
@@ -215,13 +292,13 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         guard recovered, var slot = slots[key] else {
             return recovered
         }
+        pruneStaleEnabledRuntimeSlots(keeping: key)
         // 仅将该恢复的运行时重新置为待加载并拉取首屏，不打断已加载的其他运行时。
-        var freshEngine = slot.engine
-        freshEngine.resetStreamToIdle(runtime)
-        slot.engine = freshEngine
+        slot.engine.normalizeLoadingStreams()
+        slot.engine.resetStreamToIdle(runtime)
         let invocationID = UUID()
         slot.activeInvocationID = invocationID
-        slot.budget.reset()
+        slot.budget = SessionListRPCBudgetLedger()
         slots[key] = slot
 
         await pumpPages(
@@ -231,6 +308,13 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             sessionStore: sessionStore,
             restartFromFirst: false
         )
+
+        guard var finalSlot = slots[key], finalSlot.activeInvocationID == invocationID else {
+            return true
+        }
+        finalSlot.engine.normalizeLoadingStreams()
+        finalSlot.isLoading = false
+        slots[key] = finalSlot
         return true
     }
 
@@ -244,6 +328,22 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
 
     // MARK: - Private
 
+    private func pruneStaleEnabledRuntimeSlots(keeping key: WorkspaceMergedPresentationKey) {
+        let hasStale = slots.keys.contains { existingKey in
+            existingKey != key
+                && existingKey.hostScope == key.hostScope
+                && existingKey.workspaceID == key.workspaceID
+                && existingKey.workspacePath == key.workspacePath
+        }
+        guard hasStale else { return }
+        slots = slots.filter { existingKey, _ in
+            existingKey == key
+                || existingKey.hostScope != key.hostScope
+                || existingKey.workspaceID != key.workspaceID
+                || existingKey.workspacePath != key.workspacePath
+        }
+    }
+
     private func pumpPages(
         project: AgentProject,
         key: WorkspaceMergedPresentationKey,
@@ -252,6 +352,9 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         restartFromFirst: Bool,
         previousStreamsForFallback: [WorkspaceSessionRuntimeChoice: WorkspaceMergedSessionEngine.StreamState] = [:]
     ) async {
+        // 同一 pump 内遭遇 -32080 限流或单路取消的运行时立即记入阻塞集合，避免在 while 波次中紧循环刷爆配额。
+        var blockedRuntimesInPump: Set<WorkspaceSessionRuntimeChoice> = []
+
         // 以有限波次调度并发请求（每波最多同时跑 budget.maxConcurrentRPCs == 2 路），
         // 每收到一批响应即归并、传播子会话归属并重新评估是否已填满目标展示窗口。
         while !Task.isCancelled {
@@ -262,12 +365,17 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             }
 
             let enabledProviders = key.enabledRuntimes.map(\.runtimeProvider)
-            let cached = sessionStore.directoryScopedSessions(
+            let cached = sessionStore.directoryScopedSessionsUnsorted(
                 workspaceID: key.workspaceID,
                 runtimeProviders: enabledProviders
             )
             let canonicalByKey = canonicalSessionMap(cached, hostScope: key.hostScope)
-            let archivedKeys = archivedCanonicalKeys(sessionStore: sessionStore, hostScope: key.hostScope)
+            let archivedKeys = archivedCanonicalKeys(
+                sessionStore: sessionStore,
+                hostScope: key.hostScope,
+                engine: slot.engine,
+                canonicalByKey: canonicalByKey
+            )
 
             let currentProjection = slot.engine.projection(
                 targetVisibleCount: slot.visibleLimit,
@@ -277,18 +385,20 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             )
             guard slot.engine.needsMorePages(
                 targetVisibleCount: slot.visibleLimit,
-                canonicalByKey: canonicalByKey,
-                archivedKeys: archivedKeys
+                projection: currentProjection,
+                excluding: blockedRuntimesInPump
             ) else {
                 return
             }
 
-            let anyIdle = slot.engine.enabledRuntimes.contains { slot.engine.streams[$0]?.status == .idle }
+            let anyIdle = slot.engine.enabledRuntimes.contains {
+                !blockedRuntimesInPump.contains($0) && slot.engine.streams[$0]?.status == .idle
+            }
             let onlyHealthyForStrict = !anyIdle && currentProjection.totalLoadedListableCount >= slot.visibleLimit
 
             // 收集本波可并发拉取的运行时（受 SessionListRPCBudgetLedger 原子并发与总预算硬限制）。
             var wave: [(runtime: WorkspaceSessionRuntimeChoice, cursor: String?, excluding: Set<SessionID>, isFirstPage: Bool)] = []
-            var planned: Set<WorkspaceSessionRuntimeChoice> = []
+            var planned = blockedRuntimesInPump
             while let nextRuntime = slot.engine.nextRuntimeToFetch(
                 excluding: planned,
                 onlyHealthyForStrict: onlyHealthyForStrict
@@ -326,7 +436,12 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
             ) { group in
                 for taskSpec in wave {
                     group.addTask { @MainActor in
-                        defer { budget.finish(runtimeProvider: taskSpec.runtime.runtimeProvider) }
+                        var hasActiveReservation = true
+                        defer {
+                            if hasActiveReservation {
+                                budget.finish(runtimeProvider: taskSpec.runtime.runtimeProvider)
+                            }
+                        }
                         let pageLimit = taskSpec.isFirstPage
                             ? SessionStore.initialSessionPageLimit
                             : SessionStore.expandedSessionPageLimit
@@ -337,29 +452,43 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                                 cursor: taskSpec.cursor,
                                 limit: pageLimit,
                                 excludingListableSessionIDs: taskSpec.excluding,
-                                restartFromFirst: restartFromFirst && taskSpec.isFirstPage
+                                restartFromFirst: restartFromFirst && taskSpec.isFirstPage,
+                                fillsPresentationWindow: false,
+                                preservesWireOrder: true
                             )
                             return (taskSpec.runtime, taskSpec.isFirstPage, .success(page))
                         } catch {
-                            // 若遇到网关瞬态 -32080（同请求仍在执行 / 极短窗口），退避等待一次再重试。
+                            // 若遇到网关瞬态 -32080（同请求仍在执行 / 极短窗口），先释放并发槽并退避等待，
+                            // 醒来后重新校验 hostScope / invocationID 并向预算账本申请配额后再重试一次。
                             if let policyFailure = sessionStore.sessionListPolicyFailure(from: error),
                                policyFailure.retryAfterNanoseconds <= 2_000_000_000,
                                !Task.isCancelled {
+                                budget.finish(runtimeProvider: taskSpec.runtime.runtimeProvider)
+                                hasActiveReservation = false
                                 try? await Task.sleep(nanoseconds: policyFailure.retryAfterNanoseconds)
-                                if !Task.isCancelled {
-                                    do {
-                                        let retried = try await sessionStore.workspaceRuntimeSessionsPage(
-                                            projectID: project.id,
-                                            runtimeProvider: taskSpec.runtime.runtimeProvider,
-                                            cursor: taskSpec.cursor,
-                                            limit: pageLimit,
-                                            excludingListableSessionIDs: taskSpec.excluding,
-                                            restartFromFirst: restartFromFirst && taskSpec.isFirstPage
-                                        )
-                                        return (taskSpec.runtime, taskSpec.isFirstPage, .success(retried))
-                                    } catch {
-                                        return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
-                                    }
+                                guard !Task.isCancelled,
+                                      sessionStore.appStore.activeHostScope == key.hostScope,
+                                      self.slots[key]?.activeInvocationID == invocationID else {
+                                    return (taskSpec.runtime, taskSpec.isFirstPage, .failure(CancellationError()))
+                                }
+                                guard budget.reserve(runtimeProvider: taskSpec.runtime.runtimeProvider) == .reserved else {
+                                    return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
+                                }
+                                hasActiveReservation = true
+                                do {
+                                    let retried = try await sessionStore.workspaceRuntimeSessionsPage(
+                                        projectID: project.id,
+                                        runtimeProvider: taskSpec.runtime.runtimeProvider,
+                                        cursor: taskSpec.cursor,
+                                        limit: pageLimit,
+                                        excludingListableSessionIDs: taskSpec.excluding,
+                                        restartFromFirst: restartFromFirst && taskSpec.isFirstPage,
+                                        fillsPresentationWindow: false,
+                                        preservesWireOrder: true
+                                    )
+                                    return (taskSpec.runtime, taskSpec.isFirstPage, .success(retried))
+                                } catch {
+                                    return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
                                 }
                             }
                             return (taskSpec.runtime, taskSpec.isFirstPage, .failure(error))
@@ -373,10 +502,14 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                 return collected
             }
 
-            guard !Task.isCancelled,
-                  sessionStore.appStore.activeHostScope == key.hostScope,
+            guard sessionStore.appStore.activeHostScope == key.hostScope,
                   var updatedSlot = slots[key],
                   updatedSlot.activeInvocationID == invocationID else {
+                return
+            }
+            if Task.isCancelled {
+                updatedSlot.engine.normalizeLoadingStreams()
+                slots[key] = updatedSlot
                 return
             }
 
@@ -393,16 +526,20 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
                     )
                 case let .failure(error):
                     if isCancellationError(error) {
+                        blockedRuntimesInPump.insert(runtime)
                         if let previous = previousStreamsForFallback[runtime], previous.hasLoadedAnyPage {
                             updatedSlot.engine.restoreStream(runtime, from: previous)
                         } else if let existing = updatedSlot.engine.streams[runtime], existing.hasLoadedAnyPage {
-                            updatedSlot.engine.markFailed(runtime, message: UserFacingError(error).message)
+                            var preserved = existing
+                            preserved.status = preserved.hasMore ? .ready : .exhausted
+                            updatedSlot.engine.restoreStream(runtime, from: preserved)
                         } else {
                             updatedSlot.engine.resetStreamToIdle(runtime)
                         }
                     } else if sessionStore.sessionListPolicyFailure(from: error) != nil {
+                        blockedRuntimesInPump.insert(runtime)
                         // 短时间连续下拉触发网关 -32080 限流时，若该通道已有已加载列表则保留旧数据，
-                        // 不把正常限流渲染成“运行时不可用/返回了部分结果”的误报横幅。
+                        // 不把正常限流渲染成“运行时不可用/返回了部分结果”的误报横幅，并在本次 pump 停止继续请求。
                         if let previous = previousStreamsForFallback[runtime], previous.hasLoadedAnyPage {
                             updatedSlot.engine.restoreStream(runtime, from: previous)
                         } else if let existing = updatedSlot.engine.streams[runtime], existing.hasLoadedAnyPage {
@@ -447,11 +584,31 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
 
     private func archivedCanonicalKeys(
         sessionStore: SessionStore,
-        hostScope: HostScope
+        hostScope: HostScope,
+        engine: WorkspaceMergedSessionEngine? = nil,
+        canonicalByKey: [CanonicalSessionKey: AgentSession] = [:]
     ) -> Set<CanonicalSessionKey> {
+        let archivedIDs = sessionStore.archivedSessionIDs
+        guard !archivedIDs.isEmpty else { return [] }
+        let selectedID = sessionStore.selectedSessionID
         var result: Set<CanonicalSessionKey> = []
-        for item in sessionStore.sessions where sessionStore.isSessionArchived(item.id) {
+        for item in sessionStore.sessions {
+            guard archivedIDs.contains(item.id),
+                  item.id != selectedID,
+                  !item.isRunning else {
+                continue
+            }
             result.insert(CanonicalSessionKey(session: item, hostScope: hostScope))
+        }
+        if let engine {
+            for stream in engine.streams.values {
+                for raw in stream.rawEntries {
+                    guard archivedIDs.contains(raw.canonicalKey.sessionID) else { continue }
+                    let liveSession = canonicalByKey[raw.canonicalKey] ?? raw.session
+                    guard liveSession.id != selectedID, !liveSession.isRunning else { continue }
+                    result.insert(raw.canonicalKey)
+                }
+            }
         }
         return result
     }
@@ -462,17 +619,27 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         sessionStore: SessionStore
     ) -> [AgentSession] {
         guard let workspace = sessionStore.workspacesByID[key.workspaceID] else { return [] }
-        var createdIDs: Set<SessionID> = []
+        var createdKeys: Set<CanonicalSessionKey> = []
         for runtime in key.enabledRuntimes {
             let scopeKey = sessionStore.workspaceDirectoryScopeKey(
                 for: workspace,
                 runtimeProvider: runtime.runtimeProvider
             )
             if let ids = sessionStore.workspaceCreatedSessionIDsByKey[scopeKey] {
-                createdIDs.formUnion(ids)
+                for id in ids {
+                    createdKeys.insert(
+                        CanonicalSessionKey(
+                            hostScope: key.hostScope,
+                            runtimeProvider: runtime.runtimeProvider,
+                            sessionID: id
+                        )
+                    )
+                }
             }
         }
-        guard !createdIDs.isEmpty else { return [] }
-        return cachedFallback.filter { createdIDs.contains($0.id) }
+        guard !createdKeys.isEmpty else { return [] }
+        return cachedFallback.filter {
+            createdKeys.contains(CanonicalSessionKey(session: $0, hostScope: key.hostScope))
+        }
     }
 }

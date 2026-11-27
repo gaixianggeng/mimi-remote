@@ -87,14 +87,23 @@ enum HarnessSessionDirectoryDecoding {
         }
         var sessions: [AgentSession] = []
         var seen: Set<SessionID> = []
+        var rawSortEvidenceBySessionID: [SessionID: RawSortEvidence] = [:]
         for item in items {
             let session = try session(from: item, runtimeProvider: runtimeProvider, workspace: workspace)
             // 同 ID 重复出现（夹具里就有）只保留第一条：上游按 updatedAt 倒序，首条最新。
             if seen.insert(session.id).inserted {
                 sessions.append(session)
+                if let updatedAtMs = item["updatedAt"]?.intValue, updatedAtMs > 0 {
+                    rawSortEvidenceBySessionID[session.id] = .epochMs(Int64(updatedAtMs))
+                }
             }
         }
-        return SessionsPage(sessions: sessions, nextCursor: nil, hasMore: false)
+        return SessionsPage(
+            sessions: sessions,
+            nextCursor: nil,
+            hasMore: false,
+            rawSortEvidenceBySessionID: rawSortEvidenceBySessionID
+        )
     }
 
     /// `session/modelCatalog` 结果：`{default, routableProviders, groups, failures}`。

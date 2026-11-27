@@ -121,28 +121,59 @@ extension SessionStore {
         return Self.sortedSessions(scoped)
     }
 
-    /// 跨已启用运行时投影当前工作区的本地缓存会话（按复合键隔离同 ID，不触发网络请求）。
+    /// 单趟扫描并按已启用运行时集合裁剪当前工作区的本地缓存会话（不排序，供高频合并投影复用）。
+    func directoryScopedSessionsUnsorted(
+        workspaceID: String,
+        runtimeProviders: [String]
+    ) -> [AgentSession] {
+        guard let workspace = workspacesByID[workspaceID], !runtimeProviders.isEmpty else {
+            return []
+        }
+        let hostScope = appStore.activeHostScope
+        var normalizedProviders = Set<String>()
+        normalizedProviders.reserveCapacity(runtimeProviders.count)
+        var confirmedGlobalIDsByRuntime: [String: Set<SessionID>] = [:]
+        confirmedGlobalIDsByRuntime.reserveCapacity(runtimeProviders.count)
+        for provider in runtimeProviders {
+            let normalized = Self.normalizedRuntimeProvider(provider)
+            if normalizedProviders.insert(normalized).inserted {
+                let key = workspaceDirectoryScopeKey(for: workspace, runtimeProvider: normalized)
+                confirmedGlobalIDsByRuntime[normalized] = workspaceDirectorySessionIDsByKey[key] ?? []
+            }
+        }
+
+        var seen: Set<CanonicalSessionKey> = []
+        var combined: [AgentSession] = []
+        for item in sessions {
+            let runtime = Self.normalizedRuntimeProvider(item.runtimeProvider ?? item.source)
+            guard normalizedProviders.contains(runtime) else { continue }
+            let belongsToWorkspace = controlledGlobalSessionIDs.contains(item.id)
+                ? (confirmedGlobalIDsByRuntime[runtime]?.contains(item.id) == true)
+                : item.projectID == workspace.id
+            guard belongsToWorkspace, isListableSession(item) else { continue }
+            let key = CanonicalSessionKey(
+                hostScope: hostScope,
+                runtimeProvider: runtime,
+                sessionID: item.id
+            )
+            if seen.insert(key).inserted {
+                combined.append(session(item, in: workspace))
+            }
+        }
+        return combined
+    }
+
+    /// 跨已启用运行时投影当前工作区的本地缓存会话（单趟扫描 + 单次排序，按复合键隔离同 ID，不触发网络请求）。
     func directoryScopedSessions(
         workspaceID: String,
         runtimeProviders: [String]
     ) -> [AgentSession] {
-        var seen: Set<CanonicalSessionKey> = []
-        var combined: [AgentSession] = []
-        let hostScope = appStore.activeHostScope
-        for provider in runtimeProviders {
-            let normalized = Self.normalizedRuntimeProvider(provider)
-            for item in directoryScopedSessions(workspaceID: workspaceID, runtimeProvider: normalized) {
-                let key = CanonicalSessionKey(
-                    hostScope: hostScope,
-                    runtimeProvider: normalized,
-                    sessionID: item.id
-                )
-                if seen.insert(key).inserted {
-                    combined.append(item)
-                }
-            }
-        }
-        return Self.sortedSessions(combined)
+        Self.sortedSessions(
+            directoryScopedSessionsUnsorted(
+                workspaceID: workspaceID,
+                runtimeProviders: runtimeProviders
+            )
+        )
     }
 
     /// 按复合键汇总 Store 已知的子会话归属证据（P1-2a），供 K 路归并引擎计数前合并。
@@ -262,7 +293,9 @@ extension SessionStore {
         cursor: String?,
         limit: Int,
         excludingListableSessionIDs: Set<SessionID> = [],
-        restartFromFirst: Bool = false
+        restartFromFirst: Bool = false,
+        fillsPresentationWindow: Bool = true,
+        preservesWireOrder: Bool = false
     ) async throws -> SessionsPage {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             throw CancellationError()
@@ -300,7 +333,8 @@ extension SessionStore {
                 consistency: .authoritative,
                 source: cursor == nil ? .workspaceForeground : .workspaceLoadMore,
                 expectedHostScope: lease.scope,
-                excludingListableSessionIDs: excludingListableSessionIDs
+                excludingListableSessionIDs: excludingListableSessionIDs,
+                fillsPresentationWindow: fillsPresentationWindow
             )
         }
         try requireCurrentProjectsGitHost(lease)
@@ -349,7 +383,7 @@ extension SessionStore {
                 && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedRuntime
         }
         return SessionsPage(
-            sessions: SessionIndexStore.sortedSessions(listable),
+            sessions: preservesWireOrder ? listable : SessionIndexStore.sortedSessions(listable),
             nextCursor: page.nextCursor,
             hasMore: page.hasMore,
             listMeta: page.listMeta,

@@ -7,6 +7,7 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
 
     private func makeSession(
         id: String,
+        projectID: String = "ws-1",
         runtimeProvider: String,
         updatedAtMs: Int64,
         parentThreadID: String? = nil,
@@ -15,7 +16,7 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
         let date = Date(timeIntervalSince1970: Double(updatedAtMs) / 1000.0)
         return AgentSession(
             id: id,
-            projectID: "ws-1",
+            projectID: projectID,
             project: "demo",
             dir: "/Users/dev/demo",
             title: "\(runtimeProvider)-\(id)",
@@ -466,4 +467,394 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
             .single(.claude)
         )
     }
+
+    // MARK: - Review Regression Coverage (#5.1 / #5.2 / #5.4 / #5.5 / #5.6 / #5.7)
+
+    func testWireISO8601TimestampParsingAndUnitIsolation() {
+        let fractionalISO = "2023-11-14T22:13:22.500Z"
+        let wholeSecondISO = "2023-11-14T22:13:22Z"
+
+        let deepSeekWire: [String: CodexAppServerJSONValue] = [
+            "id": .string("d-iso"),
+            "updatedAt": .string(fractionalISO)
+        ]
+        let legacyClaudeWire: [String: CodexAppServerJSONValue] = [
+            "id": .string("c-iso"),
+            "cliVersion": .string("alleycat-claude-bridge/0.1.0"),
+            "updatedAt": .string(wholeSecondISO)
+        ]
+        let codexWire: [String: CodexAppServerJSONValue] = [
+            "id": .string("x-iso"),
+            "updatedAt": .string(fractionalISO)
+        ]
+
+        XCTAssertEqual(
+            RawSortEvidence.fromWireThread(deepSeekWire, runtimeProvider: "deepseek"),
+            .epochMs(1_700_000_002_500)
+        )
+        XCTAssertEqual(
+            RawSortEvidence.fromWireThread(legacyClaudeWire, runtimeProvider: "claude"),
+            .epochMs(1_700_000_002_000)
+        )
+        XCTAssertEqual(
+            RawSortEvidence.fromWireThread(codexWire, runtimeProvider: "codex"),
+            .epochMs(1_700_000_002_500)
+        )
+    }
+
+    func testLoadingStreamNeverEmitsCompleteExhaustedAndNormalizesCleanly() {
+        var engine = WorkspaceMergedSessionEngine(
+            hostScope: hostScope,
+            enabledRuntimes: [.codex, .claude]
+        )
+        engine.ingestPage(
+            runtime: .codex,
+            page: makePage(runtime: "codex", items: [("x1", 1_700_000_010_000, nil, nil)], hasMore: false),
+            isRefresh: true
+        )
+        engine.markLoading(.claude)
+
+        let loadingProjection = engine.projection(targetVisibleCount: 20)
+        XCTAssertEqual(loadingProjection.completeness, .partial)
+        XCTAssertTrue(loadingProjection.canLoadMore)
+
+        engine.normalizeLoadingStreams()
+        XCTAssertEqual(engine.streams[.claude]?.status, .idle)
+
+        engine.ingestPage(
+            runtime: .claude,
+            page: makePage(
+                runtime: "claude",
+                items: [("c1", 1_700_000_009_000, nil, nil)],
+                nextCursor: "c-p2",
+                hasMore: true
+            ),
+            isRefresh: true
+        )
+        engine.markLoading(.claude)
+        let loadMoreProjection = engine.projection(targetVisibleCount: 40)
+        XCTAssertEqual(loadMoreProjection.completeness, .partial)
+        XCTAssertTrue(loadMoreProjection.canLoadMore)
+
+        engine.normalizeLoadingStreams()
+        XCTAssertEqual(engine.streams[.claude]?.status, .ready)
+    }
+
+    @MainActor
+    func testReconcileAvailableRuntimeProvidersRevivesHostDisabledWithoutWipingLoaded() async {
+        let project = AgentProject(id: "ws-reconcile", name: "demo", path: "/Users/dev/demo")
+        let codexSession = makeSession(id: "x1", runtimeProvider: "codex", updatedAtMs: 1_700_000_010_000)
+        let claudeSession = makeSession(id: "c1", runtimeProvider: "claude", updatedAtMs: 1_700_000_009_000)
+        let client = MergedCoordinatorTestClient(projects: [project]) { runtime, _ in
+            switch runtime {
+            case "codex":
+                return .success(SessionsPage(
+                    sessions: [codexSession],
+                    nextCursor: nil,
+                    hasMore: false,
+                    rawSortEvidenceBySessionID: ["x1": .epochMs(1_700_000_010_000)]
+                ))
+            case "claude":
+                return .success(SessionsPage(
+                    sessions: [claudeSession],
+                    nextCursor: nil,
+                    hasMore: false,
+                    rawSortEvidenceBySessionID: ["c1": .epochMs(1_700_000_009_000)]
+                ))
+            default:
+                return .success(SessionsPage(sessions: [], nextCursor: nil, hasMore: false))
+            }
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.availableRuntimeProviders = ["codex"]
+
+        let coordinator = WorkspaceMergedSessionCoordinator()
+        let key = WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: [.codex, .claude]
+        )
+
+        await coordinator.refresh(project: project, key: key, sessionStore: store)
+        XCTAssertEqual(client.callCount(for: "codex"), 1)
+        XCTAssertEqual(client.callCount(for: "claude"), 0)
+
+        // Probe finishes and adds Claude: reconcile must revive Claude without wiping or refetching Codex.
+        store.availableRuntimeProviders = ["codex", "claude"]
+        await coordinator.reconcileAvailableRuntimeProviders(project: project, key: key, sessionStore: store)
+
+        XCTAssertEqual(client.callCount(for: "codex"), 1)
+        XCTAssertEqual(client.callCount(for: "claude"), 1)
+        let projection = coordinator.projection(for: key, sessionStore: store)
+        XCTAssertEqual(projection.visibleSessions.map(\.id), ["x1", "c1"])
+        XCTAssertEqual(projection.completeness, .completeExhausted)
+        XCTAssertEqual(coordinator.loadState(for: key), .loaded)
+    }
+
+    @MainActor
+    func testRateLimitAndCancellationBlockRuntimeInPumpWithoutStormOrFalseFailure() async {
+        let project = AgentProject(id: "ws-throttle", name: "demo", path: "/Users/dev/demo")
+        let codexSession = makeSession(id: "x1", runtimeProvider: "codex", updatedAtMs: 1_700_000_010_000)
+        let claudeSession = makeSession(id: "c1", runtimeProvider: "claude", updatedAtMs: 1_700_000_009_000)
+        var page2Error: Error = sessionListPolicyError(retryAfterMs: 15_000)
+        let client = MergedCoordinatorTestClient(projects: [project]) { runtime, cursor in
+            if runtime == "codex" {
+                return .success(SessionsPage(
+                    sessions: [codexSession],
+                    nextCursor: nil,
+                    hasMore: false,
+                    rawSortEvidenceBySessionID: ["x1": .epochMs(1_700_000_010_000)]
+                ))
+            }
+            if cursor == nil {
+                return .success(SessionsPage(
+                    sessions: [claudeSession],
+                    nextCursor: "c-p2",
+                    hasMore: true,
+                    rawSortEvidenceBySessionID: ["c1": .epochMs(1_700_000_009_000)]
+                ))
+            }
+            return .failure(page2Error)
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.availableRuntimeProviders = ["codex", "claude"]
+
+        let coordinator = WorkspaceMergedSessionCoordinator()
+        let key = WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: [.codex, .claude]
+        )
+
+        // Initial refresh fetches page 1 for codex & claude, then page 2 for claude hits -32080 (>2s):
+        // must stop after 1 page-2 attempt (total 2 calls for claude), never tight-loop 12x or emit failure banner.
+        await coordinator.refresh(project: project, key: key, sessionStore: store)
+        XCTAssertEqual(client.callCount(for: "claude"), 2)
+        let afterRateLimit = coordinator.projection(for: key, sessionStore: store)
+        XCTAssertEqual(afterRateLimit.visibleSessions.map(\.id), ["x1", "c1"])
+        XCTAssertNil(afterRateLimit.partialNotice)
+        XCTAssertEqual(coordinator.loadState(for: key), .loaded)
+
+        // Next loadMore hits per-runtime CancellationError on page 2: must stop after 1 attempt and stay loaded.
+        page2Error = CancellationError()
+        await coordinator.loadMore(project: project, key: key, sessionStore: store)
+        XCTAssertEqual(client.callCount(for: "claude"), 3)
+        let afterCancel = coordinator.projection(for: key, sessionStore: store)
+        XCTAssertEqual(afterCancel.visibleSessions.map(\.id), ["x1", "c1"])
+        XCTAssertNil(afterCancel.partialNotice)
+        XCTAssertEqual(coordinator.loadState(for: key), .loaded)
+    }
+
+    @MainActor
+    func testNewlyCreatedAndArchivedCanonicalKeyIsolationAndRunningProtection() async throws {
+        let project = AgentProject(id: "ws-canonical", name: "demo", path: "/Users/dev/demo")
+        let codexCreated = makeSession(
+            id: "shared-id",
+            projectID: project.id,
+            runtimeProvider: "codex",
+            updatedAtMs: 1_700_000_010_000
+        )
+        let claudeSameID = makeSession(
+            id: "shared-id",
+            projectID: project.id,
+            runtimeProvider: "claude",
+            updatedAtMs: 1_700_000_009_000
+        )
+        let codexLoaded = makeSession(
+            id: "loaded-only",
+            projectID: project.id,
+            runtimeProvider: "codex",
+            updatedAtMs: 1_700_000_008_000
+        )
+        let client = MergedCoordinatorTestClient(projects: [project]) { runtime, _ in
+            if runtime == "codex" {
+                return .success(SessionsPage(
+                    sessions: [codexLoaded],
+                    nextCursor: nil,
+                    hasMore: false,
+                    rawSortEvidenceBySessionID: ["loaded-only": .epochMs(1_700_000_008_000)]
+                ))
+            }
+            return .success(SessionsPage(sessions: [], nextCursor: nil, hasMore: false))
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.availableRuntimeProviders = ["codex", "claude"]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        store.sessions = [codexCreated, claudeSameID]
+        store.recordWorkspaceCreatedSession(codexCreated, in: workspace, runtimeProvider: "codex")
+
+        let coordinator = WorkspaceMergedSessionCoordinator()
+        let key = WorkspaceMergedPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path,
+            enabledRuntimes: [.codex, .claude]
+        )
+
+        await coordinator.refresh(project: project, key: key, sessionStore: store)
+        let createdProjection = coordinator.projection(for: key, sessionStore: store)
+        XCTAssertEqual(
+            createdProjection.visibleSessions.map { "\($0.runtimeProvider ?? ""):\($0.id)" },
+            ["codex:shared-id", "codex:loaded-only"],
+            "Newly created codex session must not promote same-ID claude session"
+        )
+
+        // Archive loaded-only while absent from store.sessions -> must still be hidden via engine rawEntries.
+        store.sessions = []
+        store.archivedSessionIDs = ["loaded-only"]
+        XCTAssertFalse(
+            coordinator.projection(for: key, sessionStore: store).visibleSessions.contains { $0.id == "loaded-only" }
+        )
+
+        // Selected protection matches isListableSession.
+        store.selectedSessionID = "loaded-only"
+        XCTAssertTrue(
+            coordinator.projection(for: key, sessionStore: store).visibleSessions.contains { $0.id == "loaded-only" }
+        )
+
+        // Running protection matches isListableSession.
+        store.selectedSessionID = nil
+        var runningCodex = codexLoaded
+        runningCodex.status = SessionStatus.running.rawValue
+        store.sessions = [runningCodex]
+        XCTAssertTrue(
+            coordinator.projection(for: key, sessionStore: store).visibleSessions.contains { $0.id == "loaded-only" }
+        )
+    }
+
+    @MainActor
+    func testSamePageRetryAndWorstIntegrityPreservedInPresentationFill() async throws {
+        let project = AgentProject(id: "ws-fill", name: "demo", path: "/Users/dev/demo")
+        let agy1 = makeSession(id: "a1", projectID: project.id, runtimeProvider: "agy", updatedAtMs: 1_700_000_010_000)
+        let agy2 = makeSession(id: "a2", projectID: project.id, runtimeProvider: "agy", updatedAtMs: 1_700_000_009_000)
+        let client = MergedCoordinatorTestClient(projects: [project]) { _, cursor in
+            if cursor == nil {
+                return .success(SessionsPage(
+                    sessions: [agy1],
+                    nextCursor: "c2",
+                    hasMore: true,
+                    listMeta: nil
+                ))
+            }
+            return .success(SessionsPage(
+                sessions: [agy2],
+                nextCursor: "c2",
+                hasMore: true,
+                listMeta: SessionListMeta(
+                    complete: true,
+                    rawPageDisposition: "same_page_retry",
+                    retryReason: "git_ownership_pending"
+                )
+            ))
+        }
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+
+        let filled = try await store.sessionListPageFillingPresentationWindow(
+            client: client,
+            workspace: workspace,
+            runtimeProvider: "agy",
+            cursor: nil,
+            limit: 10,
+            consistency: .authoritative,
+            source: .workspaceForeground,
+            expectedHostScope: appStore.activeHostScope
+        )
+        XCTAssertEqual(filled.sessions.map(\.id), ["a1", "a2"])
+        XCTAssertEqual(filled.nextCursor, "c2")
+        XCTAssertTrue(filled.hasMore)
+        XCTAssertEqual(
+            SessionListMeta.resolvedDisposition(from: filled.listMeta, isControlledGlobal: false),
+            .samePageRetry(reason: "git_ownership_pending")
+        )
+        XCTAssertEqual(
+            SessionListMeta.resolvedIntegrity(from: filled.listMeta, runtimeProvider: "agy", isControlledGlobal: false),
+            .unverifiedHealth,
+            "Earlier sub-page missing listMeta on agy must not be upgraded to trusted by later sub-page"
+        )
+    }
+}
+
+private final class MergedCoordinatorTestClient: SessionStoreAPIClient {
+    private let projectsResult: [AgentProject]
+    private let pageHandler: (String, String?) -> Result<SessionsPage, Error>
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    init(
+        projects: [AgentProject],
+        pageHandler: @escaping (String, String?) -> Result<SessionsPage, Error>
+    ) {
+        self.projectsResult = projects
+        self.pageHandler = pageHandler
+    }
+
+    func callCount(for runtimeProvider: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[runtimeProvider, default: 0]
+    }
+
+    func projects() async throws -> [AgentProject] { projectsResult }
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] { [] }
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        SessionsPage(sessions: [])
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        lock.lock()
+        counts[runtimeProvider, default: 0] += 1
+        lock.unlock()
+        return try pageHandler(runtimeProvider, cursor).get()
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] { [] }
 }

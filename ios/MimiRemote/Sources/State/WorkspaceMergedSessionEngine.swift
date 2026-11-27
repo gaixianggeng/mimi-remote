@@ -129,6 +129,48 @@ struct WorkspaceMergedSessionEngine: Equatable {
         streams[runtime] = StreamState(runtime: runtime)
     }
 
+    /// 将所有残留 `.loading` 状态归位到安全终态（已加载页按 `hasMore` 回到 `.ready`/`.exhausted`，否则 `.idle`），
+    /// 避免被取消或被取代的波次永久钉死 `canFetchMore` 与 `watermarkMs`。
+    mutating func normalizeLoadingStreams() {
+        for runtime in enabledRuntimes {
+            guard var stream = streams[runtime], stream.status == .loading else { continue }
+            stream.status = stream.hasLoadedAnyPage ? (stream.hasMore ? .ready : .exhausted) : .idle
+            streams[runtime] = stream
+        }
+    }
+
+    /// 响应 `SessionStore.availableRuntimeProviders` 异步探测结果更新：
+    /// - 新探测到的运行时若当前为 `.hostDisabled`，重置为 `.idle` 待拉取，不清空其他已加载流；
+    /// - 若主机探测确认某未加载流不在可用集合内且当前非加载态，标为 `.hostDisabled` 避免误报不可用横幅。
+    @discardableResult
+    mutating func reconcileAvailableRuntimeProviders(
+        _ availableRuntimeProviders: Set<String>
+    ) -> (didMutate: Bool, didReviveAnyStream: Bool) {
+        guard !availableRuntimeProviders.isEmpty else {
+            return (false, false)
+        }
+        var didMutate = false
+        var didReviveAnyStream = false
+        for runtime in enabledRuntimes {
+            guard var stream = streams[runtime] else { continue }
+            let isAvailable = availableRuntimeProviders.contains(runtime.runtimeProvider)
+            if isAvailable, stream.status.isHostDisabled {
+                streams[runtime] = StreamState(runtime: runtime)
+                didMutate = true
+                didReviveAnyStream = true
+            } else if !isAvailable,
+                      !stream.hasLoadedAnyPage,
+                      !stream.status.isHostDisabled,
+                      stream.status != .loading {
+                stream.status = .hostDisabled
+                stream.hasMore = false
+                streams[runtime] = stream
+                didMutate = true
+            }
+        }
+        return (didMutate, didReviveAnyStream)
+    }
+
     mutating func resetForRefresh(availableRuntimeProviders: Set<String>) {
         knownOwnershipByKey.removeAll()
         for runtime in enabledRuntimes {
@@ -454,7 +496,6 @@ struct WorkspaceMergedSessionEngine: Equatable {
         }
 
         var rankedByKey: [CanonicalSessionKey: RankedEntry] = [:]
-        var strictKeys: Set<CanonicalSessionKey> = []
 
         for stream in activeStreams {
             for raw in stream.rawEntries {
@@ -489,9 +530,6 @@ struct WorkspaceMergedSessionEngine: Equatable {
                     isStrict: eligibleStrict
                 )
                 rankedByKey[raw.canonicalKey] = candidate
-                if eligibleStrict {
-                    strictKeys.insert(raw.canonicalKey)
-                }
             }
         }
 
@@ -512,7 +550,6 @@ struct WorkspaceMergedSessionEngine: Equatable {
                 streamOrdinal: -1,
                 isStrict: true
             )
-            strictKeys.insert(key)
         }
 
         let sortedAll = rankedByKey.values.sorted { lhs, rhs in
@@ -528,7 +565,10 @@ struct WorkspaceMergedSessionEngine: Equatable {
             )
         }
 
-        let strictListableCount = sortedAll.filter(\.isStrict).count
+        var strictListableCount = 0
+        for entry in sortedAll where entry.isStrict {
+            strictListableCount += 1
+        }
 
         let unavailableRuntimes = activeStreams
             .filter { $0.status.isUnavailableOrFailed }
@@ -551,6 +591,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
             )
 
         let anyCanFetchMore = activeStreams.contains(where: \.canFetchMore)
+        let anyLoading = activeStreams.contains { $0.status == .loading }
         let allExhaustedAndTrusted = activeStreams.allSatisfy {
             $0.status == .exhausted && $0.isHealthyForStrictPrefix
         }
@@ -564,14 +605,14 @@ struct WorkspaceMergedSessionEngine: Equatable {
             completeness = .completeExhausted
         } else if !hasPartialFactor && strictListableCount >= clampedTarget {
             completeness = .complete
-        } else if hasPartialFactor || anyCanFetchMore {
+        } else if hasPartialFactor || anyCanFetchMore || anyLoading {
             completeness = .partial
         } else {
             completeness = .completeExhausted
         }
 
         let visibleSessions = Array(sortedAll.prefix(clampedTarget).map(\.session))
-        let canLoadMore = sortedAll.count > clampedTarget || anyCanFetchMore
+        let canLoadMore = sortedAll.count > clampedTarget || anyCanFetchMore || anyLoading
 
         return WorkspaceMergedProjection(
             visibleSessions: visibleSessions,
@@ -593,27 +634,43 @@ struct WorkspaceMergedSessionEngine: Equatable {
     func needsMorePages(
         targetVisibleCount: Int,
         canonicalByKey: [CanonicalSessionKey: AgentSession] = [:],
-        archivedKeys: Set<CanonicalSessionKey> = []
+        archivedKeys: Set<CanonicalSessionKey> = [],
+        excluding blockedRuntimes: Set<WorkspaceSessionRuntimeChoice> = []
     ) -> Bool {
         let proj = projection(
             targetVisibleCount: targetVisibleCount,
             canonicalByKey: canonicalByKey,
             archivedKeys: archivedKeys
         )
-        let anyUnloaded = enabledRuntimes.contains { streams[$0]?.status == .idle }
+        return needsMorePages(
+            targetVisibleCount: targetVisibleCount,
+            projection: proj,
+            excluding: blockedRuntimes
+        )
+    }
+
+    /// 复用已有投影结果判断是否仍需补页，避免 `pumpPages` 单轮内重复计算 `projection()`。
+    func needsMorePages(
+        targetVisibleCount: Int,
+        projection currentProjection: WorkspaceMergedProjection,
+        excluding blockedRuntimes: Set<WorkspaceSessionRuntimeChoice> = []
+    ) -> Bool {
+        let anyUnloaded = enabledRuntimes.contains {
+            !blockedRuntimes.contains($0) && streams[$0]?.status == .idle
+        }
         if anyUnloaded {
             return true
         }
-        if proj.completeness == .complete || proj.completeness == .completeExhausted {
+        if currentProjection.completeness == .complete || currentProjection.completeness == .completeExhausted {
             return false
         }
-        if proj.totalLoadedListableCount < targetVisibleCount {
-            return nextRuntimeToFetch() != nil
+        if currentProjection.totalLoadedListableCount < targetVisibleCount {
+            return nextRuntimeToFetch(excluding: blockedRuntimes) != nil
         }
-        if proj.strictCommittedCount < targetVisibleCount {
+        if currentProjection.strictCommittedCount < targetVisibleCount {
             // 可见条数已满时，只继续推进严格健康流；非严格健康流（如旧版服务端未带 listMeta）
             // 无法提升严格前缀计数，绝不能反复翻页触发网关限流。
-            return nextRuntimeToFetch(onlyHealthyForStrict: true) != nil
+            return nextRuntimeToFetch(excluding: blockedRuntimes, onlyHealthyForStrict: true) != nil
         }
         return false
     }
@@ -653,8 +710,16 @@ struct WorkspaceMergedSessionEngine: Equatable {
         hostScope: HostScope,
         archivedKeys: Set<CanonicalSessionKey>
     ) -> [AgentSession] {
+        struct SortableCachedEntry {
+            let session: AgentSession
+            let key: CanonicalSessionKey
+            let evidence: RawSortEvidence
+            let rank: Int
+        }
         var seen: Set<CanonicalSessionKey> = []
-        var unique: [AgentSession] = []
+        seen.reserveCapacity(sessions.count)
+        var unique: [SortableCachedEntry] = []
+        unique.reserveCapacity(sessions.count)
         for item in sessions {
             let key = CanonicalSessionKey(session: item, hostScope: hostScope)
             guard !archivedKeys.contains(key),
@@ -662,21 +727,25 @@ struct WorkspaceMergedSessionEngine: Equatable {
                   seen.insert(key).inserted else {
                 continue
             }
-            unique.append(item)
+            unique.append(SortableCachedEntry(
+                session: item,
+                key: key,
+                evidence: RawSortEvidence.fromSession(item),
+                rank: key.runtimeTieRank
+            ))
         }
-        return unique.sorted { lhs, rhs in
-            let lKey = CanonicalSessionKey(session: lhs, hostScope: hostScope)
-            let rKey = CanonicalSessionKey(session: rhs, hostScope: hostScope)
-            return compareEntries(
-                leftEvidence: RawSortEvidence.fromSession(lhs),
-                leftRank: lKey.runtimeTieRank,
+        unique.sort { lhs, rhs in
+            compareEntries(
+                leftEvidence: lhs.evidence,
+                leftRank: lhs.rank,
                 leftOrdinal: 0,
-                leftID: lhs.id,
-                rightEvidence: RawSortEvidence.fromSession(rhs),
-                rightRank: rKey.runtimeTieRank,
+                leftID: lhs.key.sessionID,
+                rightEvidence: rhs.evidence,
+                rightRank: rhs.rank,
                 rightOrdinal: 0,
-                rightID: rhs.id
+                rightID: rhs.key.sessionID
             )
         }
+        return unique.map(\.session)
     }
 }

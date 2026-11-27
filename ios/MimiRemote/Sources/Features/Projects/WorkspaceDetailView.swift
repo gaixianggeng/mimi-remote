@@ -43,6 +43,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     var runtimeDiagnostic: RuntimeChannelDiagnostic? = nil
     var mergedCompleteness: WorkspaceMergedCompleteness? = nil
     var mergedPartialNotice: WorkspaceMergedPartialNotice? = nil
+    var hasAttemptedLoad: Bool = false
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -174,7 +175,20 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .frame(maxWidth: .infinity, minHeight: 150)
                 .accessibilityIdentifier("workspace.mergedAllUnavailable")
             } else if browseScope.isAll, recentSessions.isEmpty, mergedCompleteness == .cachedPreview {
-                recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
+                if hasAttemptedLoad {
+                    ContentUnavailableView {
+                        Label(
+                            L10n.text("ui.unable_to_load_session"),
+                            systemImage: "arrow.clockwise"
+                        )
+                    } actions: {
+                        Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 150)
+                    .accessibilityIdentifier("workspace.mergedCachedPreviewRetry")
+                } else {
+                    recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
+                }
             } else if browseScope.isAll,
                       recentSessions.isEmpty,
                       mergedCompleteness != .completeExhausted,
@@ -360,9 +374,16 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        let hierarchyGuideX = browseScope.isAll
+            ? rowDensity.horizontalPadding + rowDensity.stateGutterWidth / 2
+            : rowDensity.horizontalPadding + 4
+        let hierarchyContentInset = browseScope.isAll
+            ? rowDensity.horizontalPadding + SessionIndexRowDensity.runtimeIconInset
+            : rowDensity.horizontalPadding
+
         // 行与行之间不再画分隔线，只靠留白分开——逐行横线会把列表读成一张表格。
         // 线只保留在分组边界（小节标题上方的留白）和"显示更多"入口之前。
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
                 let session = row.session
                 let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
@@ -410,8 +431,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .sessionHierarchyRow(
                     row,
                     expansion: sessionStore.sessionHierarchyExpansion,
-                    guideX: rowDensity.horizontalPadding + 4,
-                    contentInset: rowDensity.horizontalPadding
+                    guideX: hierarchyGuideX,
+                    contentInset: hierarchyContentInset
                 )
             }
 
@@ -490,25 +511,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         isUnread: Bool,
         identityFallback: SessionIndexRowIdentityFallback
     ) -> String {
-        let baseIdentity: String? = SessionListPresentation.normalizedBranch(session.gitBranchName).map {
+        let identity: String? = SessionListPresentation.normalizedBranch(session.gitBranchName).map {
             "\(L10n.text("ui.branch")) \($0)"
         } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: identityFallback)
-        let identity: String?
-        if browseScope.isAll {
-            let runtimeTitle = SessionRuntimePresentation(session: session).title
-            if let baseIdentity, !baseIdentity.isEmpty {
-                identity = "\(runtimeTitle), \(baseIdentity)"
-            } else {
-                identity = runtimeTitle
-            }
-        } else {
-            identity = baseIdentity
-        }
         return SessionIndexRow.accessibilityValue(
             status: session.displayStatus(foregroundActivity: foregroundActivity),
             sessionStatus: session.status,
             isUnread: isUnread,
             showsNeutralHistoryStatus: false,
+            runtime: browseScope.isAll ? SessionRuntimePresentation(session: session).title : nil,
             identity: identity
         )
     }
@@ -525,6 +536,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     }
 
     private var orderedAvailableCreationRuntimes: [WorkspaceSessionRuntimeChoice] {
+        guard mergedCompleteness != .allUnavailable else { return [] }
         let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: enabledRuntimesRawValue)
         let available = WorkspaceSessionRuntimeChoice.available(
             runtimeProviders: availableRuntimeProviders,
@@ -750,5 +762,112 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .strokeBorder(tokens.warning.opacity(0.35), lineWidth: 1)
         }
         .accessibilityIdentifier("workspace.runtimeDiagnosticBanner")
+    }
+}
+
+/// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
+/// 根工作区的 Git 摘要不在这里展示：它描述的是 project.path，不能代表各会话 worktree。
+struct WorkspaceUnavailableStatusLine: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let isUnavailable: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        Group {
+            if isUnavailable {
+                Label(L10n.text("ui.need_to_retry"), systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(tokens.warning)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .font(themeStore.uiFont(.caption))
+        .foregroundStyle(tokens.secondaryText)
+        // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
+        // 这里再加一次会比筛选行和会话行多缩进一截。
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("workspace.statusLine")
+    }
+}
+
+/// 工作区「全部」汇总详情页：独立订阅 `WorkspaceMergedSessionCoordinator` 与 `SessionStore`，
+/// 避免 `WorkspaceRootView` 在分页滚动时直接计算合并投影。
+struct WorkspaceMergedDetailPageView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @ObservedObject var mergedCoordinator: WorkspaceMergedSessionCoordinator
+    @State private var didObserveLoading = false
+
+    let project: AgentProject
+    let mergedKey: WorkspaceMergedPresentationKey
+    let showsStatusLine: Bool
+    let showsInlineRuntimePicker: Bool
+    @Binding var browseScope: WorkspaceSessionBrowseScope
+    let preferredRuntime: WorkspaceSessionRuntimeChoice
+    let currentDate: () -> Date
+    let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
+    let onOpenSession: (AgentSession) -> Void
+    let bottomContentMargin: CGFloat?
+
+    var body: some View {
+        let projection = mergedCoordinator.projection(for: mergedKey, sessionStore: sessionStore)
+        let loadState = mergedCoordinator.loadState(for: mergedKey)
+        WorkspaceDetailView(
+            statusLine: WorkspaceUnavailableStatusLine(isUnavailable: showsStatusLine),
+            showsStatusLine: showsStatusLine,
+            showsInlineRuntimePicker: showsInlineRuntimePicker,
+            recentSessions: projection.visibleSessions,
+            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
+            sessionLoadState: loadState,
+            hasInitialSessionContent: projection.hasInitialContent,
+            canLoadMoreSessions: projection.canLoadMore,
+            browseScope: $browseScope,
+            preferredRuntime: preferredRuntime,
+            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            mergedCompleteness: projection.completeness,
+            mergedPartialNotice: projection.partialNotice,
+            hasAttemptedLoad: didObserveLoading,
+            onRetryUnavailable: { choice in
+                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+            },
+            currentDate: currentDate,
+            onRefreshSessions: {
+                Task {
+                    await mergedCoordinator.refresh(
+                        project: project,
+                        key: mergedKey,
+                        sessionStore: sessionStore,
+                        restartFromFirst: true
+                    )
+                }
+            },
+            onLoadMoreSessions: {
+                await mergedCoordinator.loadMore(
+                    project: project,
+                    key: mergedKey,
+                    sessionStore: sessionStore
+                )
+            },
+            onStartSession: { runtimeChoice in
+                onStartSession(project, runtimeChoice)
+            },
+            onOpenSession: onOpenSession,
+            bottomContentMargin: bottomContentMargin
+        )
+        .onAppear {
+            if loadState.isLoading {
+                didObserveLoading = true
+            }
+        }
+        .onChange(of: loadState) { _, newState in
+            if newState.isLoading {
+                didObserveLoading = true
+            }
+        }
+        .onChange(of: mergedKey) { _, newKey in
+            didObserveLoading = mergedCoordinator.loadState(for: newKey).isLoading
+        }
     }
 }

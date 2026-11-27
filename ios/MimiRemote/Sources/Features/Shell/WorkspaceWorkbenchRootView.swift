@@ -65,7 +65,10 @@ struct WorkspaceRuntimeSelectionState {
 
     mutating func setBrowseScope(_ scope: WorkspaceSessionBrowseScope) {
         manualBrowseScope = scope
-        if case let .single(choice) = scope {
+        switch scope {
+        case .all:
+            manualRuntime = nil
+        case let .single(choice):
             manualRuntime = choice
         }
     }

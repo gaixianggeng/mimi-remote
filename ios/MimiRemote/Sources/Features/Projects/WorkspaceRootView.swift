@@ -189,6 +189,12 @@ struct WorkspaceSessionRefreshScope: Equatable {
     var hasNoConfiguredHost: Bool = false
 }
 
+private struct WorkspaceMergedAvailabilityReconcileScope: Equatable {
+    let key: WorkspaceMergedPresentationKey?
+    let availableRuntimeProviders: Set<String>
+    let hasNoConfiguredHost: Bool
+}
+
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
 struct WorkspaceCatalogLoadCoordinator {
     private(set) var state: WorkspaceCatalogLoadState = .idle
@@ -289,7 +295,7 @@ struct WorkspaceRootView: View {
     @ScaledMetric(relativeTo: .callout) private var emptyActionSize: CGFloat = 16
     @ScaledMetric(relativeTo: .title3) private var emptyTitleSize: CGFloat = 20
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
-    @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
+    @State private var pagerTransitionState = WorkspacePagerTransitionState()
     @StateObject private var mergedCoordinator = WorkspaceMergedSessionCoordinator()
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
@@ -438,6 +444,11 @@ struct WorkspaceRootView: View {
             } ?? false,
             hasNoConfiguredHost: isInNoHostEmptyState
         )
+        let mergedAvailabilityReconcileScope = WorkspaceMergedAvailabilityReconcileScope(
+            key: selectedMergedKey,
+            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            hasNoConfiguredHost: isInNoHostEmptyState
+        )
 
         Group {
             if embedsNavigationStack {
@@ -521,6 +532,19 @@ struct WorkspaceRootView: View {
                   })
             else { return }
             await mergedCoordinator.refresh(
+                project: project,
+                key: mergedKey,
+                sessionStore: sessionStore
+            )
+        }
+        .task(id: mergedAvailabilityReconcileScope) {
+            guard !mergedAvailabilityReconcileScope.hasNoConfiguredHost,
+                  let mergedKey = mergedAvailabilityReconcileScope.key,
+                  let project = sessionStore.sidebarProjects.first(where: {
+                      $0.id == mergedKey.workspaceID && $0.path == mergedKey.workspacePath
+                  })
+            else { return }
+            await mergedCoordinator.reconcileAvailableRuntimeProviders(
                 project: project,
                 key: mergedKey,
                 sessionStore: sessionStore
@@ -623,7 +647,9 @@ struct WorkspaceRootView: View {
             viewportWidth: workspaceStripContainerWidth,
             showsHostSwitcherInStrip: showsHostSwitcherInStrip,
             hasBottomTabBar: hasBottomTabBar,
-            contentPadding: stripContentPadding
+            contentPadding: stripContentPadding,
+            enabledRuntimeCount: enabledWorkspaceRuntimes.count,
+            dynamicTypeSize: dynamicTypeSize
         )
     }
 
@@ -740,7 +766,7 @@ struct WorkspaceRootView: View {
 
                 // 原来这里是一条硬分割线。控件带与内容之间的边界改由 scroll edge effect 表达，
                 // 选中工作区的分支、Git 状态和活跃时间收进一行状态摘要。
-                projectPager(tokens: tokens)
+                projectPager()
             }
             .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         }
@@ -750,9 +776,9 @@ struct WorkspaceRootView: View {
     /// `scrollPosition(id:)` 是连续绑定，胶囊行能跟着滑动过程走；TabView 的 selection
     /// 要等落定才更新，滑到一半上方胶囊不动、松手才跳，正好丢掉跟手感。
     /// 分页物理特性（跟手、速度投射、可中断反向）由系统提供，不自己写 DragGesture。
-    private func projectPager(tokens: ThemeTokens) -> some View {
+    private func projectPager() -> some View {
         ScrollViewReader { proxy in
-            projectPagerScrollView(tokens: tokens)
+            projectPagerScrollView()
                 .onAppear {
                     // 宽屏会话详情返回、切换布局容器时分页会整个重建：`scrollPosition(id:)` 不会把
                     // 首帧之前已有的选择应用到 LazyHStack，正文会停在第一页而胶囊仍标着原工作区
@@ -765,7 +791,7 @@ struct WorkspaceRootView: View {
         }
     }
 
-    private func projectPagerScrollView(tokens: ThemeTokens) -> some View {
+    private func projectPagerScrollView() -> some View {
         // scrollTransition 闭包是 Sendable；先冻结成值类型快照，避免直接跨隔离域读取 Environment。
         let allowsSpatialMotion = !reduceMotion
         let projectCount = sessionStore.sidebarProjects.count
@@ -778,9 +804,7 @@ struct WorkspaceRootView: View {
                     workspaceDetail(
                         project: project,
                         showsStatusLine: sessionStore.isWorkspaceUnavailable(project.id)
-                    ) {
-                        workspaceStatusLine(project: project, tokens: tokens)
-                    }
+                    )
                     .refreshable {
                         await refreshWorkspaceContent(projectID: project.id)
                     }
@@ -1038,7 +1062,7 @@ struct WorkspaceRootView: View {
                     browseScope: $browseScope,
                     availableRuntimeProviders: sessionStore.availableRuntimeProviders,
                     onRetryUnavailable: { choice in
-                        await retryUnavailableRuntime(choice)
+                        await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
                     }
                 )
             }
@@ -1228,78 +1252,23 @@ struct WorkspaceRootView: View {
         }
     }
 
-    /// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
-    /// 根工作区的 Git 摘要不在这里展示：它描述的是 project.path，不能代表各会话 worktree。
-    private func workspaceStatusLine(project: AgentProject, tokens: ThemeTokens) -> some View {
-        Group {
-            if sessionStore.isWorkspaceUnavailable(project.id) {
-                Label(L10n.text("ui.need_to_retry"), systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(tokens.warning)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-        }
-        .font(themeStore.uiFont(.caption))
-        .foregroundStyle(tokens.secondaryText)
-        // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
-        // 这里再加一次会比筛选行和会话行多缩进一截。
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("workspace.statusLine")
-    }
-
     @ViewBuilder
-    private func workspaceDetail<StatusLine: View>(
+    private func workspaceDetail(
         project: AgentProject,
-        showsStatusLine: Bool,
-        @ViewBuilder statusLine: () -> StatusLine
+        showsStatusLine: Bool
     ) -> some View {
         if browseScope.isAll {
             let mergedKey = workspaceMergedPresentationKey(for: project)
-            let projection = mergedCoordinator.projection(for: mergedKey, sessionStore: sessionStore)
-            WorkspaceDetailView(
-                statusLine: statusLine(),
+            WorkspaceMergedDetailPageView(
+                mergedCoordinator: mergedCoordinator,
+                project: project,
+                mergedKey: mergedKey,
                 showsStatusLine: showsStatusLine,
                 showsInlineRuntimePicker: usesInlineRuntimePicker,
-                recentSessions: projection.visibleSessions,
-                unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
-                sessionLoadState: mergedCoordinator.loadState(for: mergedKey),
-                hasInitialSessionContent: projection.hasInitialContent,
-                canLoadMoreSessions: projection.canLoadMore,
                 browseScope: $browseScope,
                 preferredRuntime: preferredRuntime,
-                availableRuntimeProviders: sessionStore.availableRuntimeProviders,
-                mergedCompleteness: projection.completeness,
-                mergedPartialNotice: projection.partialNotice,
-                onRetryUnavailable: { choice in
-                    await mergedCoordinator.retryUnavailable(
-                        runtime: choice,
-                        project: project,
-                        key: mergedKey,
-                        sessionStore: sessionStore
-                    )
-                },
                 currentDate: currentDate,
-                onRefreshSessions: {
-                    Task {
-                        await mergedCoordinator.refresh(
-                            project: project,
-                            key: mergedKey,
-                            sessionStore: sessionStore,
-                            restartFromFirst: true
-                        )
-                    }
-                },
-                onLoadMoreSessions: {
-                    await mergedCoordinator.loadMore(
-                        project: project,
-                        key: mergedKey,
-                        sessionStore: sessionStore
-                    )
-                },
-                onStartSession: { runtimeChoice in
-                    onStartSession(project, runtimeChoice)
-                },
+                onStartSession: onStartSession,
                 onOpenSession: onOpenSession,
                 bottomContentMargin: bottomContentMargin
             )
@@ -1316,7 +1285,7 @@ struct WorkspaceRootView: View {
             let loadState = sessionLoadState(for: presentationKey)
             let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
             WorkspaceDetailView(
-                statusLine: statusLine(),
+                statusLine: WorkspaceUnavailableStatusLine(isUnavailable: showsStatusLine),
                 showsStatusLine: showsStatusLine,
                 // 胶囊行已经承载筛选器时，详情页不再自己画一条筛选行。
                 showsInlineRuntimePicker: usesInlineRuntimePicker,
@@ -1485,18 +1454,6 @@ struct WorkspaceRootView: View {
             workspacePath: project.path,
             enabledRuntimes: enabledWorkspaceRuntimes
         )
-    }
-
-    private func retryUnavailableRuntime(_ choice: WorkspaceSessionRuntimeChoice) async -> Bool {
-        if browseScope.isAll, let project = selectedProject {
-            return await mergedCoordinator.retryUnavailable(
-                runtime: choice,
-                project: project,
-                key: workspaceMergedPresentationKey(for: project),
-                sessionStore: sessionStore
-            )
-        }
-        return await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
     }
 
     private func workspaceSessionVisibleLimit(for key: WorkspaceSessionPresentationKey) -> Int {
@@ -1776,7 +1733,7 @@ private struct WorkspaceProjectChip: View {
     let distanceFromSelection: Int
     /// 宽屏信息密度底值。名称可半展开，但选中材质仍只读取分页进度。
     let restingNameDisclosure: CGFloat
-    @ObservedObject var pagerTransitionState: WorkspacePagerTransitionState
+    let pagerTransitionState: WorkspacePagerTransitionState
     let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void

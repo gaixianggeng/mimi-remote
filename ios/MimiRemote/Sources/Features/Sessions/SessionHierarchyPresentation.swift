@@ -204,9 +204,9 @@ extension SessionHierarchy {
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> [SessionHistoryFamilyGroup] {
-        var familyByLeaderID: [SessionID: SessionFamily] = [:]
+        var familyByLeaderKey: [String: SessionFamily] = [:]
         for family in families {
-            familyByLeaderID[family.leader.id] = family
+            familyByLeaderKey[compositeKey(family.leader)] = family
         }
         return SessionListPresentation.historyDateGroups(
             sessions: families.map(\.leader),
@@ -215,7 +215,7 @@ extension SessionHierarchy {
         ).map { group in
             SessionHistoryFamilyGroup(
                 bucket: group.bucket,
-                families: group.sessions.compactMap { familyByLeaderID[$0.id] }
+                families: group.sessions.compactMap { familyByLeaderKey[compositeKey($0)] }
             )
         }
     }

@@ -198,29 +198,34 @@ enum RawSortEvidence: Equatable, Sendable {
 
         // Codex 若显式返回 recencyAt: null（无可用 recency 排序证据）且无其他有效时间字段，标记不透明序。
         let hasExplicitNullRecency = object["recencyAt"] == .null
-        let primaryNumber = numericTimestamp(object["recencyAt"])
-            ?? numericTimestamp(object["updatedAt"])
-            ?? numericTimestamp(object["createdAt"])
+        let primaryValue = parsedTimestamp(object["recencyAt"])
+            ?? parsedTimestamp(object["updatedAt"])
+            ?? parsedTimestamp(object["createdAt"])
 
-        guard let rawNumber = primaryNumber else {
+        guard let primaryValue else {
             return hasExplicitNullRecency ? .opaqueServerOrder : .missing
         }
-        guard rawNumber.isFinite, rawNumber >= 0 else {
-            return .unverifiedUnit
-        }
-        if rawNumber == 0 {
-            return .missing
-        }
+        switch primaryValue {
+        case let .epochMs(ms):
+            return ms > 0 ? .epochMs(ms) : .missing
+        case let .numeric(rawNumber):
+            guard rawNumber.isFinite, rawNumber >= 0 else {
+                return .unverifiedUnit
+            }
+            if rawNumber == 0 {
+                return .missing
+            }
 
-        // DeepSeek（Harness Native）与 Rust Legacy Claude 使用毫秒时间戳；
-        // Codex / Claude SDK / Antigravity 使用秒时间戳（兼容异常超大毫秒值的启发式防双重乘 1000）。
-        if normalizedRuntime == "deepseek" || isLegacyRustClaude {
-            return .epochMs(Int64(rawNumber.rounded()))
+            // DeepSeek（Harness Native）与 Rust Legacy Claude 使用毫秒时间戳；
+            // Codex / Claude SDK / Antigravity 使用秒时间戳（兼容异常超大毫秒值的启发式防双重乘 1000）。
+            if normalizedRuntime == "deepseek" || isLegacyRustClaude {
+                return .epochMs(Int64(rawNumber.rounded()))
+            }
+            if rawNumber >= 100_000_000_000 {
+                return .epochMs(Int64(rawNumber.rounded()))
+            }
+            return .epochMs(Int64((rawNumber * 1000.0).rounded()))
         }
-        if rawNumber >= 100_000_000_000 {
-            return .epochMs(Int64(rawNumber.rounded()))
-        }
-        return .epochMs(Int64((rawNumber * 1000.0).rounded()))
     }
 
     /// 从已解码的 `AgentSession` 回退构造排序证据（如 DeepSeek HTTP 或本地 Store 预览）。
@@ -232,21 +237,40 @@ enum RawSortEvidence: Equatable, Sendable {
         return .epochMs(Int64((seconds * 1000.0).rounded()))
     }
 
-    private static func numericTimestamp(_ value: CodexAppServerJSONValue?) -> Double? {
+    private enum WireTimestampValue {
+        case numeric(Double)
+        case epochMs(Int64)
+    }
+
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func parsedTimestamp(_ value: CodexAppServerJSONValue?) -> WireTimestampValue? {
         guard let value else { return nil }
         switch value {
         case let .int(intVal):
-            return Double(intVal)
+            return .numeric(Double(intVal))
         case let .double(doubleVal):
-            return doubleVal
+            return .numeric(doubleVal)
         case let .string(raw):
             let strVal = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !strVal.isEmpty else { return nil }
             if let numeric = Double(strVal), numeric.isFinite {
-                return numeric
+                return .numeric(numeric)
             }
-            if let iso = ISO8601DateFormatter().date(from: strVal) {
-                return iso.timeIntervalSince1970
+            if let iso = iso8601Fractional.date(from: strVal) ?? iso8601.date(from: strVal) {
+                let seconds = iso.timeIntervalSince1970
+                guard seconds.isFinite, seconds > 0 else { return nil }
+                return .epochMs(Int64((seconds * 1000.0).rounded()))
             }
             return nil
         default:
