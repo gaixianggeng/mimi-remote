@@ -724,33 +724,57 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(
             ModelReasoningGridPresentationContainer.resolve(
                 horizontalSizeClass: .regular,
-                verticalSizeClass: .regular
+                verticalSizeClass: .regular,
+                usesFloatingGlass: false,
+                isAccessibilitySize: false
             ),
             .regularPopover
         )
         XCTAssertEqual(
             ModelReasoningGridPresentationContainer.resolve(
                 horizontalSizeClass: .compact,
-                verticalSizeClass: .regular
+                verticalSizeClass: .regular,
+                usesFloatingGlass: true,
+                isAccessibilitySize: false
+            ),
+            .compactPopover
+        )
+        XCTAssertEqual(
+            ModelReasoningGridPresentationContainer.resolve(
+                horizontalSizeClass: .compact,
+                verticalSizeClass: .regular,
+                usesFloatingGlass: true,
+                isAccessibilitySize: true
+            ),
+            .compactSheet
+        )
+        XCTAssertEqual(
+            ModelReasoningGridPresentationContainer.resolve(
+                horizontalSizeClass: .compact,
+                verticalSizeClass: .regular,
+                usesFloatingGlass: false,
+                isAccessibilitySize: false
             ),
             .compactSheet
         )
         XCTAssertEqual(
             ModelReasoningGridPresentationContainer.resolve(
                 horizontalSizeClass: .regular,
-                verticalSizeClass: .compact
+                verticalSizeClass: .compact,
+                usesFloatingGlass: true,
+                isAccessibilitySize: false
             ),
             .compactSheet
         )
 
-        // 1. iPhone 悬浮玻璃输入卡 + 紧凑 Sheet：玻璃模式按系统版本选择 Liquid Glass / ultraThinMaterial，
-        //    经典模式、降低透明度、增强对比度统一回退为与输入卡一致的实色表面。
+        // 1. iPhone 悬浮玻璃输入卡 + 紧凑 Popover：玻璃模式直接由系统原生单层 Liquid Glass（iOS 26+）
+        //    或 ultraThinMaterial 承载；经典模式、降低透明度、增强对比度统一回退为实色底板。
         for interfaceStyle in ThemeInterfaceStyle.allCases {
             for reduceTransparency in [false, true] {
                 for increasedContrast in [false, true] {
                     for supportsLiquidGlass in [false, true] {
                         let policy = ModelReasoningGridPresentationChrome.resolvePolicy(
-                            surfaceMode: .presentation(container: .compactSheet, usesFloatingGlass: true),
+                            surfaceMode: .presentation(container: .compactPopover, usesFloatingGlass: true),
                             interfaceStyle: interfaceStyle,
                             reduceTransparency: reduceTransparency,
                             increasedContrast: increasedContrast,
@@ -771,7 +795,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         )
                         XCTAssertEqual(policy.surfaceStyle, expectedStyle)
                         XCTAssertEqual(policy.surfaceStyle.composerCardSurface, expectedCardSurface)
-                        XCTAssertEqual(policy.backgroundOwner, .sheetPresentationBackground)
+                        XCTAssertEqual(
+                            policy.backgroundOwner,
+                            expectsGlass ? .sheetPresentationBackground : .popoverContentSurface
+                        )
                         XCTAssertTrue(policy.usesFloatingGlass)
                         XCTAssertEqual(policy.usesTranslucentInnerChrome, expectsGlass)
                         XCTAssertEqual(policy.cornerRadius, 26)
@@ -1246,8 +1273,9 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             XCTAssertTrue(capture.reopenedAfterDismiss, "常规 iPad Popover 关闭后经真实入口必须可干净重开 (\(colorScheme))")
         }
 
-        // 2. 紧凑悬浮玻璃 Sheet（亮/暗）：从真实展开态 iPhone `ComposerView`（`phoneKeyboardVisible = true`）的 `composer.model` 触发，
-        //    同时验证透光性与锐利条纹边界模糊柔化、拖拽取消能力与关闭重开；经典模式与增强对比度对照真实输入卡底色回退实色。
+        // 2. 紧凑悬浮玻璃 Popover（亮/暗）：从真实展开态 iPhone `ComposerView`（`phoneKeyboardVisible = true`）的 `composer.model` 触发，
+        //    与「+」面板一样以无遮罩悬浮 Popover 呈现（单层原生 Liquid Glass，不再双层发雾或整屏压暗），
+        //    验证透光性、条纹边界模糊柔化与关闭重开；经典模式与增强对比度对照真实输入卡底色回退实色。
         for colorScheme in [ColorScheme.light, .dark] {
             let glassCapture = try await captureRealComposerModelPicker(
                 label: "real-compact-glass-\(colorScheme)",
@@ -1260,29 +1288,31 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 increasedContrast: false,
                 dynamicTypeSize: .large
             )
-            XCTAssertTrue(glassCapture.isAdaptedSheet, "紧凑档应适配为贴底 Sheet (\(colorScheme))")
-            XCTAssertEqual(
-                glassCapture.presentedFrame.height,
-                layout.standardContentHeight,
-                accuracy: 40,
-                "标准字号紧凑 Sheet 高度应贴合内容 detent (\(colorScheme))"
+            XCTAssertFalse(glassCapture.isAdaptedSheet, "标准字号 iPhone 竖屏应保持悬浮 Popover 而非压暗贴底 Sheet (\(colorScheme))")
+            XCTAssertTrue(
+                glassCapture.presentedController.presentationController is UIPopoverPresentationController,
+                "标准字号 iPhone 竖屏应使用 UIPopoverPresentationController (\(colorScheme))"
             )
-            XCTAssertTrue(glassCapture.supportsInteractiveDragDismiss, "紧凑 Sheet 应支持拖拽取消与显示拖动手柄 (\(colorScheme))")
-            XCTAssertTrue(glassCapture.reopenedAfterDismiss, "紧凑 Sheet 取消关闭后经真实入口必须可干净重开 (\(colorScheme))")
+            XCTAssertLessThan(
+                glassCapture.presentedFrame.maxY,
+                844 - 60,
+                "悬浮 Popover 应锚定在输入框上方，不遮挡底部输入卡 (\(colorScheme))"
+            )
+            XCTAssertTrue(glassCapture.reopenedAfterDismiss, "紧凑 Popover 取消关闭后经真实入口必须可干净重开 (\(colorScheme))")
             XCTAssertGreaterThan(
                 glassCapture.exposedStripeEdgeGradient,
-                0.35,
-                "裸露背景条纹边界应足够锐利以作为模糊对照基准 (\(colorScheme))"
+                0.55,
+                "悬浮 Popover 不应叠加全屏压暗遮罩，裸露背景条纹边界应保持高对比锐利 (\(colorScheme))"
             )
             XCTAssertGreaterThan(
                 glassCapture.panelAcrossStripeDelta,
-                0.015,
-                "玻璃态紧凑 Sheet 应对背后亮暗条纹产生真实透光差异 (\(colorScheme))"
+                0.04,
+                "单层原生玻璃 Popover 应对背后亮暗条纹产生清晰透光差异，不应发白发雾 (\(colorScheme))"
             )
             XCTAssertLessThan(
                 glassCapture.panelStripeEdgeGradient,
                 glassCapture.exposedStripeEdgeGradient * 0.55,
-                "玻璃态紧凑 Sheet 必须柔化背后锐利条纹边界，体现真实模糊/折射而非纯透明叠色 (\(colorScheme))"
+                "玻璃态 Popover 必须柔化背后锐利条纹边界，体现真实模糊/折射而非纯透明叠色 (\(colorScheme))"
             )
 
             for (fallbackName, style, contrast) in [
@@ -1300,16 +1330,16 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     increasedContrast: contrast,
                     dynamicTypeSize: .large
                 )
-                XCTAssertTrue(fallbackCapture.isAdaptedSheet)
+                XCTAssertFalse(fallbackCapture.isAdaptedSheet)
                 XCTAssertLessThan(
                     fallbackCapture.panelAcrossStripeDelta,
                     0.03,
-                    "实色回退 Sheet(\(fallbackName)) 不应透出背后锐利条纹 (\(colorScheme))"
+                    "实色回退 Popover(\(fallbackName)) 不应透出背后锐利条纹 (\(colorScheme))"
                 )
                 XCTAssertLessThan(
                     meanChannelDifference(fallbackCapture.panelSampleRGB, fallbackCapture.actualComposerCardRGB),
                     0.06,
-                    "实色回退 Sheet(\(fallbackName)) 底色应与同一窗口内真实输入卡一致 (\(colorScheme))"
+                    "实色回退 Popover(\(fallbackName)) 底色应与同一窗口内真实输入卡一致 (\(colorScheme))"
                 )
             }
         }
@@ -1356,6 +1386,67 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    /// 真实 `ComposerView` 的「+」按钮（`composer.addContent`）呈现验证：
+    /// iPhone 玻璃模式下呈现与输入框、模型九宫格同源的单层原生 Liquid Glass Popover；
+    /// 经典模式、增强对比度及 iPad 实色输入卡下均回退为与真实输入卡一致的实色表面。
+    func testAddContentPanelPresentationMatchesComposerGlassAndFallbacks() async throws {
+        for colorScheme in [ColorScheme.light, .dark] {
+            let glassCapture = try await captureRealComposerModelPicker(
+                label: "real-addcontent-glass-\(colorScheme)",
+                windowSize: CGSize(width: 390, height: 844),
+                horizontalSizeClass: .compact,
+                verticalSizeClass: .regular,
+                phoneKeyboardVisible: false,
+                colorScheme: colorScheme,
+                interfaceStyle: .glass,
+                increasedContrast: false,
+                dynamicTypeSize: .large,
+                triggerKind: .addContent
+            )
+            XCTAssertFalse(glassCapture.isAdaptedSheet, "iPhone 竖屏「+」面板应保持悬浮 Popover (\(colorScheme))")
+            XCTAssertGreaterThan(
+                glassCapture.exposedStripeEdgeGradient,
+                0.55,
+                "「+」悬浮 Popover 不应叠加全屏压暗遮罩 (\(colorScheme))"
+            )
+            XCTAssertGreaterThan(
+                glassCapture.panelAcrossStripeDelta,
+                0.04,
+                "「+」玻璃 Popover 应对背后亮暗条纹产生清晰透光差异 (\(colorScheme))"
+            )
+            XCTAssertLessThan(
+                glassCapture.panelStripeEdgeGradient,
+                glassCapture.exposedStripeEdgeGradient * 0.55,
+                "「+」玻璃 Popover 必须柔化背后锐利条纹边界 (\(colorScheme))"
+            )
+            XCTAssertTrue(glassCapture.reopenedAfterDismiss, "「+」面板关闭后应可干净重开 (\(colorScheme))")
+
+            let classicCapture = try await captureRealComposerModelPicker(
+                label: "real-addcontent-classic-\(colorScheme)",
+                windowSize: CGSize(width: 390, height: 844),
+                horizontalSizeClass: .compact,
+                verticalSizeClass: .regular,
+                phoneKeyboardVisible: false,
+                colorScheme: colorScheme,
+                interfaceStyle: .classic,
+                increasedContrast: false,
+                dynamicTypeSize: .large,
+                triggerKind: .addContent
+            )
+            XCTAssertFalse(classicCapture.isAdaptedSheet)
+            XCTAssertLessThan(
+                classicCapture.panelAcrossStripeDelta,
+                0.03,
+                "经典模式下「+」面板应回退实色，不透出背后锐利条纹 (\(colorScheme))"
+            )
+        }
+    }
+
+    private enum RealComposerTriggerKind {
+        case model
+        case addContent
+    }
+
     private struct RealComposerPickerCapture {
         let presentedController: UIViewController
         let presentedFrame: CGRect
@@ -1374,7 +1465,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let sessionStore: SessionStore
         let themeStore: ThemeStore
         let defaults: UserDefaults
-        let triggerBridge: ComposerModelEntryTriggerBridge
+        let modelTriggerBridge: ComposerModelEntryTriggerBridge
+        let addContentTriggerBridge: ComposerModelEntryTriggerBridge
         let availableWidth: CGFloat
         let horizontalSizeClass: UserInterfaceSizeClass
         let phoneKeyboardVisible: Bool?
@@ -1418,7 +1510,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     .environment(\.colorScheme, colorScheme)
                     .environment(\.themeInterfaceStyle, interfaceStyle)
                     .environment(\.dynamicTypeSize, dynamicTypeSize)
-                    .environment(\.composerModelEntryTriggerBridge, triggerBridge)
+                    .environment(\.composerModelEntryTriggerBridge, modelTriggerBridge)
+                    .environment(\.composerAddContentEntryTriggerBridge, addContentTriggerBridge)
                     .defaultAppStorage(defaults)
                     .padding(.bottom, 16)
             }
@@ -1440,7 +1533,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         colorScheme: ColorScheme,
         interfaceStyle: ThemeInterfaceStyle,
         increasedContrast: Bool,
-        dynamicTypeSize: DynamicTypeSize
+        dynamicTypeSize: DynamicTypeSize,
+        triggerKind: RealComposerTriggerKind = .model
     ) async throws -> RealComposerPickerCapture {
         let suite = "RealComposerPicker.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -1471,14 +1565,17 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         sessionStore.sessionControlStateByID[session.id] = .takenOver
         sessionStore.appServerModelOptions = codex56SnapshotModels
 
-        let triggerBridge = ComposerModelEntryTriggerBridge()
+        let modelTriggerBridge = ComposerModelEntryTriggerBridge()
+        let addContentTriggerBridge = ComposerModelEntryTriggerBridge()
+        let triggerBridge = triggerKind == .model ? modelTriggerBridge : addContentTriggerBridge
         let stripeSplitX: CGFloat = horizontalSizeClass == .compact ? (windowSize.width / 2) : 210
         let stripeSplitY: CGFloat = horizontalSizeClass == .compact ? 220 : 280
         let rootView = RealComposerHarnessView(
             sessionStore: sessionStore,
             themeStore: themeStore,
             defaults: defaults,
-            triggerBridge: triggerBridge,
+            modelTriggerBridge: modelTriggerBridge,
+            addContentTriggerBridge: addContentTriggerBridge,
             availableWidth: windowSize.width,
             horizontalSizeClass: horizontalSizeClass,
             phoneKeyboardVisible: phoneKeyboardVisible,

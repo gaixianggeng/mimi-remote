@@ -581,6 +581,9 @@ extension ComposerView {
         // Popover 必须挂在不会参与按压缩放的固定锚点上；否则系统可能在 spring
         // 回弹途中读取 source rect，让箭头与“+”入口出现瞬时偏移。
         .frame(width: 44, height: 44)
+        #if DEBUG
+        .modifier(ComposerAddContentEntryTriggerRegistration(action: { showsAddContentPanel.toggle() }))
+        #endif
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 skillShortcuts: enabledSkillShortcuts,
@@ -597,6 +600,7 @@ extension ComposerView {
                     for: composerRuntimeProvider
                 ),
                 showsCameraAction: showsCameraAttachmentAction,
+                usesFloatingGlass: composerUsesFloatingGlassSurface,
                 selectedSkillPaths: selectedSkillPaths,
                 onPickFile: {
                     presentFileImporter()
@@ -633,10 +637,14 @@ extension ComposerView {
                 }
             )
             .environmentObject(themeStore)
+            .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
             .onDisappear {
                 consumePendingAddContentAction()
             }
-            .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+            .presentationCompactAdaptation(
+                horizontal: dynamicTypeSize.isAccessibilitySize ? .sheet : .popover,
+                vertical: .sheet
+            )
         }
     }
 

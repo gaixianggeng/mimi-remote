@@ -1111,6 +1111,119 @@ enum ComposerCardResolvedSurface: Equatable {
     }
 }
 
+/// 输入框及其弹出面板（「+」添加内容、模型九宫格）共用的表面策略与回退色板：
+/// - iOS 26+ 玻璃模式下直接复用系统原生单层 Liquid Glass Popover/Sheet，
+///   避免在系统玻璃容器之上再叠第二层 `.glassEffect` 造成浅色发白、深色发雾或双重边框；
+/// - iOS 18–25 玻璃模式下使用 `.ultraThinMaterial`，与悬浮输入卡保持一致；
+/// - 经典风格、降低透明度、增强对比度以及 iPad 实色输入卡统一回退到与输入卡逐像素一致的实色底板。
+enum ComposerPopupPresentationSurface {
+    static func solidFillColor(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme
+    ) -> Color {
+        colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+    }
+
+    static func solidBorderColor(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme,
+        increasedContrast: Bool
+    ) -> Color {
+        if increasedContrast {
+            return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
+        }
+        if colorScheme == .light {
+            return Color.black.opacity(0.09)
+        }
+        return tokens.border.opacity(0.58)
+    }
+
+    static func innerCardFill(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme,
+        usesTranslucentChrome: Bool,
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Color {
+        if usesTranslucentChrome {
+            return ComposerEmbeddedPillPalette.fill(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        }
+        if tokens.preset == .codex && colorScheme == .light {
+            return tokens.elevatedSurface
+        }
+        return tokens.surface
+    }
+
+    static func innerCardBorder(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme,
+        usesTranslucentChrome: Bool,
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Color {
+        if usesTranslucentChrome {
+            return ComposerEmbeddedPillPalette.border(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        }
+        if increasedContrast {
+            return solidBorderColor(
+                tokens: tokens,
+                colorScheme: colorScheme,
+                increasedContrast: true
+            )
+        }
+        return tokens.border.opacity(colorScheme == .light ? 0.72 : 0.68)
+    }
+}
+
+/// 弹出面板（模型九宫格、「+」添加内容）共用的展示层背景修饰符。
+struct ComposerPopupPresentationBackgroundModifier: ViewModifier {
+    let resolvedSurface: ComposerCardResolvedSurface
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let cornerRadius: CGFloat?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let base = applyCornerRadius(to: content)
+        switch resolvedSurface {
+        case .liquidGlass:
+            if #available(iOS 26.0, *) {
+                // iOS 26+ 原生 Popover/Sheet 本身即是单层 Liquid Glass，与悬浮输入卡同源；
+                // 不再覆写自定义 `.presentationBackground { .glassEffect(...) }`，杜绝双层玻璃叠雾。
+                base
+            } else {
+                base.presentationBackground(.ultraThinMaterial)
+            }
+        case .ultraThinMaterial:
+            base.presentationBackground(.ultraThinMaterial)
+        case .solidCard:
+            base.presentationBackground(
+                ComposerPopupPresentationSurface.solidFillColor(
+                    tokens: tokens,
+                    colorScheme: colorScheme
+                )
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func applyCornerRadius(to content: Content) -> some View {
+        if let cornerRadius {
+            content.presentationCornerRadius(cornerRadius)
+        } else {
+            content
+        }
+    }
+}
+
 /// 输入卡与待发送浮层共用的表面修饰符：直接消费 `ComposerCardResolvedSurface` 材质判定，
 /// 并始终收敛为单层 `ModifiedContent` 以守住真机栈预算。
 struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {

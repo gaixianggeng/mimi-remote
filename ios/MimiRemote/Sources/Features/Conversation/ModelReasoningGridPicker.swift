@@ -45,19 +45,34 @@ enum ModelReasoningGridMetrics {
     }
 }
 
-/// 模型切换面板的展示容器形态：紧凑档由 `.popover` 适配为 Sheet，常规档保持 Popover。
+/// 模型切换面板的展示容器形态：
+/// - iPhone 标准字号竖屏与常规宽档保持悬浮 Popover（无全屏压暗遮罩，与输入框和「+」面板视觉统一）；
+/// - 横屏、辅助功能大字号与 iPad 分屏窄档退化为 Sheet。
 enum ModelReasoningGridPresentationContainer: Equatable {
     case compactSheet
+    case compactPopover
     case regularPopover
 
     static func resolve(
         horizontalSizeClass: UserInterfaceSizeClass?,
-        verticalSizeClass: UserInterfaceSizeClass?
+        verticalSizeClass: UserInterfaceSizeClass?,
+        usesFloatingGlass: Bool = false,
+        isAccessibilitySize: Bool = false
     ) -> Self {
-        if horizontalSizeClass == .compact || verticalSizeClass == .compact {
+        if verticalSizeClass == .compact {
+            return .compactSheet
+        }
+        if horizontalSizeClass == .compact {
+            if usesFloatingGlass && !isAccessibilitySize {
+                return .compactPopover
+            }
             return .compactSheet
         }
         return .regularPopover
+    }
+
+    var isSheet: Bool {
+        self == .compactSheet
     }
 }
 
@@ -65,15 +80,15 @@ enum ModelReasoningGridPresentationContainer: Equatable {
 enum ModelReasoningGridSurfaceMode: Equatable {
     /// 独立嵌入或既有快照基线使用的实色底板（`tokens.surface`）。
     case standaloneOpaque
-    /// 展示态：按实际输入卡形态（悬浮玻璃或实色输入卡）与容器形态（Sheet 或 Popover）选择表面与承载路径。
+    /// 展示态：按实际输入卡形态（悬浮玻璃或实色输入卡）与容器形态（Popover 或 Sheet）选择表面与承载路径。
     case presentation(
         container: ModelReasoningGridPresentationContainer,
         usesFloatingGlass: Bool
     )
 
-    /// 紧凑玻璃 Sheet 简写。
+    /// 紧凑玻璃 Popover 简写。
     static var presentationChrome: Self {
-        .presentation(container: .compactSheet, usesFloatingGlass: true)
+        .presentation(container: .compactPopover, usesFloatingGlass: true)
     }
 }
 
@@ -83,7 +98,7 @@ enum ModelReasoningGridSurfaceStyle: Equatable {
     case standaloneSurface
     /// 与输入卡一致的实色底板（浅色 `tokens.inputBackground`，深色 `tokens.elevatedSurface`）。
     case solidComposerCard
-    /// iOS 26+ 玻璃模式下与悬浮输入卡一致的原生 Liquid Glass。
+    /// iOS 26+ 玻璃模式下与悬浮输入卡一致的单层原生 Liquid Glass。
     case liquidGlass
     /// iOS 26 以下玻璃模式下与悬浮输入卡一致的 `.ultraThinMaterial`。
     case ultraThinMaterial
@@ -100,13 +115,14 @@ enum ModelReasoningGridSurfaceStyle: Equatable {
     }
 }
 
-/// 共享背景的实际承载者：Sheet 与 Popover 各自明确归属，避免常规 Popover 清除自身底色后依赖宿主材质。
+/// 共享背景的实际承载者：避免在 iOS 26 原生 Liquid Glass 容器上叠加双层玻璃，
+/// 同时确保实色 Popover 与箭头底色严丝合缝。
 enum ModelReasoningGridBackgroundOwner: Equatable {
     /// 独立嵌入，由内容层铺 `tokens.surface`。
     case standaloneContent
-    /// 紧凑 Sheet 由 `.presentationBackground` 承载共享表面，内容层透明。
+    /// 紧凑 Sheet 或单层原生玻璃 Popover 由 presentation 容器承载，内容层透明。
     case sheetPresentationBackground
-    /// 常规 Popover 由内容根背景直接绘制共享表面，并同步 `.presentationBackground` 对齐箭头底色。
+    /// 实色 Popover 由内容根背景绘制共享表面，并同步 `.presentationBackground` 对齐箭头底色。
     case popoverContentSurface
 }
 
@@ -141,11 +157,6 @@ enum ModelReasoningGridPresentationChrome {
                 borderWidth: borderWidth
             )
         case let .presentation(container, usesFloatingGlass):
-            let backgroundOwner: ModelReasoningGridBackgroundOwner =
-                container == .compactSheet ? .sheetPresentationBackground : .popoverContentSurface
-            let cornerRadius = container == .compactSheet
-                ? ModelReasoningGridMetrics.panelCornerRadius
-                : ModelReasoningGridMetrics.regularPopoverCornerRadius
             let resolvedCardSurface = ComposerCardResolvedSurface.resolve(
                 usesFloatingGlass: usesFloatingGlass,
                 interfaceStyle: interfaceStyle,
@@ -159,6 +170,13 @@ enum ModelReasoningGridPresentationChrome {
             case .solidCard: .solidComposerCard
             }
             let usesActiveGlass = resolvedCardSurface != .solidCard
+            let backgroundOwner: ModelReasoningGridBackgroundOwner =
+                (container == .compactSheet || usesActiveGlass)
+                ? .sheetPresentationBackground
+                : .popoverContentSurface
+            let cornerRadius = (container == .regularPopover)
+                ? ModelReasoningGridMetrics.regularPopoverCornerRadius
+                : ModelReasoningGridMetrics.panelCornerRadius
             return ModelReasoningGridSurfacePolicy(
                 surfaceStyle: surfaceStyle,
                 backgroundOwner: backgroundOwner,
@@ -170,27 +188,26 @@ enum ModelReasoningGridPresentationChrome {
         }
     }
 
-    /// 与 `ComposerCardSurfaceModifier` / `composerContainerBackground` 完全一致的实色底板。
     static func solidFillColor(
         tokens: ThemeTokens,
         colorScheme: ColorScheme
     ) -> Color {
-        colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+        ComposerPopupPresentationSurface.solidFillColor(
+            tokens: tokens,
+            colorScheme: colorScheme
+        )
     }
 
-    /// 与底部输入卡回退实色态一致的描边色，确保经典风格和辅助功能模式下边界清晰。
     static func solidBorderColor(
         tokens: ThemeTokens,
         colorScheme: ColorScheme,
         increasedContrast: Bool
     ) -> Color {
-        if increasedContrast {
-            return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
-        }
-        if colorScheme == .light {
-            return Color.black.opacity(0.09)
-        }
-        return tokens.border.opacity(0.58)
+        ComposerPopupPresentationSurface.solidBorderColor(
+            tokens: tokens,
+            colorScheme: colorScheme,
+            increasedContrast: increasedContrast
+        )
     }
 
     static func borderWidth(increasedContrast: Bool) -> CGFloat {
@@ -275,12 +292,16 @@ struct ModelReasoningGridPalette {
                 tokens: tokens,
                 colorScheme: colorScheme
             )
+            // 九宫格大面板面积远大于输入卡顶部小药丸，改用更轻透的微弱层次，
+            // 避免在单层 Liquid Glass 上蒙出一整块灰白雾板而破坏与输入框的通透一致性。
+            let gridFill = (colorScheme == .light ? Color.black : Color.white)
+                .opacity(colorScheme == .light ? 0.025 : 0.035)
             return Self(
                 panelBackground: panelBackground,
                 controlFill: pillFill,
                 controlBorder: pillBorder,
                 controlBorderWidth: 0.75,
-                gridFill: pillFill,
+                gridFill: gridFill,
                 gridBorder: pillBorder,
                 gridBorderWidth: 0.75,
                 gridLine: (colorScheme == .light ? Color.black : Color.white)
@@ -388,8 +409,6 @@ struct ModelReasoningGridPalette {
 }
 
 /// 模型切换面板的展示层背景：复用输入框同源的 `ComposerCardSurfaceModifier` 与实色底板策略。
-/// 紧凑 Sheet 路径走外层 `.presentationBackground`（按当前输入卡是否为悬浮玻璃决定材质）；
-/// 常规 Popover 路径由面板自身根视图绘制，避免清除自身底色后由宿主决定材质或回退行为。
 struct ModelReasoningGridPresentationBackground: View {
     let policy: ModelReasoningGridSurfacePolicy
     let tokens: ThemeTokens
@@ -400,54 +419,31 @@ struct ModelReasoningGridPresentationBackground: View {
 
     var body: some View {
         let resolvedSurface = policy.surfaceStyle.composerCardSurface
-        let shape = RoundedRectangle(
-            cornerRadius: policy.cornerRadius,
-            style: .continuous
-        )
+        let shape = RoundedRectangle(cornerRadius: policy.cornerRadius, style: .continuous)
         if usesPopoverSurfaceChrome && resolvedSurface == .solidCard {
-            shape
-                .fill(
-                    ModelReasoningGridPresentationChrome.solidFillColor(
-                        tokens: tokens,
-                        colorScheme: colorScheme
-                    )
-                )
-        } else if usesPopoverSurfaceChrome {
-            Color.clear
-                .modifier(
-                    ComposerCardSurfaceModifier(
-                        shape: shape,
-                        tokens: tokens,
-                        colorScheme: colorScheme,
-                        reduceTransparency: reduceTransparency,
-                        increasedContrast: increasedContrast,
-                        usesFloatingGlass: policy.usesFloatingGlass,
-                        voiceAccentBorderColor: nil,
-                        solidBorderColor: .clear,
-                        borderWidth: 0,
-                        explicitResolvedSurface: resolvedSurface
-                    )
-                )
+            shape.fill(ModelReasoningGridPresentationChrome.solidFillColor(tokens: tokens, colorScheme: colorScheme))
         } else {
-            Color.clear
-                .modifier(
-                    ComposerCardSurfaceModifier(
-                        shape: shape,
-                        tokens: tokens,
-                        colorScheme: colorScheme,
-                        reduceTransparency: reduceTransparency,
-                        increasedContrast: increasedContrast,
-                        usesFloatingGlass: policy.usesFloatingGlass,
-                        voiceAccentBorderColor: nil,
-                        solidBorderColor: ModelReasoningGridPresentationChrome.solidBorderColor(
-                            tokens: tokens,
-                            colorScheme: colorScheme,
-                            increasedContrast: increasedContrast
-                        ),
-                        borderWidth: policy.borderWidth,
-                        explicitResolvedSurface: resolvedSurface
-                    )
+            let borderColor: Color = usesPopoverSurfaceChrome
+                ? .clear
+                : ModelReasoningGridPresentationChrome.solidBorderColor(
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    increasedContrast: increasedContrast
                 )
+            Color.clear.modifier(
+                ComposerCardSurfaceModifier(
+                    shape: shape,
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: increasedContrast,
+                    usesFloatingGlass: policy.usesFloatingGlass,
+                    voiceAccentBorderColor: nil,
+                    solidBorderColor: borderColor,
+                    borderWidth: usesPopoverSurfaceChrome ? 0 : policy.borderWidth,
+                    explicitResolvedSurface: resolvedSurface
+                )
+            )
         }
     }
 }

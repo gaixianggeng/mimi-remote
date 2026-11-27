@@ -78,6 +78,7 @@ struct SkillSelectionContent: View {
     let errorMessage: String?
     let isRefreshing: Bool
     let maxListHeight: CGFloat
+    var usesTranslucentChrome: Bool = false
     let onBack: (() -> Void)?
     let onToggle: (SkillCapability) -> Void
     let onRefresh: () -> Void
@@ -106,6 +107,7 @@ struct SkillSelectionContent: View {
                                 SkillSelectionRow(
                                     skill: skill,
                                     isSelected: selectedPaths.contains(skill.path),
+                                    usesTranslucentChrome: usesTranslucentChrome,
                                     onToggle: { onToggle(skill) }
                                 )
                             }
@@ -336,12 +338,35 @@ private struct SkillSelectionRow: View {
 
     let skill: SkillCapability
     let isSelected: Bool
+    var usesTranslucentChrome: Bool = false
     let onToggle: () -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let metadata = SkillVisualMetadata(capability: skill)
         let tint = SkillBrandColor.color(skill.brandColor) ?? tokens.accent
+        let rowFill: Color = if isSelected {
+            tint.opacity(0.11)
+        } else if usesTranslucentChrome {
+            ComposerEmbeddedPillPalette.fill(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        } else {
+            tokens.elevatedSurface
+        }
+        let rowBorder: Color = if isSelected {
+            tint.opacity(0.52)
+        } else if usesTranslucentChrome {
+            ComposerEmbeddedPillPalette.border(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        } else {
+            tokens.border.opacity(0.82)
+        }
 
         return Button(action: onToggle) {
             Group {
@@ -371,12 +396,12 @@ private struct SkillSelectionRow: View {
             .padding(10)
             .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 82 : 58)
             .background(
-                isSelected ? tint.opacity(0.11) : tokens.elevatedSurface,
+                rowFill,
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(isSelected ? tint.opacity(0.52) : tokens.border.opacity(0.82), lineWidth: isSelected ? 1.25 : 1)
+                    .strokeBorder(rowBorder, lineWidth: isSelected ? 1.25 : (usesTranslucentChrome ? 0.75 : 1))
             }
             .scaleEffect(isSelected && !reduceMotion ? 1.012 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
