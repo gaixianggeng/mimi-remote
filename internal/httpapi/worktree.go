@@ -620,25 +620,12 @@ func (r *Router) deleteManagedWorktreeWithExpectedIdentity(ctx context.Context, 
 		workspaceObjID = worktree.WorkspaceObjectID
 	}
 
-	// 在真正调用慢速 git worktree remove 之前，先在短持的 managedWorktreeCommitMu 下
-	// 复查运行态会话并登记 deleting 屏障，随即释放 commit 锁，既阻断针对本 checkout 的并发授权，
-	// 又绝不阻塞无关工作区的 thread/list。
-	r.managedWorktreeCommitMu.Lock()
-	if !force && r.managedWorktreeHasRunningSessionForCheckout(worktree, checkoutRoot) {
-		r.managedWorktreeCommitMu.Unlock()
-		return managedWorktree{}, fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+	// 在真正调用慢速 git worktree remove 之前，先在锁外解析当前授权线程的规范路径，
+	// 再在短持的 managedWorktreeCommitMu 下纯内存复查运行态会话并登记 deleting 屏障，
+	// 绝不在持有 managedWorktreeCommitMu 期间做磁盘 EvalSymlinks，避免慢文件系统阻塞无关列表。
+	if err := r.verifyNoRunningSessionAndMarkDeleting(worktree, checkoutRoot, force); err != nil {
+		return managedWorktree{}, err
 	}
-	r.managedWorktreesMu.Lock()
-	if r.managedWorktreeDeleting == nil {
-		r.managedWorktreeDeleting = map[string]int{}
-	}
-	r.managedWorktreeDeleting[filepath.Clean(checkoutRoot)]++
-	if filepath.Clean(worktree.Path) != filepath.Clean(checkoutRoot) {
-		r.managedWorktreeDeleting[filepath.Clean(worktree.Path)]++
-	}
-	r.managedWorktreeLifecycleEpoch.Add(1)
-	r.managedWorktreesMu.Unlock()
-	r.managedWorktreeCommitMu.Unlock()
 
 	defer func() {
 		r.managedWorktreesMu.Lock()
@@ -689,8 +676,7 @@ func (r *Router) registerManagedWorktree(worktree managedWorktree) error {
 	worktree.WorkspaceObjectID, _ = filesystemObjectIdentity(worktree.Path)
 
 	r.managedWorktreesMu.Lock()
-	r.managedWorktreeNextGen++
-	worktree.InstanceGen = r.managedWorktreeNextGen
+	worktree.InstanceGen = r.managedWorktreeNextGen.Add(1)
 	if r.managedWorktrees == nil {
 		r.managedWorktrees = map[string]managedWorktree{}
 	}
@@ -861,8 +847,7 @@ func (r *Router) cacheManagedWorktreeLocked(worktree managedWorktree) {
 		if ok && existing.InstanceGen > 0 {
 			worktree.InstanceGen = existing.InstanceGen
 		} else {
-			r.managedWorktreeNextGen++
-			worktree.InstanceGen = r.managedWorktreeNextGen
+			worktree.InstanceGen = r.managedWorktreeNextGen.Add(1)
 		}
 	}
 	if worktree.CheckoutObjectID == "" {

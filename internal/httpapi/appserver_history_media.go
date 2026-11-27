@@ -340,8 +340,15 @@ func (s *appServerHistoryMediaStore) touchEntryLocked(entry *appServerHistoryMed
 
 func (s *appServerHistoryMediaStore) deleteEntryLocked(id string, entry appServerHistoryMediaEntry) {
 	delete(s.entries, id)
-	if s.idByHash != nil && entry.hash != ([32]byte{}) {
+	if s.idByHash != nil && entry.hash != ([32]byte{}) && s.idByHash[entry.hash] == id {
 		delete(s.idByHash, entry.hash)
+		// 并发新条目可能以不同 ID 保存了同 hash 数据：若仍有存活副本，重新回指该副本。
+		for otherID, other := range s.entries {
+			if other.hash == entry.hash {
+				s.idByHash[entry.hash] = otherID
+				break
+			}
+		}
 	}
 	s.totalBytes -= entry.totalBytes()
 }

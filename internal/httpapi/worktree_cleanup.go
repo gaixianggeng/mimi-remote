@@ -622,6 +622,97 @@ func (r *Router) managedWorktreeHasRunningSessionForCheckout(worktree managedWor
 	return false
 }
 
+// verifyNoRunningSessionAndMarkDeleting 先在锁外解析缓存线程路径，再在微秒级
+// managedWorktreeCommitMu → gatewayThreadsMu 下纯内存复核并登记 deleting 屏障，
+// 严禁在持有 managedWorktreeCommitMu 时执行磁盘 EvalSymlinks。
+func (r *Router) verifyNoRunningSessionAndMarkDeleting(worktree managedWorktree, checkoutRoot string, force bool) error {
+	cleanCheckout := filepath.Clean(strings.TrimSpace(checkoutRoot))
+	if !force && (cleanCheckout == "" || cleanCheckout == "." || !filepath.IsAbs(cleanCheckout)) {
+		return fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+	}
+	workspaceID := workspaceIDForRealPath(worktree.Path)
+	resolvedCWDs := map[string]string{}
+
+	for attempt := 0; attempt < 4; attempt++ {
+		var pendingToResolve []string
+		if !force {
+			now := time.Now()
+			r.gatewayThreadsMu.Lock()
+			r.pruneGatewayThreadsLocked(now)
+			for _, thread := range r.gatewayThreads {
+				if thread.scopeID == workspaceID {
+					r.gatewayThreadsMu.Unlock()
+					return fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+				}
+				rawCWD := strings.TrimSpace(thread.cwd)
+				if rawCWD != "" {
+					if _, seen := resolvedCWDs[rawCWD]; !seen {
+						pendingToResolve = append(pendingToResolve, rawCWD)
+					}
+				}
+			}
+			r.gatewayThreadsMu.Unlock()
+			for _, rawCWD := range pendingToResolve {
+				resolvedCWDs[rawCWD] = canonicalPathBestEffort(rawCWD)
+			}
+		}
+
+		r.managedWorktreeCommitMu.Lock()
+		if !force {
+			now := time.Now()
+			r.gatewayThreadsMu.Lock()
+			r.pruneGatewayThreadsLocked(now)
+			unresolved := false
+			busy := false
+			for _, thread := range r.gatewayThreads {
+				if thread.scopeID == workspaceID {
+					busy = true
+					break
+				}
+				rawCWD := strings.TrimSpace(thread.cwd)
+				if rawCWD == "" {
+					continue
+				}
+				resolved, ok := resolvedCWDs[rawCWD]
+				if !ok {
+					if realPathWithin(cleanCheckout, filepath.Clean(rawCWD)) {
+						busy = true
+						break
+					}
+					unresolved = true
+					continue
+				}
+				if realPathWithin(cleanCheckout, resolved) {
+					busy = true
+					break
+				}
+			}
+			r.gatewayThreadsMu.Unlock()
+			if busy {
+				r.managedWorktreeCommitMu.Unlock()
+				return fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+			}
+			if unresolved {
+				r.managedWorktreeCommitMu.Unlock()
+				continue
+			}
+		}
+		r.managedWorktreesMu.Lock()
+		if r.managedWorktreeDeleting == nil {
+			r.managedWorktreeDeleting = map[string]int{}
+		}
+		r.managedWorktreeDeleting[cleanCheckout]++
+		if filepath.Clean(worktree.Path) != cleanCheckout {
+			r.managedWorktreeDeleting[filepath.Clean(worktree.Path)]++
+		}
+		r.managedWorktreeLifecycleEpoch.Add(1)
+		r.managedWorktreesMu.Unlock()
+		r.managedWorktreeCommitMu.Unlock()
+		return nil
+	}
+	return fmt.Errorf("Worktree 仍有运行中的 session 或 gateway thread，拒绝删除")
+}
+
 func normalizedCleanupPaths(paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("实际清理的 paths 不能为空")

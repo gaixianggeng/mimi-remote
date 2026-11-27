@@ -454,7 +454,7 @@ func gatewayWriteRejectionError(method string, thread appServerGatewayAllowedThr
 		return fmt.Errorf("%s.threadId 原工作目录已移动或删除，当前仅支持只读查看，%s", method, action)
 	}
 	if thread.pushSeededOnly {
-		return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先读取会话或刷新列表后再尝试，%s", method, action)
+		return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先通过 thread/read 读取会话后再尝试，%s", method, action)
 	}
 	if thread.readOnly {
 		return fmt.Errorf("%s.threadId 是只读子会话，%s", method, action)

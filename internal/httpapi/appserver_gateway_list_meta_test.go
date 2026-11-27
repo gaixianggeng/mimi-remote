@@ -166,6 +166,9 @@ func TestSanitizeThreadListMetaMatrix(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got meta=%+v has=%v", meta, has)
 				}
+				if strings.Contains(err.Error(), "extra") || strings.Contains(err.Error(), "unknown_source") || strings.Contains(err.Error(), "db_locked") {
+					t.Fatalf("malformed listMeta diagnostic must not echo untrusted input: %v", err)
+				}
 				return
 			}
 			if err != nil {
@@ -279,9 +282,16 @@ func TestPhase0FixturesReplayThroughObserveUpstreamFrame(t *testing.T) {
 		return router, newAppServerGatewayPolicy(router, runtimeID)
 	}
 
+	jsonEscapedBody := func(s string) []byte {
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b[1 : len(b)-1]
+	}
 	replaceDemoPaths := func(raw []byte) []byte {
-		out := bytes.ReplaceAll(raw, []byte("/Users/demo/workspace/alpha"), []byte(alphaDir))
-		out = bytes.ReplaceAll(out, []byte("/Users/demo/workspace/deleted-repo"), []byte(deletedDir))
+		out := bytes.ReplaceAll(raw, []byte("/Users/demo/workspace/alpha"), jsonEscapedBody(alphaDir))
+		out = bytes.ReplaceAll(out, []byte("/Users/demo/workspace/deleted-repo"), jsonEscapedBody(deletedDir))
 		return out
 	}
 

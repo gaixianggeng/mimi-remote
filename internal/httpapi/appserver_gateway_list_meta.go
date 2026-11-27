@@ -141,7 +141,7 @@ func sanitizeThreadListMeta(raw json.RawMessage) (map[string]any, bool, error) {
 		switch key {
 		case "schemaVersion", "complete", "sources", "degradedReason", "degradedSources":
 		default:
-			return nil, false, fmt.Errorf("thread/list listMeta 包含不允许的字段：%s", key)
+			return nil, false, fmt.Errorf("thread/list listMeta 包含不允许的字段")
 		}
 	}
 
@@ -208,7 +208,7 @@ func sanitizeThreadListMeta(raw json.RawMessage) (map[string]any, bool, error) {
 		return nil, false, fmt.Errorf("thread/list listMeta.degradedReason 必须是字符串")
 	}
 	if _, valid := allowedThreadListMetaDegradedReasons[reason]; !valid {
-		return nil, false, fmt.Errorf("thread/list listMeta.degradedReason 非法：%s", reason)
+		return nil, false, fmt.Errorf("thread/list listMeta.degradedReason 非法")
 	}
 	rawDegradedSources, hasDegradedSources := fields["degradedSources"]
 	if !hasDegradedSources {
@@ -238,10 +238,10 @@ func parseThreadListMetaSources(raw json.RawMessage, fieldName string) ([]string
 	seen := make(map[string]struct{}, len(items))
 	for _, s := range items {
 		if _, ok := allowedThreadListMetaSources[s]; !ok {
-			return nil, fmt.Errorf("thread/list listMeta.%s 包含非法来源：%s", fieldName, s)
+			return nil, fmt.Errorf("thread/list listMeta.%s 包含非法来源", fieldName)
 		}
 		if _, dup := seen[s]; dup {
-			return nil, fmt.Errorf("thread/list listMeta.%s 不能重复：%s", fieldName, s)
+			return nil, fmt.Errorf("thread/list listMeta.%s 不能重复", fieldName)
 		}
 		seen[s] = struct{}{}
 	}

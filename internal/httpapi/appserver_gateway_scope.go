@@ -583,7 +583,7 @@ func (r *Router) gatewayScopeForPathWithPendingUse(raw string, acquirePendingUse
 	if err != nil {
 		return gatewayScope{}, "", false
 	}
-	if project, ok := r.projects.FindByPath(realPath); ok {
+	if project, ok := r.projects.FindByPathRefreshed(realPath); ok {
 		return gatewayScope{id: project.ID, realPath: realPath, project: project}, "", true
 	}
 

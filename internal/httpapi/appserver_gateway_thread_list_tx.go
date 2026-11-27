@@ -25,11 +25,12 @@ type upstreamFrameDecision struct {
 }
 
 type threadListRequestBinding struct {
-	key               string
-	frameID           *json.RawMessage
-	pendingThread     appServerGatewayPendingThreadRequest
-	pendingHistory    *appServerGatewayPendingHistoryRequest
-	envelopeMalformed *appServerGatewayPolicyError
+	key                     string
+	frameID                 *json.RawMessage
+	pendingThread           appServerGatewayPendingThreadRequest
+	pendingHistory          *appServerGatewayPendingHistoryRequest
+	envelopeMalformed       *appServerGatewayPolicyError
+	claimDirectInputVersion uint64
 }
 
 type upstreamResponseClaim struct {
@@ -151,17 +152,24 @@ func (p *appServerGatewayPolicy) claimUpstreamResponse(payload []byte, frame *ap
 			envelopeErr = malformedThreadListPolicyError(frame.ID, "thread/list 错误响应缺少合法整数 code 或字符串 message")
 		}
 
+		var claimVer uint64
+		if p.router != nil {
+			p.router.gatewayThreadsMu.Lock()
+			claimVer = p.router.nextGatewayThreadDirectInputVersion
+			p.router.gatewayThreadsMu.Unlock()
+		}
 		var histCopy *appServerGatewayPendingHistoryRequest
 		if historyToRelease != nil {
 			h := *historyToRelease
 			histCopy = &h
 		}
 		binding := &threadListRequestBinding{
-			key:               key,
-			frameID:           frame.ID,
-			pendingThread:     pendingThread,
-			pendingHistory:    histCopy,
-			envelopeMalformed: envelopeErr,
+			key:                     key,
+			frameID:                 frame.ID,
+			pendingThread:           pendingThread,
+			pendingHistory:          histCopy,
+			envelopeMalformed:       envelopeErr,
+			claimDirectInputVersion: claimVer,
 		}
 		p.mu.Unlock()
 		if historyToRelease != nil {
@@ -358,78 +366,128 @@ type threadListStageACandidates struct {
 // - 项目匹配改用 FindByCanonicalPathInMemory / GetCached（零刷新、零写入/淘汰 pathMatchCache）；
 // - 独立采集托管 checkout 生命周期依赖（即使被已登记项目优先命中）与祖先固化对象身份；
 // - 当 disallowMissingFallback == true（并发删盘重跑）时，在进入 canonicalMissingPath 之前直接返回 ok=false。
+type stageAScopeProbeResult struct {
+	scope            gatewayScope
+	dep              *managedWorktreeDependency
+	ancestorObjIDs   map[string]struct{}
+	underManagedRoot bool
+	ok               bool
+}
+
 func (r *Router) gatewayReadOnlyScopeForThreadListStageA(
 	raw string,
 	managedRoot string,
 	disallowMissingFallback bool,
 ) (scope gatewayScope, dep *managedWorktreeDependency, ancestorObjIDs map[string]struct{}, underManagedRoot bool, ok bool) {
+	var refreshed []projects.Project
+	if r != nil && r.projects != nil {
+		refreshed = r.projects.List()
+	}
+	res := r.gatewayReadOnlyScopeForThreadListStageAWithSnapshot(raw, managedRoot, disallowMissingFallback, refreshed)
+	return res.scope, res.dep, res.ancestorObjIDs, res.underManagedRoot, res.ok
+}
+
+func (r *Router) gatewayReadOnlyScopeForThreadListStageAWithSnapshot(
+	raw string,
+	managedRoot string,
+	disallowMissingFallback bool,
+	refreshedProjects []projects.Project,
+) stageAScopeProbeResult {
 	path := strings.TrimSpace(raw)
 	if path == "" || r == nil {
-		return gatewayScope{}, nil, nil, false, false
+		return stageAScopeProbeResult{}
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return gatewayScope{}, nil, nil, false, false
+		return stageAScopeProbeResult{}
 	}
 	realPath, evalErr := filepath.EvalSymlinks(abs)
 	if evalErr == nil {
 		cleanReal := filepath.Clean(realPath)
-		ancestorObjIDs = captureAncestorObjectIDs(cleanReal)
+		ancestorObjIDs := captureAncestorObjectIDs(cleanReal)
+		underManagedRoot := false
 		if managedRoot != "" && (realPathWithin(managedRoot, cleanReal) || exactPathWithin(managedRoot, cleanReal)) {
 			underManagedRoot = true
 		}
 		// 独立探测托管 checkout 生命周期依赖（仅用于收紧复验，绝不扩大正向授权）。
-		dep, _ = r.probeManagedWorktreeLifecycleDepStageA(cleanReal, ancestorObjIDs)
+		dep, _ := r.probeManagedWorktreeLifecycleDepStageA(cleanReal, ancestorObjIDs)
 
-		// 阶段 A 锁外按刷新后的已配置项目规范路径匹配（支持运行期符号链接改指，且不写共享 pathMatchCache）。
-		if project, found := findRefreshedConfiguredProjectForCanonicalPath(r.projects, cleanReal); found {
-			return gatewayScope{id: project.ID, realPath: cleanReal, project: project}, dep, ancestorObjIDs, underManagedRoot, true
+		// 阶段 A 锁外复用当次刷新快照匹配项目（支持符号链接改指与 Windows \\?\C:\... 归一化，且不写 pathMatchCache）。
+		if project, found := projects.MatchCanonicalPathInList(refreshedProjects, cleanReal); found {
+			return stageAScopeProbeResult{
+				scope:            gatewayScope{id: project.ID, realPath: cleanReal, project: project},
+				dep:              dep,
+				ancestorObjIDs:   ancestorObjIDs,
+				underManagedRoot: underManagedRoot,
+				ok:               true,
+			}
 		}
 		if wt, found := r.probeManagedWorktreeForThreadListStageA(cleanReal); found {
 			if dep == nil {
 				dep = &managedWorktreeDependency{path: wt.Path, instanceGen: wt.InstanceGen}
 			}
-			return gatewayScope{
-				id:       workspaceIDForRealPath(wt.Path),
-				realPath: cleanReal,
-				project:  wt.RootProject,
-				managed:  true,
-			}, dep, ancestorObjIDs, underManagedRoot, true
+			return stageAScopeProbeResult{
+				scope: gatewayScope{
+					id:       workspaceIDForRealPath(wt.Path),
+					realPath: cleanReal,
+					project:  wt.RootProject,
+					managed:  true,
+				},
+				dep:              dep,
+				ancestorObjIDs:   ancestorObjIDs,
+				underManagedRoot: underManagedRoot,
+				ok:               true,
+			}
 		}
 		if r.realPathInBrowseRoots(cleanReal) {
-			return gatewayScope{id: workspaceIDForRealPath(cleanReal), realPath: cleanReal, browse: true}, dep, ancestorObjIDs, underManagedRoot, true
+			return stageAScopeProbeResult{
+				scope:            gatewayScope{id: workspaceIDForRealPath(cleanReal), realPath: cleanReal, browse: true},
+				dep:              dep,
+				ancestorObjIDs:   ancestorObjIDs,
+				underManagedRoot: underManagedRoot,
+				ok:               true,
+			}
 		}
-		return gatewayScope{}, dep, ancestorObjIDs, underManagedRoot, false
+		return stageAScopeProbeResult{dep: dep, ancestorObjIDs: ancestorObjIDs, underManagedRoot: underManagedRoot}
 	}
 
 	// 目录不存在：若处于并发删盘重跑（attempt >= 1），一律禁用 missing:true 回退。
 	if disallowMissingFallback {
-		return gatewayScope{}, nil, nil, false, false
+		return stageAScopeProbeResult{}
 	}
 	canonicalMissing, missingOK := canonicalMissingPath(abs)
 	if !missingOK {
-		return gatewayScope{}, nil, nil, false, false
+		return stageAScopeProbeResult{}
 	}
+	underManagedRoot := false
 	if managedRoot != "" && (realPathWithin(managedRoot, canonicalMissing) || exactPathWithin(managedRoot, canonicalMissing)) {
 		underManagedRoot = true
 	}
 	if project, found := r.projects.FindByCanonicalPathInMemory(canonicalMissing); found {
-		return gatewayScope{
-			id:       project.ID,
-			realPath: canonicalMissing,
-			project:  project,
-			missing:  true,
-		}, nil, nil, underManagedRoot, true
+		return stageAScopeProbeResult{
+			scope: gatewayScope{
+				id:       project.ID,
+				realPath: canonicalMissing,
+				project:  project,
+				missing:  true,
+			},
+			underManagedRoot: underManagedRoot,
+			ok:               true,
+		}
 	}
 	if r.realPathInBrowseRoots(canonicalMissing) {
-		return gatewayScope{
-			id:       workspaceIDForRealPath(canonicalMissing),
-			realPath: canonicalMissing,
-			browse:   true,
-			missing:  true,
-		}, nil, nil, underManagedRoot, true
+		return stageAScopeProbeResult{
+			scope: gatewayScope{
+				id:       workspaceIDForRealPath(canonicalMissing),
+				realPath: canonicalMissing,
+				browse:   true,
+				missing:  true,
+			},
+			underManagedRoot: underManagedRoot,
+			ok:               true,
+		}
 	}
-	return gatewayScope{}, nil, nil, underManagedRoot, false
+	return stageAScopeProbeResult{underManagedRoot: underManagedRoot}
 }
 
 func (r *Router) canonicalBrowseRootsSnapshot() []string {
@@ -561,6 +619,13 @@ func (p *appServerGatewayPolicy) prepareGlobalThreadListStageA(
 	entries := make([]rawGlobalEntry, 0, len(rawItems))
 	var gitPaths []string
 	seenGitPaths := map[string]struct{}{}
+	var refreshedProjects []projects.Project
+	if p.router != nil && p.router.projects != nil {
+		// 每次阶段 A 尝试仅刷新一次已配置项目快照，同页所有行共享该快照与目录探针缓存。
+		refreshedProjects = p.router.projects.List()
+	}
+	probeCache := map[string]stageAScopeProbeResult{}
+	dirStatCache := map[string]bool{}
 
 	for idx, rawItem := range rawItems {
 		trimmed := bytes.TrimSpace(rawItem)
@@ -594,17 +659,27 @@ func (p *appServerGatewayPolicy) prepareGlobalThreadListStageA(
 			continue
 		}
 
-		scope, dep, ancestorObjIDs, underManagedRoot, ok := p.router.gatewayReadOnlyScopeForThreadListStageA(cwd, stageA.managedRoot, disallowMissingFallback)
+		res, cached := probeCache[cwd]
+		if !cached {
+			res = p.router.gatewayReadOnlyScopeForThreadListStageAWithSnapshot(cwd, stageA.managedRoot, disallowMissingFallback, refreshedProjects)
+			probeCache[cwd] = res
+		}
 		if p.onStageAAfterPathProbe != nil {
 			// 允许测试在候选路径探针后、阶段 B 前注入并发删盘竞态。
 			p.onStageAAfterPathProbe(attempt)
 		}
-		if !ok {
+		if !res.ok {
 			continue
 		}
+		scope, dep, ancestorObjIDs, underManagedRoot := res.scope, res.dep, res.ancestorObjIDs, res.underManagedRoot
 		if !scope.missing {
-			info, statErr := os.Stat(scope.realPath)
-			if statErr != nil || !info.IsDir() {
+			isDir, statCached := dirStatCache[scope.realPath]
+			if !statCached {
+				info, statErr := os.Stat(scope.realPath)
+				isDir = statErr == nil && info.IsDir()
+				dirStatCache[scope.realPath] = isDir
+			}
+			if !isDir {
 				continue
 			}
 			if strings.TrimSpace(scope.project.ID) == "" && scope.browse {
@@ -628,7 +703,7 @@ func (p *appServerGatewayPolicy) prepareGlobalThreadListStageA(
 
 	ctx, cancel := context.WithTimeout(context.Background(), appServerGatewayGlobalListGitWait)
 	defer cancel()
-	projectByPath, unsettledPaths := p.resolveGlobalListBrowseProjects(ctx, gitPaths)
+	projectByPath, unsettledPaths := p.resolveGlobalListBrowseProjects(ctx, gitPaths, refreshedProjects)
 
 	incomplete := false
 	candidates := make([]threadListStageACandidate, 0, min(len(entries), int(stageA.limit)))
@@ -713,18 +788,26 @@ func (p *appServerGatewayPolicy) prepareScopedThreadListStageA(
 	attempt int,
 	disallowMissingFallback bool,
 ) (threadListStageACandidates, *appServerGatewayPolicyError) {
+	var refreshedProjects []projects.Project
+	if p.router != nil && p.router.projects != nil {
+		refreshedProjects = p.router.projects.List()
+	}
+	probeCache := map[string]stageAScopeProbeResult{}
+
 	// 核验 Scoped 请求锚点 pending.cwd（独立采集其托管 checkout 依赖与对象身份）。
 	if strings.TrimSpace(binding.pendingThread.cwd) != "" {
-		anchorScope, anchorDep, anchorObjIDs, anchorUnderRoot, anchorOK := p.router.gatewayReadOnlyScopeForThreadListStageA(
+		anchorRes := p.router.gatewayReadOnlyScopeForThreadListStageAWithSnapshot(
 			binding.pendingThread.cwd,
 			stageA.managedRoot,
 			disallowMissingFallback,
+			refreshedProjects,
 		)
-		stageA.anchorRealPath = anchorScope.realPath
-		stageA.anchorDep = anchorDep
-		stageA.anchorAncestorObjIDs = anchorObjIDs
-		stageA.anchorUnderManagedRoot = anchorUnderRoot
-		if disallowMissingFallback && !anchorOK {
+		probeCache[binding.pendingThread.cwd] = anchorRes
+		stageA.anchorRealPath = anchorRes.scope.realPath
+		stageA.anchorDep = anchorRes.dep
+		stageA.anchorAncestorObjIDs = anchorRes.ancestorObjIDs
+		stageA.anchorUnderManagedRoot = anchorRes.underManagedRoot
+		if disallowMissingFallback && !anchorRes.ok {
 			stageA.anchorInvalidated = true
 		}
 	}
@@ -764,13 +847,18 @@ func (p *appServerGatewayPolicy) prepareScopedThreadListStageA(
 
 		// 1b-7 Scoped 基线兼容：沿用 firstNonEmpty(item.CWD, item.Path, pending.cwd)（trim + Abs + 作用域回退）。
 		cwd := firstNonEmpty(wire.CWD, wire.Path, binding.pendingThread.cwd)
-		scope, dep, ancestorObjIDs, underManagedRoot, ok := p.router.gatewayReadOnlyScopeForThreadListStageA(cwd, stageA.managedRoot, disallowMissingFallback)
+		res, cached := probeCache[cwd]
+		if !cached {
+			res = p.router.gatewayReadOnlyScopeForThreadListStageAWithSnapshot(cwd, stageA.managedRoot, disallowMissingFallback, refreshedProjects)
+			probeCache[cwd] = res
+		}
 		if p.onStageAAfterPathProbe != nil {
 			p.onStageAAfterPathProbe(attempt)
 		}
-		if !ok {
+		if !res.ok {
 			continue
 		}
+		scope, dep, ancestorObjIDs, underManagedRoot := res.scope, res.dep, res.ancestorObjIDs, res.underManagedRoot
 		readOnlyBrowseScope := false
 		if binding.pendingThread.scopeID != "" && scope.id != binding.pendingThread.scopeID {
 			if scope.missing {
@@ -1060,7 +1148,7 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 		finalThreadByID := make(map[string]appServerGatewayAllowedThread, len(pageMergedByID))
 		for id, pageMerged := range pageMergedByID {
 			if base, hasBase := historicalBaseByID[id]; hasBase {
-				finalThreadByID[id] = mergeCrossPageAllowedThread(base, pageMerged, nil)
+				finalThreadByID[id] = mergeCrossPageAllowedThread(base, pageMerged, binding.claimDirectInputVersion, nil)
 			} else {
 				finalThreadByID[id] = normalizeAllowedThreadRestrictionBits(pageMerged)
 			}
@@ -1175,7 +1263,7 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 			for id, pageMerged := range pageMergedByID {
 				var merged appServerGatewayAllowedThread
 				if base, hasBase := historicalBaseByID[id]; hasBase {
-					merged = mergeCrossPageAllowedThread(base, pageMerged, allocVer)
+					merged = mergeCrossPageAllowedThread(base, pageMerged, binding.claimDirectInputVersion, allocVer)
 				} else {
 					merged = normalizeAllowedThreadRestrictionBits(pageMerged)
 					merged.pushSeededOnly = false
@@ -1414,15 +1502,16 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		return gatewayScope{}, projects.Project{}, false
 	}
 
-	// 2) 若候选原本在项目作用域内：纯内存复验 FindByCanonicalPathInMemory 或核验阶段 A 已刷新的配置项目（支持项目符号链接改指）。
+	// 2) 若候选原本在项目作用域内：优先信任阶段 A 刷新过的项目匹配（纯内存 GetCached 确认项目仍登记），
+	//    避免配置项目符号链接改指后被启动期旧快照覆盖。
 	if !cand.scope.browse {
-		if project, found := p.router.projects.FindByCanonicalPathInMemory(cand.scope.realPath); found {
-			return gatewayScope{id: project.ID, realPath: cand.scope.realPath, project: project, missing: cand.scope.missing}, project, true
-		}
 		if cand.hasStageAResolvedProject && cand.resolvedProjectID != "" {
 			if _, stillRegistered := p.router.projects.GetCached(cand.resolvedProjectID); stillRegistered {
 				return gatewayScope{id: cand.resolvedProject.ID, realPath: cand.scope.realPath, project: cand.resolvedProject, missing: cand.scope.missing}, cand.resolvedProject, true
 			}
+		}
+		if project, found := p.router.projects.FindByCanonicalPathInMemory(cand.scope.realPath); found {
+			return gatewayScope{id: project.ID, realPath: cand.scope.realPath, project: project, missing: cand.scope.missing}, project, true
 		}
 		if realPathWithinAny(canonicalBrowseRoots, cand.scope.realPath) {
 			if isGlobal {
@@ -1442,10 +1531,8 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		return gatewayScope{}, projects.Project{}, false
 	}
 
-	// 3) 若候选原本在 browse_roots 内：先检查是否已升级为项目，否则复验 browse_roots 与 Global 归属项目。
-	if project, found := p.router.projects.FindByCanonicalPathInMemory(cand.scope.realPath); found {
-		return gatewayScope{id: project.ID, realPath: cand.scope.realPath, project: project, missing: cand.scope.missing}, project, true
-	}
+	// 3) 若候选原本在 browse_roots 内：阶段 A 已使用当次刷新项目快照判定其不属于已登记项目，
+	//    这里直接复验 browse_roots 与 Global 归属项目（纯内存 GetCached）。
 	if !realPathWithinAny(canonicalBrowseRoots, cand.scope.realPath) {
 		return gatewayScope{}, projects.Project{}, false
 	}
@@ -1460,34 +1547,6 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		return gatewayScope{id: workspaceIDForRealPath(cand.scope.realPath), realPath: cand.scope.realPath, browse: true, missing: cand.scope.missing}, project, true
 	}
 	return gatewayScope{id: workspaceIDForRealPath(cand.scope.realPath), realPath: cand.scope.realPath, browse: true, missing: cand.scope.missing}, projects.Project{}, true
-}
-
-// findRefreshedConfiguredProjectForCanonicalPath 供阶段 A 锁外处理“配置项目路径为符号链接且运行期改指”的场景：
-// 仅按当前已配置项目列表刷新规范路径，绝不写入或淘汰共享 pathMatchCache。
-func findRefreshedConfiguredProjectForCanonicalPath(reg *projects.Registry, canonicalPath string) (projects.Project, bool) {
-	if reg == nil || strings.TrimSpace(canonicalPath) == "" {
-		return projects.Project{}, false
-	}
-	cleanTarget := filepath.Clean(canonicalPath)
-	var best projects.Project
-	bestLen := -1
-	for _, project := range reg.List() {
-		if project.Missing || strings.TrimSpace(project.RealPath) == "" {
-			continue
-		}
-		realRoot := filepath.Clean(project.RealPath)
-		if !realPathWithin(realRoot, cleanTarget) {
-			continue
-		}
-		if len(realRoot) > bestLen {
-			best = project
-			bestLen = len(realRoot)
-		}
-	}
-	if bestLen < 0 {
-		return projects.Project{}, false
-	}
-	return best, true
 }
 
 func (p *appServerGatewayPolicy) buildThreadListResponsePayload(

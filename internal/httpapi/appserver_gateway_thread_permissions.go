@@ -232,8 +232,13 @@ func mergeHistoricalBaseline(connOld appServerGatewayAllowedThread, hasConn bool
 //   - pathRestored 仅解除历史瞬态 cwdMissing 只读，绝不清除 readOnlyPermanent 或省略字段时的 explicitDirectInputDenied；
 //   - pushSeededOnly 保持到经作用域校验的 thread/read 确认恢复为止，不被普通列表页清除；
 //   - 当本页在无结构只读、无目录缺失、无同页禁写冲突时明确给出 canAcceptDirectInput=true（rawDirectInputAllow），
-//     视为上游最新所有权释放的肯定证据，解除 historical.explicitDirectInputDenied 并推进版本号。
-func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedThread, allocVersion func() uint64) appServerGatewayAllowedThread {
+//     且历史禁写版本不晚于本次响应认领时的观察版本（claimDirectInputVersion），
+//     才视为上游最新所有权释放的肯定证据，避免过时列表响应覆盖并发新写入的禁写。
+func mergeCrossPageAllowedThread(
+	historical, pageMerged appServerGatewayAllowedThread,
+	claimDirectInputVersion uint64,
+	allocVersion func() uint64,
+) appServerGatewayAllowedThread {
 	historical = normalizeAllowedThreadRestrictionBits(historical)
 	pageMerged = normalizeAllowedThreadRestrictionBits(pageMerged)
 
@@ -250,11 +255,16 @@ func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedT
 	pageMerged.clearPushSeeded = false
 
 	// 版本与独立禁写：
-	// 1) 同页显式禁写 -> 固化禁写并推进版本；
-	// 2) 非只读且非补种时收到上游显式 canAcceptDirectInput=true -> 视为最新肯定证据（例如桌面端持有方已退出），解除禁写并推进版本；
-	// 3) 省略 canAcceptDirectInput -> 即使目录恢复也继承历史禁写与版本。
+	// 1) 若存在晚于本列表响应认领时点的并发新权限证据（historical.explicitDirectInputVersion > claimDirectInputVersion），
+	//    保留更新的并发权限证据，绝不让过时列表响应回写覆盖；
+	// 2) 同页显式禁写 -> 固化禁写并推进版本；
+	// 3) 非只读且非补种时收到上游显式 canAcceptDirectInput=true（且无更新的并发禁写） -> 解除禁写并推进版本；
+	// 4) 省略 canAcceptDirectInput -> 即使目录恢复也继承历史禁写与版本。
+	newerConcurrentEvidence := historical.explicitDirectInputVersion > claimDirectInputVersion
 	pageMerged.explicitDirectInputVersion = historical.explicitDirectInputVersion
-	if pageMerged.explicitDirectInputDenied || pageMerged.rawDirectInput == rawDirectInputDeny {
+	if newerConcurrentEvidence {
+		pageMerged.explicitDirectInputDenied = historical.explicitDirectInputDenied
+	} else if pageMerged.explicitDirectInputDenied || pageMerged.rawDirectInput == rawDirectInputDeny {
 		pageMerged.explicitDirectInputDenied = true
 		if allocVersion != nil {
 			pageMerged.explicitDirectInputVersion = allocVersion()
@@ -268,10 +278,13 @@ func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedT
 		pageMerged.explicitDirectInputDenied = true
 	}
 
-	if pageMerged.readOnly || pageMerged.explicitDirectInputDenied {
+	if pageMerged.readOnly || pageMerged.explicitDirectInputDenied || pageMerged.pushSeededOnly {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = false
-	} else if pageMerged.rawDirectInput == rawDirectInputAllow && !pageMerged.pushSeededOnly {
+	} else if newerConcurrentEvidence {
+		pageMerged.directInputKnown = historical.directInputKnown
+		pageMerged.canAcceptDirectInput = historical.canAcceptDirectInput
+	} else if pageMerged.rawDirectInput == rawDirectInputAllow {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = true
 	} else if !pathRestored && !pageMerged.directInputKnown && historical.directInputKnown {
@@ -284,11 +297,13 @@ func mergeCrossPageAllowedThread(historical, pageMerged appServerGatewayAllowedT
 
 // mergeGatewayAllowedThreadWithVersion 用于非列表路径（thread/read / thread/start / thread/takeover / allowThread / push 补种）
 // 在单快照下合并历史基线与本次原始更新：
+// - hasLiveExisting 区分「存在真实运行时主表授权」与「仅残留限制底板」，防止主表淘汰后推送补种被误当成真实授权；
 // - 仅当本次原始入参显式声明 rawDirectInputAllow（且非只读）时才清除 explicitDirectInputDenied 并分配新版本（支持 C11）；
 // - 省略 canAcceptDirectInput（rawDirectInputUnknown）时，即使 pathRestored 也继承历史 explicitDirectInputDenied 与版本。
 func mergeGatewayAllowedThreadWithVersion(
 	existing appServerGatewayAllowedThread,
 	hasExisting bool,
+	hasLiveExisting bool,
 	incoming appServerGatewayAllowedThread,
 	allocVersion func() uint64,
 ) appServerGatewayAllowedThread {
@@ -330,10 +345,11 @@ func mergeGatewayAllowedThreadWithVersion(
 	incoming.readOnly = incoming.readOnlyPermanent || incoming.cwdMissing
 
 	// 推送补种不得降级已存在的真实运行时主表条目；只有经作用域校验的 thread/read（或 start/fork）
-	// 显式置位 clearPushSeeded 时才解除 pushSeededOnly，thread/resume 与普通列表不得绕过该门禁。
+	// 显式置位 clearPushSeeded 时才解除 pushSeededOnly，thread/resume 与普通列表不得绕过该门禁；
+	// 当仅残留限制底板（!hasLiveExisting）时，推送补种必须保持 pushSeededOnly=true。
 	if incoming.pushSeededOnly {
-		incoming.pushSeededOnly = existing.pushSeededOnly
-		if !existing.pushSeededOnly {
+		if hasLiveExisting {
+			incoming.pushSeededOnly = false
 			// 保留已有真实主表的非只读字段与版本。
 			incoming.explicitDirectInputDenied = existing.explicitDirectInputDenied
 			incoming.explicitDirectInputVersion = existing.explicitDirectInputVersion
@@ -345,6 +361,15 @@ func mergeGatewayAllowedThreadWithVersion(
 			incoming.clearPushSeeded = false
 			return incoming
 		}
+		incoming.pushSeededOnly = true
+		// 继承底板中的显式禁写与版本，但不凭底板解锁写权限。
+		incoming.explicitDirectInputDenied = incoming.explicitDirectInputDenied || existing.explicitDirectInputDenied
+		incoming.explicitDirectInputVersion = existing.explicitDirectInputVersion
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = false
+		incoming.rawDirectInput = rawDirectInputUnknown
+		incoming.clearPushSeeded = false
+		return incoming
 	} else if incoming.clearPushSeeded {
 		incoming.pushSeededOnly = false
 	} else {
@@ -512,7 +537,7 @@ func (p *appServerGatewayPolicy) syncRestrictionEvictionEpochLocked(now time.Tim
 		return
 	}
 	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
-	for id := range p.allowedThreads {
+	for id, connEntry := range p.allowedThreads {
 		key := gatewayThreadCacheKey(runtimeID, id)
 		mainEntry, ok := p.router.gatewayThreads[key]
 		if ok && gatewayThreadCacheExpired(mainEntry, now) {
@@ -523,8 +548,9 @@ func (p *appServerGatewayPolicy) syncRestrictionEvictionEpochLocked(now time.Tim
 			delete(p.allowedThreads, id)
 			continue
 		}
-		// 仍由真实非补种主表背书的条目，刷新为最新有效主表+底板状态。
+		// 仍由真实非补种主表背书的条目，刷新为最新有效主表+底板状态，并保留连接级自动标题资格。
 		eff, _, _ := p.router.effectiveGatewayThreadLocked(key, now)
+		eff.autoTitleEligible = connEntry.autoTitleEligible
 		p.allowedThreads[id] = eff
 	}
 	p.restrictionEvictionEpoch = p.router.gatewayRestrictionEvictionEpoch
@@ -571,7 +597,7 @@ func (p *appServerGatewayPolicy) observeThreadStatusDirectInputNotification(fram
 		} else {
 			incoming.rawDirectInput = rawDirectInputDeny
 		}
-		merged := mergeGatewayAllowedThreadWithVersion(existing, true, incoming, nil)
+		merged := mergeGatewayAllowedThreadWithVersion(existing, true, true, incoming, nil)
 		merged.lastSeen = now
 		p.allowedThreads[threadID] = merged
 		return
@@ -618,7 +644,7 @@ func (p *appServerGatewayPolicy) observeThreadStatusDirectInputNotification(fram
 		p.router.nextGatewayThreadDirectInputVersion++
 		return p.router.nextGatewayThreadDirectInputVersion
 	}
-	merged := mergeGatewayAllowedThreadWithVersion(historical, true, incoming, allocVer)
+	merged := mergeGatewayAllowedThreadWithVersion(historical, true, true, incoming, allocVer)
 	merged.lastSeen = now
 	p.allowedThreads[threadID] = merged
 
@@ -649,7 +675,7 @@ func applyFinalThreadPermissions(
 			"discovery":   "global",
 			"readOnly":    finalThread.readOnly,
 		}
-		if finalThread.readOnly {
+		if finalThread.readOnly || finalThread.pushSeededOnly {
 			item["canAcceptDirectInput"] = false
 		} else if finalThread.directInputKnown {
 			item["canAcceptDirectInput"] = finalThread.canAcceptDirectInput
@@ -675,6 +701,8 @@ func applyFinalThreadPermissions(
 			annotation["cwdMissing"] = true
 		}
 		item["mimiRemote"] = annotation
+	} else if finalThread.pushSeededOnly {
+		item["canAcceptDirectInput"] = false
 	} else if finalThread.directInputKnown {
 		item["canAcceptDirectInput"] = finalThread.canAcceptDirectInput
 	}

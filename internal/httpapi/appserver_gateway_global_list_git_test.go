@@ -47,6 +47,39 @@ func globalListResponseCursor(t *testing.T, payload []byte) (string, bool) {
 	return *response.Result.NextCursor, true
 }
 
+func observeGlobalListGitTest(t *testing.T, policy *appServerGatewayPolicy, payload []byte, upstreamCursor string) ([]byte, int, error) {
+	t.Helper()
+	var frame struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &frame); err != nil || len(frame.ID) == 0 {
+		t.Fatalf("invalid test list payload: %v %s", err, payload)
+	}
+	if err := policy.rememberPendingThreadRequest(&frame.ID, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+		upstreamCursor:  upstreamCursor,
+	}); err != nil {
+		t.Fatalf("rememberPendingThreadRequest: %v", err)
+	}
+	out, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if policyErr != nil {
+		return nil, 0, errors.New(policyErr.message)
+	}
+	if !forward {
+		return nil, 0, errors.New("thread/list response dropped")
+	}
+	var decoded struct {
+		Result struct {
+			Data []json.RawMessage `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		return out, 0, err
+	}
+	return out, len(decoded.Result.Data), nil
+}
+
 func TestGlobalThreadListReusesGitOwnershipAcrossResponses(t *testing.T) {
 	projectDir := newCommittedGitRepo(t)
 	browseRoot := t.TempDir()
@@ -57,9 +90,9 @@ func TestGlobalThreadListReusesGitOwnershipAcrossResponses(t *testing.T) {
 	payload := globalListLatencyPayload(t, worktreeDir, 30)
 
 	for round := 0; round < 3; round++ {
-		_, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
-		if err != nil || len(allowed) != 30 {
-			t.Fatalf("第 %d 轮同仓外部 Worktree 的任务应完整保留：allowed=%d err=%v", round, len(allowed), err)
+		_, count, err := observeGlobalListGitTest(t, policy, payload, "")
+		if err != nil || count != 30 {
+			t.Fatalf("第 %d 轮同仓外部 Worktree 的任务应完整保留：count=%d err=%v", round, count, err)
 		}
 	}
 	if got := gitCalls(); got != 2 {
@@ -72,9 +105,9 @@ func TestGlobalThreadListReusesGitOwnershipAcrossResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.router.projects = registry
-	_, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
-	if err != nil || len(allowed) != 0 {
-		t.Fatalf("项目被移除后外部 Worktree 不能沿用缓存获得授权：allowed=%d err=%v", len(allowed), err)
+	_, count, err := observeGlobalListGitTest(t, policy, payload, "")
+	if err != nil || count != 0 {
+		t.Fatalf("项目被移除后外部 Worktree 不能沿用缓存获得授权：count=%d err=%v", count, err)
 	}
 }
 
@@ -199,12 +232,11 @@ func TestGlobalThreadListGitTimeoutKeepsPageUnsettled(t *testing.T) {
 	runGitTestCommand(t, projectDir, "worktree", "add", "--detach", worktreeDir)
 	policy := globalListLatencyPolicy(t, projectDir, browseRoot)
 	payload := globalListLatencyPayload(t, worktreeDir, 30)
-	pending := appServerGatewayPendingThreadRequest{upstreamCursor: "upstream-page-2"}
 
 	for round := 0; round < 2; round++ {
-		rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, pending)
-		if err != nil || len(allowed) != 0 {
-			t.Fatalf("Git 超时时不能放行未判定的会话：allowed=%d err=%v", len(allowed), err)
+		rewritten, count, err := observeGlobalListGitTest(t, policy, payload, "upstream-page-2")
+		if err != nil || count != 0 {
+			t.Fatalf("Git 超时时不能放行未判定的会话：count=%d err=%v", count, err)
 		}
 		// 上游这页本来是末页（nextCursor=null）；未判定完时仍要让客户端重取本页。
 		token, ok := globalListResponseCursor(t, rewritten)
@@ -220,9 +252,9 @@ func TestGlobalThreadListGitTimeoutKeepsPageUnsettled(t *testing.T) {
 	// 超时不能被缓存成“不在仓库”：Git 恢复后同一目录重新判定并放行。
 	gatewayGitCommonDirectory = resolveGatewayGitCommonDirectory
 	gatewayGitOwnershipResolveTimeout = originalTimeout
-	_, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, pending)
-	if err != nil || len(allowed) != 30 {
-		t.Fatalf("Git 恢复后应重新判定并完整放行：allowed=%d err=%v", len(allowed), err)
+	_, count, err := observeGlobalListGitTest(t, policy, payload, "upstream-page-2")
+	if err != nil || count != 30 {
+		t.Fatalf("Git 恢复后应重新判定并完整放行：count=%d err=%v", count, err)
 	}
 }
 
@@ -238,9 +270,9 @@ func TestGlobalThreadListTransientGitFailureIsNotCachedAsNonRepository(t *testin
 	stubGatewayGitCommonDirectory(t, func(context.Context, string) (string, error) {
 		return "", errors.New("fork/exec git: resource temporarily unavailable")
 	})
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
-	if err != nil || len(allowed) != 0 {
-		t.Fatalf("Git 临时失败时不能放行未判定的会话：allowed=%d err=%v", len(allowed), err)
+	rewritten, count, err := observeGlobalListGitTest(t, policy, payload, "")
+	if err != nil || count != 0 {
+		t.Fatalf("Git 临时失败时不能放行未判定的会话：count=%d err=%v", count, err)
 	}
 	if token, ok := globalListResponseCursor(t, rewritten); !ok || token == "" {
 		t.Fatalf("Git 临时失败不能被当作完整遍历：%s", rewritten)
@@ -248,9 +280,9 @@ func TestGlobalThreadListTransientGitFailureIsNotCachedAsNonRepository(t *testin
 
 	// 失败没有被缓存成“不在仓库”：Git 恢复后立即重新判定并放行。
 	gatewayGitCommonDirectory = resolveGatewayGitCommonDirectory
-	_, allowed, err = policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{})
-	if err != nil || len(allowed) != 30 {
-		t.Fatalf("Git 恢复后应重新判定并完整放行：allowed=%d err=%v", len(allowed), err)
+	_, count, err = observeGlobalListGitTest(t, policy, payload, "")
+	if err != nil || count != 30 {
+		t.Fatalf("Git 恢复后应重新判定并完整放行：count=%d err=%v", count, err)
 	}
 }
 
@@ -267,11 +299,9 @@ func TestGlobalThreadListBrokenWorktreeIsSettledAsNonRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := globalListLatencyPolicy(t, projectDir, browseRoot)
-	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(
-		globalListLatencyPayload(t, brokenDir, 3), appServerGatewayPendingThreadRequest{},
-	)
-	if err != nil || len(allowed) != 0 {
-		t.Fatalf("失效 Worktree 的会话不能放行：allowed=%d err=%v", len(allowed), err)
+	rewritten, count, err := observeGlobalListGitTest(t, policy, globalListLatencyPayload(t, brokenDir, 3), "")
+	if err != nil || count != 0 {
+		t.Fatalf("失效 Worktree 的会话不能放行：count=%d err=%v", count, err)
 	}
 	if cursor, ok := globalListResponseCursor(t, rewritten); ok {
 		t.Fatalf("Git 已明确回答不是仓库，本页应判定完、遍历照常结束：cursor=%q", cursor)

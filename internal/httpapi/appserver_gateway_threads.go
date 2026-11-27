@@ -393,6 +393,20 @@ func (p *appServerGatewayPolicy) observeUpstreamFrameDecision(messageType int, p
 			return upstreamFrameDecision{forwardPayload: payload, forward: false}
 		}
 		if claim.validThreadListRPCError {
+			redactOnly := claim.hasPendingHistory && claim.pendingHistory.redactOnly
+			if !redactOnly && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes {
+				if claim.hasPendingHistory {
+					p.recordHistoryResponseMetrics(claim.pendingHistory.method, len(payload), true)
+					return upstreamFrameDecision{
+						policyErr:     p.historyResponseTooLargeError(frame.ID, claim.pendingHistory, len(payload)),
+						targetSinkGen: claim.targetSinkGen,
+					}
+				}
+				return upstreamFrameDecision{
+					policyErr:     malformedThreadListPolicyError(frame.ID, "thread/list 错误响应过大，已被网关拦截"),
+					targetSinkGen: claim.targetSinkGen,
+				}
+			}
 			return upstreamFrameDecision{
 				forwardPayload: payload,
 				forward:        true,
@@ -514,10 +528,17 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 		return rewritten, true, nil
 	}
 	if pending.method == "thread/list" {
+		var claimVer uint64
+		if p.router != nil {
+			p.router.gatewayThreadsMu.Lock()
+			claimVer = p.router.nextGatewayThreadDirectInputVersion
+			p.router.gatewayThreadsMu.Unlock()
+		}
 		decision := p.processPendingThreadListResponse(payload, frame, threadListRequestBinding{
-			key:           key,
-			frameID:       frame.ID,
-			pendingThread: pending,
+			key:                     key,
+			frameID:                 frame.ID,
+			pendingThread:           pending,
+			claimDirectInputVersion: claimVer,
 		})
 		if decision.releasePins != nil {
 			if decision.forward && decision.policyErr == nil {
@@ -860,7 +881,7 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 	pending appServerGatewayPendingThreadRequest,
 ) error {
 	allowed, ok := p.allowedThread(pending.threadID)
-	if !ok || !allowed.readOnly {
+	if !ok || (!allowed.readOnly && !allowed.pushSeededOnly) {
 		return nil
 	}
 
@@ -1745,7 +1766,7 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 
 // mergeGatewayAllowedThread 保留兼容入口，委托给带正交限制位与版本仲裁的统一合并函数。
 func mergeGatewayAllowedThread(existing, incoming appServerGatewayAllowedThread) appServerGatewayAllowedThread {
-	return mergeGatewayAllowedThreadWithVersion(existing, true, incoming, nil)
+	return mergeGatewayAllowedThreadWithVersion(existing, true, !existing.pushSeededOnly, incoming, nil)
 }
 
 func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayAllowedThread) (appServerGatewayAllowedThread, bool) {
@@ -1753,9 +1774,9 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 		return appServerGatewayAllowedThread{}, false
 	}
 	if existing, ok := p.allowedThread(thread.id); ok {
-		thread = mergeGatewayAllowedThreadWithVersion(existing, true, thread, nil)
+		thread = mergeGatewayAllowedThreadWithVersion(existing, true, !existing.pushSeededOnly, thread, nil)
 	} else {
-		thread = mergeGatewayAllowedThreadWithVersion(appServerGatewayAllowedThread{}, false, thread, nil)
+		thread = mergeGatewayAllowedThreadWithVersion(appServerGatewayAllowedThread{}, false, false, thread, nil)
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
@@ -1777,7 +1798,7 @@ func (p *appServerGatewayPolicy) commitAllowedThreadsLocked(threads []appServerG
 				incoming.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
 			}
 			existing, ok := p.allowedThreads[incoming.id]
-			merged := mergeGatewayAllowedThreadWithVersion(existing, ok, incoming, nil)
+			merged := mergeGatewayAllowedThreadWithVersion(existing, ok, ok && !existing.pushSeededOnly, incoming, nil)
 			merged.lastSeen = now
 			p.allowedThreads[merged.id] = merged
 		}
@@ -1800,9 +1821,10 @@ func (p *appServerGatewayPolicy) commitAllowedThreadsLocked(threads []appServerG
 		incoming.runtimeID = normalizeAppServerRuntimeID(incoming.runtimeID)
 		key := gatewayThreadCacheKey(incoming.runtimeID, incoming.id)
 		connOld, hasConn := p.allowedThreads[incoming.id]
-		globalOld, _, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
+		globalOld, hasMain, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
 		historical, hasHist := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal)
-		merged := mergeGatewayAllowedThreadWithVersion(historical, hasHist, incoming, allocVersion)
+		hasLive := (hasConn && !connOld.pushSeededOnly) || (hasMain && !globalOld.pushSeededOnly)
+		merged := mergeGatewayAllowedThreadWithVersion(historical, hasHist, hasLive, incoming, allocVersion)
 		merged.lastSeen = now
 		p.allowedThreads[merged.id] = merged
 
@@ -1881,12 +1903,13 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	now := time.Now()
 	key := gatewayThreadCacheKey(thread.runtimeID, thread.id)
 	r.gatewayThreadsMu.Lock()
-	globalOld, _, hasAnyGlobal := r.effectiveGatewayThreadLocked(key, now)
+	globalOld, hasMain, hasAnyGlobal := r.effectiveGatewayThreadLocked(key, now)
+	hasLive := hasMain && !globalOld.pushSeededOnly
 	allocVersion := func() uint64 {
 		r.nextGatewayThreadDirectInputVersion++
 		return r.nextGatewayThreadDirectInputVersion
 	}
-	merged := mergeGatewayAllowedThreadWithVersion(globalOld, hasAnyGlobal, thread, allocVersion)
+	merged := mergeGatewayAllowedThreadWithVersion(globalOld, hasAnyGlobal, hasLive, thread, allocVersion)
 	merged.lastSeen = now
 	merged.autoTitleEligible = false
 	r.gatewayThreads[key] = merged

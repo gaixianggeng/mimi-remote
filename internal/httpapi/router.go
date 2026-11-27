@@ -171,7 +171,7 @@ type Router struct {
 	managedWorktreeDeleting              map[string]int
 	managedWorktreeRecentDeletions       []deletedManagedWorktreeRecord
 	managedWorktreeDeletionFloorEpoch    uint64
-	managedWorktreeNextGen               uint64
+	managedWorktreeNextGen               atomic.Uint64
 	managedWorktreeLifecycleEpoch        atomic.Uint64
 	// managedWorktreeCommitMu 仅保护纯内存生命周期提交边界（微秒级，绝不跨 Git/磁盘 I/O 持有），
 	// 与串行慢速批量清理的 managedWorktreeCleanupMu 分离，避免无关会话列表被慢速清理阻塞。

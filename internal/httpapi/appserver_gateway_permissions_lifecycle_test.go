@@ -795,4 +795,144 @@ func TestThreadListDoesNotBlockOnBatchCleanupMutexAndFollowsRetargetedProjectSym
 	if !bytes.Contains(outSym, []byte("t-wt-v2")) {
 		t.Fatalf("worktree of new symlink target repoV2 MUST be attributed after retarget: %s", outSym)
 	}
+	// Regular request gate (gatewayScopeForPath) must ALSO authorize repoV2 after symlink retarget!
+	if scopeV2, ok := routerSym.gatewayScopeForPath(repoV2); !ok || scopeV2.id != "sym-proj" {
+		t.Fatalf("gatewayScopeForPath must resolve retargeted symlink repoV2 to sym-proj: ok=%v %+v", ok, scopeV2)
+	}
+	if scopeV1, ok := routerSym.gatewayScopeForPath(repoV1); ok && scopeV1.id == "sym-proj" {
+		t.Fatalf("gatewayScopeForPath must NOT attribute old symlink target repoV1 to sym-proj: %+v", scopeV1)
+	}
+}
+
+func TestRound2RegressionsStaleListRetryPushSeedGuardsWindowsSpellingAndAutoTitle(t *testing.T) {
+	projectDir := t.TempDir()
+	otherProjectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "demo", Name: "Demo", Path: projectDir},
+		{ID: "other", Name: "Other", Path: otherProjectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) [P1 #1] Staged list response with canAcceptDirectInput=true MUST NOT overwrite a newer concurrent denial
+	//    written after claimUpstreamResponse!
+	router := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policy := newAppServerGatewayPolicy(router, "claude")
+	id1 := json.RawMessage(`401`)
+	_ = policy.rememberPendingThreadRequest(&id1, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	var injected atomic.Bool
+	policy.onStageBBeforeFinalCommitLock = func(int) {
+		if injected.CompareAndSwap(false, true) {
+			router.allowGatewayThread(appServerGatewayAllowedThread{
+				id: "t-race-deny", runtimeID: "claude", cwd: projectDir, scopeID: "demo",
+				directInputKnown: true, canAcceptDirectInput: false, rawDirectInput: rawDirectInputDeny,
+			})
+		}
+	}
+	respRace := []byte(fmt.Sprintf(`{"id":401,"result":{"data":[{"id":"t-race-deny","cwd":%q,"canAcceptDirectInput":true}],"nextCursor":null}}`, projectDir))
+	outRace, forwardRace, errRace := policy.observeUpstreamFrame(websocket.TextMessage, respRace)
+	if !forwardRace || errRace != nil {
+		t.Fatalf("stale list retry failed: forward=%v err=%+v", forwardRace, errRace)
+	}
+	if !bytes.Contains(outRace, []byte(`"canAcceptDirectInput":false`)) {
+		t.Fatalf("stale list retry MUST preserve newer concurrent denial on wire: %s", outRace)
+	}
+	if st, ok := policy.allowedThread("t-race-deny"); !ok || !st.explicitDirectInputDenied || st.canAcceptDirectInput {
+		t.Fatalf("stale list retry MUST NOT overwrite newer concurrent denial: ok=%v %+v", ok, st)
+	}
+
+	// 2) [P1 #2, #3, #4] Evicted main cache + surviving restriction floor -> push seed stays pushSeededOnly,
+	//    lists emit canAcceptDirectInput=false, rejection directs to thread/read, and forged cross-scope thread/read is rejected!
+	router2 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	router2.allowGatewayThread(appServerGatewayAllowedThread{
+		id: "t-push-floor", runtimeID: "claude", cwd: projectDir, scopeID: "demo",
+		directInputKnown: true, canAcceptDirectInput: true, rawDirectInput: rawDirectInputAllow,
+	})
+	router2.gatewayThreadsMu.Lock()
+	delete(router2.gatewayThreads, gatewayThreadCacheKey("claude", "t-push-floor"))
+	router2.gatewayThreadsMu.Unlock()
+
+	router2.restoreGatewayThreadAuthorization(pushbridge.LocateRecord{
+		Runtime: "claude", ThreadID: "t-push-floor", CWD: projectDir,
+	})
+	policy2 := newAppServerGatewayPolicy(router2, "claude")
+	if st, ok := policy2.allowedThread("t-push-floor"); !ok || !st.pushSeededOnly {
+		t.Fatalf("push seed after main-cache eviction with surviving floor MUST stay pushSeededOnly: ok=%v %+v", ok, st)
+	}
+	// Turn write rejection must direct client to thread/read (NOT list refresh).
+	turnReq := []byte(fmt.Sprintf(`{"id":402,"method":"turn/start","params":{"threadId":"t-push-floor","cwd":%q,"input":[{"type":"text","text":"hi"}]}}`, projectDir))
+	if _, pErr := policy2.validateClientFrame(websocket.TextMessage, turnReq); pErr == nil || !bytes.Contains([]byte(pErr.message), []byte("thread/read")) {
+		t.Fatalf("pushSeededOnly rejection must direct to thread/read: %+v", pErr)
+	}
+	// Global list MUST advertise canAcceptDirectInput=false while pushSeededOnly is active!
+	idList := json.RawMessage(`403`)
+	_ = policy2.rememberPendingThreadRequest(&idList, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	listOut, forwardList, errList := policy2.observeUpstreamFrame(websocket.TextMessage, []byte(fmt.Sprintf(`{"id":403,"result":{"data":[{"id":"t-push-floor","cwd":%q,"canAcceptDirectInput":true}],"nextCursor":null}}`, projectDir)))
+	if !forwardList || errList != nil || !bytes.Contains(listOut, []byte(`"canAcceptDirectInput":false`)) {
+		t.Fatalf("list must emit canAcceptDirectInput=false while pushSeededOnly is active: forward=%v err=%+v out=%s", forwardList, errList, listOut)
+	}
+	// Forged thread/read returning another configured workspace cwd MUST be rejected and MUST NOT clear pushSeededOnly!
+	readBadID := json.RawMessage(`404`)
+	_ = policy2.rememberPendingThreadRequest(&readBadID, appServerGatewayPendingThreadRequest{method: "thread/read", threadID: "t-push-floor"})
+	readBadResp := []byte(fmt.Sprintf(`{"id":404,"result":{"thread":{"id":"t-push-floor","cwd":%q,"canAcceptDirectInput":true}}}`, otherProjectDir))
+	if _, forwardBad, errBad := policy2.observeUpstreamFrame(websocket.TextMessage, readBadResp); forwardBad || errBad == nil {
+		t.Fatalf("forged cross-scope thread/read for pushSeededOnly must be rejected: forward=%v err=%+v", forwardBad, errBad)
+	}
+	if st, ok := policy2.allowedThread("t-push-floor"); !ok || !st.pushSeededOnly {
+		t.Fatalf("rejected thread/read must keep pushSeededOnly intact: ok=%v %+v", ok, st)
+	}
+
+	// 3) [P2 #7] syncRestrictionEvictionEpochLocked preserves connection-local autoTitleEligible!
+	oldCap := appServerGatewayRestrictionFloorMax
+	appServerGatewayRestrictionFloorMax = 1
+	defer func() { appServerGatewayRestrictionFloorMax = oldCap }()
+	router3 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policy3 := newAppServerGatewayPolicy(router3, "codex")
+	policy3.allowThread(appServerGatewayAllowedThread{
+		id: "t-autotitle", runtimeID: "codex", cwd: projectDir, scopeID: "demo",
+		directInputKnown: true, canAcceptDirectInput: true, autoTitleEligible: true,
+	})
+	// Trigger floor eviction epoch bump.
+	for i := 0; i < 2; i++ {
+		router3.allowGatewayThread(appServerGatewayAllowedThread{
+			id: fmt.Sprintf("floor-bump-%d", i), runtimeID: "codex", cwd: projectDir, scopeID: "demo",
+			directInputKnown: true, canAcceptDirectInput: false, rawDirectInput: rawDirectInputDeny,
+		})
+	}
+	if st, ok := policy3.allowedThread("t-autotitle"); !ok || !st.autoTitleEligible {
+		t.Fatalf("restriction floor eviction refresh must preserve connection-local autoTitleEligible: ok=%v %+v", ok, st)
+	}
+
+	// 4) [P2 #4] Oversized valid thread/list JSON-RPC error frame must be blocked by the history cap!
+	oldCapBytes := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 256
+	defer func() { appServerGatewayHistoryResponseCapBytes = oldCapBytes }()
+	errID := json.RawMessage(`405`)
+	_ = policy3.rememberPendingThreadRequest(&errID, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	hugeErrFrame := []byte(fmt.Sprintf(`{"id":405,"error":{"code":-32603,"message":%q}}`, string(bytes.Repeat([]byte("E"), 512))))
+	if _, fwd, pErr := policy3.observeUpstreamFrame(websocket.TextMessage, hugeErrFrame); fwd || pErr == nil {
+		t.Fatalf("oversized valid thread/list RPC error must be bounded by response cap: fwd=%v err=%+v", fwd, pErr)
+	}
+	appServerGatewayHistoryResponseCapBytes = oldCapBytes
+
+	// 5) [P1 #6] Windows extended-length drive spelling matches ordinary drive project root in full gateway thread/list!
+	if runtime.GOOS == "windows" {
+		subDir := filepath.Join(projectDir, "sub")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		extPath := `\\?\` + subDir
+		matched, ok := projects.MatchCanonicalPathInList(registry.List(), extPath)
+		if !ok || matched.ID != "demo" {
+			t.Fatalf("Windows extended-length path %q must match demo project, got ok=%v %+v", extPath, ok, matched)
+		}
+		winID := json.RawMessage(`406`)
+		_ = policy3.rememberPendingThreadRequest(&winID, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+		winResp := []byte(fmt.Sprintf(`{"id":406,"result":{"data":[{"id":"t-win-ext","cwd":%q,"canAcceptDirectInput":true}],"nextCursor":null}}`, extPath))
+		winOut, winFwd, winErr := policy3.observeUpstreamFrame(websocket.TextMessage, winResp)
+		if !winFwd || winErr != nil || !bytes.Contains(winOut, []byte(`"t-win-ext"`)) {
+			t.Fatalf("Windows extended-length cwd %q must be attributed in global thread/list: fwd=%v err=%+v out=%s", extPath, winFwd, winErr, winOut)
+		}
+	}
 }

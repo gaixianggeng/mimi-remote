@@ -385,7 +385,17 @@ func (r *preparedBlobReservation) commit() func(grace time.Duration) {
 		}
 		for _, item := range r.newItems {
 			if existing, ok := s.entries[item.id]; ok {
-				// 极少数情况：未 pin 过期条目尚未被删，先删再按精确同 ID 重插。
+				if existing.isEffectivelyPinned(now) || existing.hash == item.hash {
+					// 两个并发预留刷新了同一个过期 ID：复用已提交的存活条目并累加 pin，
+					// 绝不删除并重置前一个响应的 activeWritePins / gracePinExpiries。
+					existing.createdAt = now
+					existing.activeWritePins++
+					s.touchEntryLocked(&existing, now)
+					s.entries[item.id] = existing
+					s.idByHash[item.hash] = item.id
+					pinnedIDs = append(pinnedIDs, item.id)
+					continue
+				}
 				s.deleteEntryLocked(item.id, existing)
 			}
 			entry := appServerHistoryMediaEntry{
@@ -495,7 +505,7 @@ func (r *Router) stageRedactAndDehydrateThreadListPayload(
 			if dec.Decode(&root) == nil {
 				var blobs []preparedBlobInput
 				var reps []stagedMediaReplacement
-				collectStagedOutputBlobs(root, minimumItemBytes, &blobs, &reps)
+				collectStagedOutputBlobs(root, minimumItemBytes, r.historyOutput.maxItemBytes, &blobs, &reps)
 				if len(blobs) > 0 {
 					res := r.historyOutput.reservePreparedBatchGreedy(blobs)
 					changed := false
@@ -602,9 +612,10 @@ func collectStagedMediaBlobs(value any, blobs *[]preparedBlobInput, reps *[]stag
 	}
 }
 
-func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]preparedBlobInput, reps *[]stagedMediaReplacement) {
+func collectStagedOutputBlobs(value any, minimumItemBytes int, maxItemBytes int64, blobs *[]preparedBlobInput, reps *[]stagedMediaReplacement) {
 	switch typed := value.(type) {
 	case map[string]any:
+		replacedKey := ""
 		if _, alreadyRedacted := typed["historyOutputRef"]; !alreadyRedacted {
 			typeName, _ := typed["type"].(string)
 			typeName = strings.TrimSpace(typeName)
@@ -613,6 +624,7 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]prepared
 				contentType string
 				preview     string
 				replace     func()
+				fieldKey    string
 			)
 			switch typeName {
 			case "commandExecution":
@@ -621,6 +633,7 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]prepared
 				contentType = "text/plain; charset=utf-8"
 				preview = historyOutputPreview(data)
 				obj, p := typed, preview
+				fieldKey = "aggregatedOutput"
 				replace = func() { obj["aggregatedOutput"] = p }
 			case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
 				if result, ok := typed["result"]; ok && result != nil {
@@ -633,6 +646,7 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]prepared
 					}
 					preview = historyOutputPreview(data)
 					obj, p := typed, preview
+					fieldKey = "result"
 					replace = func() { obj["result"] = p }
 				}
 			case "fileChange":
@@ -641,11 +655,13 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]prepared
 					contentType = "application/json"
 					preview = historyOutputPreview(data)
 					obj, compact := typed, compactHistoryFileChanges(changes)
+					fieldKey = "changes"
 					replace = func() { obj["changes"] = compact }
 				}
 			}
-			if len(data) >= minimumItemBytes && replace != nil {
+			if len(data) >= minimumItemBytes && replace != nil && (maxItemBytes <= 0 || int64(len(data)) <= maxItemBytes) {
 				obj, ct, p, n, fn := typed, contentType, preview, len(data), replace
+				replacedKey = fieldKey
 				*blobs = append(*blobs, preparedBlobInput{contentType: ct, data: data})
 				*reps = append(*reps, stagedMediaReplacement{apply: func(id string) {
 					fn()
@@ -657,12 +673,16 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, blobs *[]prepared
 				}})
 			}
 		}
-		for _, child := range typed {
-			collectStagedOutputBlobs(child, minimumItemBytes, blobs, reps)
+		for key, child := range typed {
+			if replacedKey != "" && key == replacedKey {
+				// 父节点已覆盖并替换该子树：跳过子树内嵌输出，避免占用无关预留容量。
+				continue
+			}
+			collectStagedOutputBlobs(child, minimumItemBytes, maxItemBytes, blobs, reps)
 		}
 	case []any:
 		for _, child := range typed {
-			collectStagedOutputBlobs(child, minimumItemBytes, blobs, reps)
+			collectStagedOutputBlobs(child, minimumItemBytes, maxItemBytes, blobs, reps)
 		}
 	}
 }

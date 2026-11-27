@@ -496,3 +496,74 @@ func TestStageBTTLAbortCancelsMediaReservationWithZeroWrites(t *testing.T) {
 		t.Fatalf("aborted Stage B must cancel media reservation leaving 0 entries & 0 reserved, got entries=%d reserved=%d", mediaCount, mediaReserved)
 	}
 }
+
+func TestConcurrentExpiredBlobRefreshPreservesPinsAndDuplicateHashEviction(t *testing.T) {
+	now := time.Date(2026, 11, 27, 14, 0, 0, 0, time.UTC)
+	store := newAppServerHistoryBlobStore(time.Minute, 2, 1024, 512)
+	store.nowFunc = func() time.Time { return now }
+
+	// 1) [P1 #9] Put a blob, let it expire, then reserve TWO concurrent refreshes of the same expired ID!
+	origID, ok := store.put("image/png", []byte("same-expired-blob"))
+	if !ok {
+		t.Fatal("initial put failed")
+	}
+	now = now.Add(2 * time.Minute)
+
+	res1, ok1 := store.reservePreparedBatch([]preparedBlobInput{{contentType: "image/png", data: []byte("same-expired-blob")}})
+	res2, ok2 := store.reservePreparedBatch([]preparedBlobInput{{contentType: "image/png", data: []byte("same-expired-blob")}})
+	if !ok1 || !ok2 || res1.ids[0] != origID || res2.ids[0] != origID {
+		t.Fatalf("both reservations should reuse expired ID %q: ok=(%v,%v) ids=(%q,%q)", origID, ok1, ok2, res1.ids[0], res2.ids[0])
+	}
+	rel1 := res1.commit()
+	rel2 := res2.commit()
+
+	// Both commits MUST result in activeWritePins == 2! Releasing res1 leaves activeWritePins == 1,
+	// so the entry MUST NOT be evicted while res2 still holds its pin!
+	rel1(0)
+	store.mu.Lock()
+	entry := store.entries[origID]
+	pinsAfterRel1 := entry.activeWritePins
+	store.mu.Unlock()
+	if pinsAfterRel1 != 1 {
+		t.Fatalf("expected activeWritePins=1 after releasing first of two concurrent commits, got %d", pinsAfterRel1)
+	}
+	rel2(0)
+
+	// 2) [P2 #2] Concurrent fresh reservations with identical data commit distinct IDs;
+	//    evicting one duplicate MUST keep idByHash pointing to the surviving copy!
+	store2 := newAppServerHistoryBlobStore(time.Minute, 2, 1024, 512)
+	store2.nowFunc = func() time.Time { return now }
+	dupA, okA := store2.reservePreparedBatch([]preparedBlobInput{{contentType: "image/png", data: []byte("fresh-dup")}})
+	dupB, okB := store2.reservePreparedBatch([]preparedBlobInput{{contentType: "image/png", data: []byte("fresh-dup")}})
+	if !okA || !okB {
+		t.Fatalf("concurrent fresh reservations failed: okA=%v okB=%v", okA, okB)
+	}
+	relA := dupA.commit()
+	relB := dupB.commit()
+	relA(0)
+	// Keep dupB pinned while a third entry forces eviction of dupA (LRU unpinned).
+	if _, okThird := store2.put("image/png", []byte("third-blob")); !okThird {
+		t.Fatal("third put should evict unpinned dupA")
+	}
+	// Re-inserting "fresh-dup" MUST reuse surviving dupB via preserved idByHash!
+	reusedID, okReuse := store2.put("image/png", []byte("fresh-dup"))
+	if !okReuse || reusedID != dupB.ids[0] {
+		t.Fatalf("expected hash index to preserve surviving dupB %q, got ok=%v id=%q", dupB.ids[0], okReuse, reusedID)
+	}
+	relB(0)
+
+	// 3) [P2 #3] Nested large output inside a dehydrated parent mcpToolCall must NOT consume extra output reservation!
+	nestedPayload := map[string]any{
+		"type": "mcpToolCall",
+		"result": map[string]any{
+			"type":             "commandExecution",
+			"aggregatedOutput": strings.Repeat("X", 2048),
+		},
+	}
+	var blobs []preparedBlobInput
+	var reps []stagedMediaReplacement
+	collectStagedOutputBlobs(nestedPayload, 512, 65536, &blobs, &reps)
+	if len(blobs) != 1 {
+		t.Fatalf("dehydrated parent mcpToolCall must skip nested commandExecution output, got %d staged blobs", len(blobs))
+	}
+}

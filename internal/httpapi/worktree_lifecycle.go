@@ -305,8 +305,7 @@ func (r *Router) probeManagedWorktreeForThreadListStageA(realPath string) (manag
 		existing.RootProject = project
 		return existing, true
 	}
-	r.managedWorktreeNextGen++
-	wt.InstanceGen = r.managedWorktreeNextGen
+	wt.InstanceGen = r.managedWorktreeNextGen.Add(1)
 	if r.managedWorktreeColdCache == nil {
 		r.managedWorktreeColdCache = map[string]managedWorktree{}
 	}

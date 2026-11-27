@@ -235,6 +235,83 @@ func (r *Registry) FindByCanonicalPathInMemory(canonicalPath string) (Project, b
 	return r.findByCleanPath(clean)
 }
 
+// MatchCanonicalPathInList 在预先刷新好的项目快照中按规范路径执行最长前缀匹配，
+// 复用与 FindByPath 一致的 Windows 扩展长度路径归一化（\\?\C:\...），零缓存写入。
+func MatchCanonicalPathInList(list []Project, canonicalPath string) (Project, bool) {
+	if len(list) == 0 {
+		return Project{}, false
+	}
+	normalized, ok := pathForProjectMatch(canonicalPath)
+	if !ok {
+		return Project{}, false
+	}
+	clean := filepath.Clean(normalized)
+	if clean == "" || clean == "." || !filepath.IsAbs(clean) {
+		return Project{}, false
+	}
+	var best Project
+	bestLen := -1
+	for _, project := range list {
+		if project.Missing {
+			continue
+		}
+		for _, candidate := range []string{project.RealPath, project.Path} {
+			if candidate == "" {
+				continue
+			}
+			normRoot, rootOK := pathForProjectMatch(candidate)
+			if !rootOK {
+				continue
+			}
+			cleanRoot := filepath.Clean(normRoot)
+			rel, err := filepath.Rel(cleanRoot, clean)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				continue
+			}
+			if len(cleanRoot) > bestLen {
+				best = project
+				bestLen = len(cleanRoot)
+			}
+		}
+	}
+	if bestLen < 0 {
+		return Project{}, false
+	}
+	return best, true
+}
+
+// FindByPathRefreshed 解析目标路径并在刷新已配置项目符号链接后的快照中匹配，
+// 确保配置项目符号链接在运行期改指后，普通请求门禁与全局列表归属保持一致。
+func (r *Registry) FindByPathRefreshed(path string) (Project, bool) {
+	if r == nil {
+		return Project{}, false
+	}
+	normalized, ok := pathForProjectMatch(path)
+	if !ok {
+		return Project{}, false
+	}
+	absPath, err := filepath.Abs(normalized)
+	if err != nil {
+		return Project{}, false
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		realPath = absPath
+	}
+	cleanReal := filepath.Clean(realPath)
+	refreshed := r.List()
+	if project, found := MatchCanonicalPathInList(refreshed, cleanReal); found {
+		return project, true
+	}
+	cleanAbs := filepath.Clean(absPath)
+	if cleanAbs != cleanReal {
+		if project, found := MatchCanonicalPathInList(refreshed, cleanAbs); found {
+			return project, true
+		}
+	}
+	return Project{}, false
+}
+
 func (r *Registry) FindByPath(path string) (Project, bool) {
 	path, ok := pathForProjectMatch(path)
 	if !ok {
