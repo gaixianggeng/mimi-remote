@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
@@ -27,13 +28,17 @@ type Project struct {
 }
 
 type Registry struct {
-	mu             sync.RWMutex
-	projects       map[string]Project
-	list           []Project
-	pathCandidates []projectPathCandidate
-	cacheMu        sync.Mutex
-	pathMatchCache map[string]projectPathMatchCacheEntry
-	pathMatchOrder []string
+	mu                sync.RWMutex
+	projects          map[string]Project
+	list              []Project
+	pathCandidates    []projectPathCandidate
+	projectRefreshSeq map[string]uint64
+	indexGen          uint64
+	nextSeq           atomic.Uint64
+	cacheMu           sync.Mutex
+	cacheGen          uint64
+	pathMatchCache    map[string]projectPathMatchCacheEntry
+	pathMatchOrder    []string
 }
 
 type projectPathCandidate struct {
@@ -49,8 +54,9 @@ type projectPathMatchCacheEntry struct {
 
 func NewRegistry(configs []config.ProjectConfig) (*Registry, error) {
 	registry := &Registry{
-		projects:       map[string]Project{},
-		pathMatchCache: map[string]projectPathMatchCacheEntry{},
+		projects:          map[string]Project{},
+		projectRefreshSeq: map[string]uint64{},
+		pathMatchCache:    map[string]projectPathMatchCacheEntry{},
 	}
 	for _, item := range configs {
 		project, err := normalize(item)
@@ -184,36 +190,45 @@ func refreshProjectAvailability(project Project) Project {
 }
 
 func (r *Registry) List() []Project {
+	obsSeq := r.nextSeq.Add(1)
 	base := r.ListCached()
 	out := make([]Project, len(base))
 	for i, project := range base {
 		out[i] = refreshProjectAvailability(project)
 	}
-	r.applyRefreshedSnapshot(out)
+	r.applyRefreshedSnapshot(out, obsSeq)
 	return out
 }
 
 func (r *Registry) Get(id string) (Project, bool) {
+	obsSeq := r.nextSeq.Add(1)
 	project, ok := r.GetCached(id)
 	if !ok {
 		return Project{}, false
 	}
 	refreshed := refreshProjectAvailability(project)
-	r.applyRefreshedProject(refreshed)
+	r.applyRefreshedProject(refreshed, obsSeq)
 	return refreshed, true
 }
 
-func (r *Registry) applyRefreshedSnapshot(updated []Project) {
+func (r *Registry) applyRefreshedSnapshot(updated []Project, obsSeq uint64) {
 	if r == nil || len(updated) == 0 {
 		return
 	}
-	changed := false
 	r.mu.Lock()
+	if r.projectRefreshSeq == nil {
+		r.projectRefreshSeq = map[string]uint64{}
+	}
+	changed := false
 	for _, next := range updated {
 		prev, ok := r.projects[next.ID]
 		if !ok {
 			continue
 		}
+		if obsSeq < r.projectRefreshSeq[next.ID] {
+			continue
+		}
+		r.projectRefreshSeq[next.ID] = obsSeq
 		if prev.RealPath != next.RealPath || prev.Missing != next.Missing {
 			changed = true
 		}
@@ -225,24 +240,24 @@ func (r *Registry) applyRefreshedSnapshot(updated []Project) {
 		}
 	}
 	if changed {
+		r.indexGen++
 		r.pathCandidates = buildProjectPathCandidates(r.list)
+		r.invalidatePathMatchCacheLocked(r.indexGen)
 	}
 	r.mu.Unlock()
-	if changed {
-		r.clearPathMatchCache()
-	}
 }
 
-func (r *Registry) applyRefreshedProject(next Project) {
+func (r *Registry) applyRefreshedProject(next Project, obsSeq uint64) {
 	if r == nil || next.ID == "" {
 		return
 	}
-	changed := false
 	r.mu.Lock()
-	if prev, ok := r.projects[next.ID]; ok {
-		if prev.RealPath != next.RealPath || prev.Missing != next.Missing {
-			changed = true
-		}
+	if r.projectRefreshSeq == nil {
+		r.projectRefreshSeq = map[string]uint64{}
+	}
+	if prev, ok := r.projects[next.ID]; ok && obsSeq >= r.projectRefreshSeq[next.ID] {
+		r.projectRefreshSeq[next.ID] = obsSeq
+		changed := prev.RealPath != next.RealPath || prev.Missing != next.Missing
 		r.projects[next.ID] = next
 		for i := range r.list {
 			if r.list[i].ID == next.ID {
@@ -251,17 +266,18 @@ func (r *Registry) applyRefreshedProject(next Project) {
 			}
 		}
 		if changed {
+			r.indexGen++
 			r.pathCandidates = buildProjectPathCandidates(r.list)
+			r.invalidatePathMatchCacheLocked(r.indexGen)
 		}
 	}
 	r.mu.Unlock()
-	if changed {
-		r.clearPathMatchCache()
-	}
 }
 
-func (r *Registry) clearPathMatchCache() {
+// invalidatePathMatchCacheLocked 要求调用方已持有 r.mu 写锁（锁序严格为 r.mu -> r.cacheMu）。
+func (r *Registry) invalidatePathMatchCacheLocked(newGen uint64) {
 	r.cacheMu.Lock()
+	r.cacheGen = newGen
 	clear(r.pathMatchCache)
 	r.pathMatchOrder = r.pathMatchOrder[:0]
 	r.cacheMu.Unlock()
@@ -353,8 +369,9 @@ func MatchCanonicalPathInList(list []Project, canonicalPath string) (Project, bo
 	return best, true
 }
 
-// FindByPathVerifyingMatch 使用已刷新规范索引匹配路径，并在命中时仅复核被命中的单个项目，
-// 避免在常规请求路径同步探测其他无关项目（防止失效挂载阻塞健康工作区，同时保持与列表改指一致）。
+// FindByPathVerifyingMatch 使用已刷新规范索引匹配路径，并在命中时按最深到最浅顺序
+// 仅复核匹配该路径的候选项目（跳过其他无关项目）；若更具体的嵌套项目已失效或改指，
+// 继续向下核验外层父项目，确保健康父工作区不被误拒。
 func (r *Registry) FindByPathVerifyingMatch(path string) (Project, bool) {
 	if r == nil {
 		return Project{}, false
@@ -374,27 +391,54 @@ func (r *Registry) FindByPathVerifyingMatch(path string) (Project, bool) {
 	cleanReal := filepath.Clean(realPath)
 	cleanAbs := filepath.Clean(absPath)
 
-	matched, found := r.findByCleanPath(cleanReal)
-	if !found && cleanAbs != cleanReal {
-		matched, found = r.findByCleanPath(cleanAbs)
-	}
-	if !found {
-		return Project{}, false
-	}
-	live := refreshProjectAvailability(matched)
-	r.applyRefreshedProject(live)
-	if live.Missing {
-		return Project{}, false
-	}
-	if project, ok := MatchCanonicalPathInList([]Project{live}, cleanReal); ok {
-		return project, true
-	}
-	if cleanAbs != cleanReal {
-		if project, ok := MatchCanonicalPathInList([]Project{live}, cleanAbs); ok {
+	matchedCandidates := r.matchingCandidatesByCleanPath(cleanReal, cleanAbs)
+	for _, cand := range matchedCandidates {
+		obsSeq := r.nextSeq.Add(1)
+		live := refreshProjectAvailability(cand)
+		r.applyRefreshedProject(live, obsSeq)
+		if live.Missing {
+			continue
+		}
+		if project, ok := MatchCanonicalPathInList([]Project{live}, cleanReal); ok {
 			return project, true
+		}
+		if cleanAbs != cleanReal {
+			if project, ok := MatchCanonicalPathInList([]Project{live}, cleanAbs); ok {
+				return project, true
+			}
 		}
 	}
 	return Project{}, false
+}
+
+func (r *Registry) matchingCandidatesByCleanPath(cleanReal string, cleanAbs string) []Project {
+	r.mu.RLock()
+	candidates := r.pathCandidates
+	r.mu.RUnlock()
+
+	var matched []Project
+	seen := map[string]struct{}{}
+	collectFor := func(target string) {
+		if target == "" || target == "." {
+			return
+		}
+		for _, candidate := range candidates {
+			if _, dup := seen[candidate.project.ID]; dup {
+				continue
+			}
+			rel, err := filepath.Rel(candidate.path, target)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				continue
+			}
+			seen[candidate.project.ID] = struct{}{}
+			matched = append(matched, candidate.project)
+		}
+	}
+	collectFor(cleanReal)
+	if cleanAbs != cleanReal {
+		collectFor(cleanAbs)
+	}
+	return matched
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {
@@ -406,13 +450,13 @@ func (r *Registry) FindByPath(path string) (Project, bool) {
 	absPath, err := filepath.Abs(path)
 	if err == nil {
 		cacheKey = filepath.Clean(absPath)
-		if project, ok, hit := r.cachedPathMatch(cacheKey); hit {
+		if project, ok, hit := r.cachedPathMatch(cacheKey, r.currentIndexGen()); hit {
 			return project, ok
 		}
-		if project, ok := r.findByCleanPath(cacheKey); ok {
-			// Codex history 里的 cwd 通常是项目绝对路径或子路径。直接字符串命中时立即缓存，
-			// 后续侧栏刷新不再重复遍历候选项目。
-			r.storePathMatch(cacheKey, project, true)
+		if project, ok, gen := r.findByCleanPathWithGen(cacheKey); ok {
+			// Codex history 里的 cwd 通常是项目绝对路径或子路径。直接字符串命中时立即按当前索引代次缓存，
+			// 后续侧栏刷新不再重复遍历候选项目；若并发刷新推进了索引代次则自动放弃回填。
+			r.storePathMatch(cacheKey, gen, project, true)
 			return project, true
 		}
 	}
@@ -422,14 +466,12 @@ func (r *Registry) FindByPath(path string) (Project, bool) {
 		realPath = absPath
 	}
 	cleanRealPath := filepath.Clean(realPath)
-	project, ok := r.findByCleanPath(cleanRealPath)
+	project, ok, gen := r.findByCleanPathWithGen(cleanRealPath)
 	if cacheKey != "" {
-		// Registry 创建后项目集合不会变；把最终结果按原始绝对路径缓存起来，
-		// 包含“未匹配”结果，避免频繁轮询时对无关 cwd 做重复 EvalSymlinks/Rel。
-		r.storePathMatch(cacheKey, project, ok)
+		r.storePathMatch(cacheKey, gen, project, ok)
 	}
 	if cleanRealPath != "" && cleanRealPath != "." && cleanRealPath != cacheKey {
-		r.storePathMatch(cleanRealPath, project, ok)
+		r.storePathMatch(cleanRealPath, gen, project, ok)
 	}
 	return project, ok
 }
@@ -466,27 +508,43 @@ func pathForProjectMatch(path string) (string, bool) {
 	return clean, true
 }
 
+func (r *Registry) currentIndexGen() uint64 {
+	r.mu.RLock()
+	gen := r.indexGen
+	r.mu.RUnlock()
+	return gen
+}
+
 func (r *Registry) findByCleanPath(cleanPath string) (Project, bool) {
+	project, ok, _ := r.findByCleanPathWithGen(cleanPath)
+	return project, ok
+}
+
+func (r *Registry) findByCleanPathWithGen(cleanPath string) (Project, bool, uint64) {
 	r.mu.RLock()
 	candidates := r.pathCandidates
+	gen := r.indexGen
 	r.mu.RUnlock()
 	for _, candidate := range candidates {
 		rel, err := filepath.Rel(candidate.path, cleanPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			continue
 		}
-		return candidate.project, true
+		return candidate.project, true, gen
 	}
-	return Project{}, false
+	return Project{}, false, gen
 }
 
-func (r *Registry) cachedPathMatch(cleanPath string) (Project, bool, bool) {
+func (r *Registry) cachedPathMatch(cleanPath string, gen uint64) (Project, bool, bool) {
 	if cleanPath == "" || cleanPath == "." {
 		return Project{}, false, false
 	}
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
 
+	if gen != r.cacheGen {
+		return Project{}, false, false
+	}
 	entry, hit := r.pathMatchCache[cleanPath]
 	if !hit {
 		return Project{}, false, false
@@ -495,13 +553,16 @@ func (r *Registry) cachedPathMatch(cleanPath string) (Project, bool, bool) {
 	return entry.project, entry.ok, true
 }
 
-func (r *Registry) storePathMatch(cleanPath string, project Project, ok bool) {
+func (r *Registry) storePathMatch(cleanPath string, gen uint64, project Project, ok bool) {
 	if cleanPath == "" || cleanPath == "." {
 		return
 	}
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
 
+	if gen != r.cacheGen {
+		return
+	}
 	r.pathMatchCache[cleanPath] = projectPathMatchCacheEntry{project: project, ok: ok}
 	r.pathMatchOrder = touchPathMatchCacheKey(r.pathMatchOrder, cleanPath)
 	for len(r.pathMatchCache) > maxPathMatchCacheEntries && len(r.pathMatchOrder) > 0 {

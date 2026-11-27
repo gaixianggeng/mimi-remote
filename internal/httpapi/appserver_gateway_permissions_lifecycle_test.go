@@ -1109,4 +1109,62 @@ func TestRound3RegressionsOverlappingListsPushSeedCodexRecoveryAndSymlinkDrift(t
 	if _, ok := routerSym.projectForGatewayPath(repoV1); ok {
 		t.Fatal("projectForGatewayPath (writableRoots/mentions) must reject former target repoV1")
 	}
+
+	// 5) [Round 4 P1 #1] Project-root retry during a concurrent managed-worktree revocation MUST preserve
+	//    the initial lifecycle epoch and disallow missing-directory fallback for the deleted checkout!
+	revBase := t.TempDir()
+	revProjV1 := filepath.Join(revBase, "proj-v1")
+	revProjV2 := filepath.Join(revBase, "proj-v2")
+	revDeletedCheckout := filepath.Join(revProjV2, "wt-deleted")
+	for _, d := range []string{revProjV1, revProjV2, revDeletedCheckout} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revLink := filepath.Join(revBase, "proj-link")
+	if err := os.Symlink(revProjV1, revLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	regRev, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "rev", Name: "Rev", Path: revLink},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routerRev := &Router{projects: regRev, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policyRev := newAppServerGatewayPolicy(routerRev, "codex")
+	var revInjected atomic.Bool
+	policyRev.onStageAAfterPathProbe = func(int) {
+		if revInjected.CompareAndSwap(false, true) {
+			_ = os.Remove(revLink)
+			_ = os.Symlink(revProjV2, revLink)
+			// Concurrently delete & revoke a managed checkout inside revProjV2 during the same scan!
+			canonicalDel := canonicalPathBestEffort(revDeletedCheckout)
+			_ = os.RemoveAll(revDeletedCheckout)
+			routerRev.managedWorktreesMu.Lock()
+			ep := routerRev.managedWorktreeLifecycleEpoch.Add(1)
+			routerRev.managedWorktreeRecentDeletions = append(routerRev.managedWorktreeRecentDeletions, deletedManagedWorktreeRecord{
+				checkoutPath:   canonicalDel,
+				workspacePath:  canonicalDel,
+				deletedAtEpoch: ep,
+			})
+			routerRev.managedWorktreesMu.Unlock()
+		}
+	}
+	idRev := json.RawMessage(`509`)
+	_ = policyRev.rememberPendingThreadRequest(&idRev, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	revResp := []byte(fmt.Sprintf(`{"id":509,"result":{"data":[{"id":"t-old","cwd":%q},{"id":"t-revoked-wt","cwd":%q},{"id":"t-live-v2","cwd":%q}],"nextCursor":null}}`, revProjV1, revDeletedCheckout, revProjV2))
+	revOut, revFwd, revErr := policyRev.observeUpstreamFrame(websocket.TextMessage, revResp)
+	if !revFwd || revErr != nil {
+		t.Fatalf("root-retry + worktree-revocation list failed: fwd=%v err=%+v", revFwd, revErr)
+	}
+	if bytes.Contains(revOut, []byte(`"t-revoked-wt"`)) {
+		t.Fatalf("revoked checkout under retargeted project must NOT gain fresh missing-dir authorization: %s", revOut)
+	}
+	if _, ok := policyRev.allowedThread("t-revoked-wt"); ok {
+		t.Fatal("revoked checkout must NOT be authorized in cache")
+	}
+	if !bytes.Contains(revOut, []byte(`"t-live-v2"`)) {
+		t.Fatalf("healthy retargeted project row must still be returned: %s", revOut)
+	}
 }

@@ -118,3 +118,58 @@ func TestFindByPathVerifyingMatchSkipsUnrelatedProjects(t *testing.T) {
 		t.Fatalf("outside path must not probe unrelated projects, got %v", probed)
 	}
 }
+
+func TestRegistryNestedParentFallbackAndStaleObservationRejection(t *testing.T) {
+	root := t.TempDir()
+	parentDir := filepath.Join(root, "parent")
+	childDir := filepath.Join(parentDir, "nested-child")
+	childTargetV2 := filepath.Join(root, "outside-v2")
+	for _, d := range []string{parentDir, childDir, childTargetV2} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	childLink := filepath.Join(parentDir, "child-link")
+	if err := os.Symlink(childDir, childLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	reg, err := NewRegistry([]config.ProjectConfig{
+		{ID: "parent", Name: "Parent", Path: parentDir},
+		{ID: "child", Name: "Child", Path: childLink},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) Retarget child-link outside parentDir: cwd inside childDir (still inside healthy parentDir!)
+	//    must fall back to parent instead of rejecting when child fails live verification!
+	if err := os.Remove(childLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(childTargetV2, childLink); err != nil {
+		t.Fatal(err)
+	}
+	matched, ok := reg.FindByPathVerifyingMatch(childDir)
+	if !ok || matched.ID != "parent" {
+		t.Fatalf("when nested child becomes invalid, matcher must fall back to healthy enclosing parent: ok=%v %+v", ok, matched)
+	}
+
+	// 2) Out-of-order refresh observation (older obsSeq) must NOT overwrite a newer RealPath!
+	liveChild, ok := reg.Get("child")
+	if !ok {
+		t.Fatal("Get(child) failed")
+	}
+	staleSnapshot := liveChild
+	staleSnapshot.RealPath = childDir
+	reg.applyRefreshedProject(staleSnapshot, 1) // obsSeq=1 is older than latest seq
+	afterStale, _ := reg.GetCached("child")
+	if filepath.Clean(afterStale.RealPath) == filepath.Clean(childDir) {
+		t.Fatalf("stale observation must not overwrite newer root: %+v", afterStale)
+	}
+
+	// 3) Stale FindByPath cache fill using an older indexGen must be discarded!
+	reg.storePathMatch(childDir, 0, staleSnapshot, true)
+	if _, _, hit := reg.cachedPathMatch(childDir, reg.currentIndexGen()); hit {
+		t.Fatal("stale-generation cache store must be discarded after invalidation")
+	}
+}

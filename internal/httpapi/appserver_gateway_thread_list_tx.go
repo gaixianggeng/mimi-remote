@@ -977,13 +977,26 @@ func (p *appServerGatewayPolicy) processPendingThreadListResponse(
 	}
 
 	// 最多 2 次因并发删盘（lifecycleEpoch 变化）或已用项目根符号链接改指触发的锁外重取证（attempt=0,1,2）。
+	// 跨项目根重探时保留初始 worktreeLifecycleEpoch，且若期间发生过 worktree 撤权/删除则强制关闭缺失目录回退。
+	var initialWorktreeEpoch uint64
+	if p.router != nil {
+		initialWorktreeEpoch = p.router.managedWorktreeLifecycleEpoch.Load()
+	}
 	disallowMissingFallback := false
+	preserveInitialEpoch := false
 	for stageAAttempt := 0; stageAAttempt <= 2; stageAAttempt++ {
 		stageA, stageAErr := p.prepareThreadListStageA(payload, frame, binding, stageAAttempt, disallowMissingFallback)
 		if stageAErr != nil {
 			return p.finalizeThreadListErrorStageB(binding, stageAErr)
 		}
+		if preserveInitialEpoch {
+			stageA.worktreeLifecycleEpoch = initialWorktreeEpoch
+		}
 		if p.projectRootsDriftedOutsideLock(stageA.usedProjectRoots) {
+			if p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != initialWorktreeEpoch {
+				disallowMissingFallback = true
+			}
+			preserveInitialEpoch = true
 			if stageAAttempt == 2 {
 				return p.abortThreadListSilently(binding)
 			}
@@ -995,6 +1008,10 @@ func (p *appServerGatewayPolicy) processPendingThreadListResponse(
 			return decision
 		}
 		disallowMissingFallback = true
+		preserveInitialEpoch = false
+		if p.router != nil {
+			initialWorktreeEpoch = p.router.managedWorktreeLifecycleEpoch.Load()
+		}
 		// 连续 2 次锁外重取证后仍遇并发删盘/改指风暴 → fail-closed 静默丢弃（零授权、零游标、零预算）。
 		if stageAAttempt == 2 {
 			return p.abortThreadListSilently(binding)

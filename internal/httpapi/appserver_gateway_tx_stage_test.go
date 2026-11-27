@@ -552,34 +552,42 @@ func TestConcurrentExpiredBlobRefreshPreservesPinsAndDuplicateHashEviction(t *te
 	}
 	relB(0)
 
-	// 3) [P2 #3 + Round 3 New P1 #4] Hierarchical output admission:
-	//    - When parent fits, nested child is skipped (0 extra capacity consumed);
-	//    - When parent exceeds maxItemBytes / capacity, nested child IS admitted so the response stays under cap!
-	nestedPayload := map[string]any{
-		"type": "mcpToolCall",
-		"result": map[string]any{
-			"type":             "commandExecution",
-			"aggregatedOutput": strings.Repeat("X", 2048),
-		},
-	}
-	var blobs []preparedBlobInput
-	var reps []stagedMediaReplacement
-	collectStagedOutputBlobs(nestedPayload, 512, 0, &blobs, &reps)
-	if len(blobs) != 2 || blobs[1].parentIndexPlusOne != 1 {
-		t.Fatalf("expected parent + tagged child output candidate, got len=%d blobs=%+v", len(blobs), blobs)
+	// 3) [P2 #3 + Round 3/4 New P1 #4] Lazy top-down wave output staging:
+	//    - When parent fits, nested child is NOT serialized or reserved (1 slot used);
+	//    - When parent exceeds maxItemBytes / capacity, nested child IS dehydrated in wave 1!
+	newNestedPayload := func() map[string]any {
+		return map[string]any{
+			"type": "mcpToolCall",
+			"result": map[string]any{
+				"type":             "commandExecution",
+				"aggregatedOutput": strings.Repeat("X", 2048),
+			},
+		}
 	}
 	bigStore := newAppServerHistoryBlobStore(time.Minute, 10, 65536, 65536)
-	resParent := bigStore.reservePreparedBatchGreedy(blobs)
-	if !resParent.admitted[0] || resParent.admitted[1] || resParent.reservedEntries != 1 {
-		t.Fatalf("admitted parent must skip child reservation: admitted=%v reserved=%d", resParent.admitted, resParent.reservedEntries)
+	pBig := newNestedPayload()
+	resParent, changedParent := stageOutputWaves(pBig, 512, bigStore)
+	if !changedParent || resParent == nil || resParent.reservedEntries != 1 {
+		t.Fatalf("admitted parent must skip child reservation: changed=%v res=%+v", changedParent, resParent)
+	}
+	if _, ok := pBig["historyOutputRef"].(string); !ok {
+		t.Fatalf("expected parent historyOutputRef set: %+v", pBig)
 	}
 	resParent.cancel()
 
-	// Store can fit the child (2048 bytes) but NOT the parent JSON (>2048 bytes): child MUST be admitted!
+	// Store can fit the child (2048 bytes) but NOT the parent JSON (>2060 bytes): child MUST be dehydrated!
 	tightStore := newAppServerHistoryBlobStore(time.Minute, 10, 2060, 2060)
-	resChild := tightStore.reservePreparedBatchGreedy(blobs)
-	if resChild.admitted[0] || !resChild.admitted[1] || resChild.reservedEntries != 1 {
-		t.Fatalf("rejected parent must allow child dehydration: admitted=%v reserved=%d", resChild.admitted, resChild.reservedEntries)
+	pTight := newNestedPayload()
+	resChild, changedChild := stageOutputWaves(pTight, 512, tightStore)
+	if !changedChild || resChild == nil || resChild.reservedEntries != 1 {
+		t.Fatalf("rejected parent must allow child dehydration in wave 1: changed=%v res=%+v", changedChild, resChild)
+	}
+	if _, parentRedacted := pTight["historyOutputRef"]; parentRedacted {
+		t.Fatalf("oversized parent must NOT be redacted: %+v", pTight)
+	}
+	childMap, _ := pTight["result"].(map[string]any)
+	if _, childRedacted := childMap["historyOutputRef"].(string); !childRedacted {
+		t.Fatalf("nested child must be redacted when parent fails admission: %+v", childMap)
 	}
 	resChild.cancel()
 

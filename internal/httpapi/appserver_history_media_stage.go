@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -11,10 +12,11 @@ import (
 
 var appServerHistoryMediaReadGrace = 5 * time.Second
 
+var errLimitedJSONBufferExceeded = errors.New("limited json buffer exceeded")
+
 type preparedBlobInput struct {
-	contentType        string
-	data               []byte
-	parentIndexPlusOne int
+	contentType string
+	data        []byte
 }
 
 type preparedBlobReservation struct {
@@ -25,6 +27,7 @@ type preparedBlobReservation struct {
 	reusedPinnedIDs []string
 	reservedEntries int
 	reservedBytes   int64
+	additional      []*preparedBlobReservation
 	once            sync.Once
 }
 
@@ -206,16 +209,6 @@ func (s *appServerHistoryMediaStore) reservePreparedBatchGreedy(blobs []prepared
 	usedIDs := map[string]struct{}{}
 
 	for i, blob := range blobs {
-		ancestorAdmitted := false
-		for p := blob.parentIndexPlusOne; p > 0; p = blobs[p-1].parentIndexPlusOne {
-			if admitted[p-1] {
-				ancestorAdmitted = true
-				break
-			}
-		}
-		if ancestorAdmitted {
-			continue
-		}
 		if len(blob.data) == 0 || (s.maxItemBytes > 0 && int64(len(blob.data)) > s.maxItemBytes) {
 			continue
 		}
@@ -342,7 +335,6 @@ func (r *preparedBlobReservation) cancel() {
 	r.once.Do(func() {
 		s := r.store
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		s.reservedEntries -= r.reservedEntries
 		if s.reservedEntries < 0 {
 			s.reservedEntries = 0
@@ -359,92 +351,115 @@ func (r *preparedBlobReservation) cancel() {
 				s.entries[id] = entry
 			}
 		}
+		s.mu.Unlock()
+		for _, extra := range r.additional {
+			extra.cancel()
+		}
 	})
 }
 
 // commit 将预留槽位不可失败地落盘至 s.entries，刷新复用条目 createdAt = now，
 // 返回 releasePins(grace)：写失败/丢弃传 0 立刻释放，写完传有界首读宽限（如 5s）。
 func (r *preparedBlobReservation) commit() func(grace time.Duration) {
-	if r == nil || r.store == nil || (len(r.newItems) == 0 && len(r.reusedPinnedIDs) == 0) {
+	if r == nil || r.store == nil || (len(r.newItems) == 0 && len(r.reusedPinnedIDs) == 0 && len(r.additional) == 0) {
 		return nil
 	}
 	var release func(grace time.Duration)
 	r.once.Do(func() {
-		s := r.store
-		now := s.now()
-		s.mu.Lock()
-		s.pruneLocked(now)
-		s.reservedEntries -= r.reservedEntries
-		if s.reservedEntries < 0 {
-			s.reservedEntries = 0
-		}
-		s.reservedBytes -= r.reservedBytes
-		if s.reservedBytes < 0 {
-			s.reservedBytes = 0
-		}
-		if s.idByHash == nil {
-			s.idByHash = map[[32]byte]string{}
-		}
-		pinnedIDs := make([]string, 0, len(r.reusedPinnedIDs)+len(r.newItems))
-		for _, id := range r.reusedPinnedIDs {
-			if entry, ok := s.entries[id]; ok {
-				entry.createdAt = now
-				s.touchEntryLocked(&entry, now)
-				s.entries[id] = entry
-				pinnedIDs = append(pinnedIDs, id)
+		var selfRelease func(grace time.Duration)
+		if len(r.newItems) > 0 || len(r.reusedPinnedIDs) > 0 {
+			s := r.store
+			now := s.now()
+			s.mu.Lock()
+			s.pruneLocked(now)
+			s.reservedEntries -= r.reservedEntries
+			if s.reservedEntries < 0 {
+				s.reservedEntries = 0
 			}
-		}
-		for _, item := range r.newItems {
-			if existing, ok := s.entries[item.id]; ok {
-				if existing.isEffectivelyPinned(now) || existing.hash == item.hash {
-					// 两个并发预留刷新了同一个过期 ID：复用已提交的存活条目并累加 pin，
-					// 绝不删除并重置前一个响应的 activeWritePins / gracePinExpiries。
-					existing.createdAt = now
-					existing.activeWritePins++
-					s.touchEntryLocked(&existing, now)
-					s.entries[item.id] = existing
-					s.indexHashLocked(item.hash, item.id)
-					pinnedIDs = append(pinnedIDs, item.id)
-					continue
+			s.reservedBytes -= r.reservedBytes
+			if s.reservedBytes < 0 {
+				s.reservedBytes = 0
+			}
+			if s.idByHash == nil {
+				s.idByHash = map[[32]byte]string{}
+			}
+			pinnedIDs := make([]string, 0, len(r.reusedPinnedIDs)+len(r.newItems))
+			for _, id := range r.reusedPinnedIDs {
+				if entry, ok := s.entries[id]; ok {
+					entry.createdAt = now
+					s.touchEntryLocked(&entry, now)
+					s.entries[id] = entry
+					pinnedIDs = append(pinnedIDs, id)
 				}
-				s.deleteEntryLocked(item.id, existing)
 			}
-			entry := appServerHistoryMediaEntry{
-				id:              item.id,
-				contentType:     item.contentType,
-				data:            item.data,
-				hash:            item.hash,
-				createdAt:       now,
-				lastAccess:      now,
-				activeWritePins: 1,
-			}
-			s.touchEntryLocked(&entry, now)
-			s.entries[item.id] = entry
-			s.indexHashLocked(item.hash, item.id)
-			s.totalBytes += entry.totalBytes()
-			pinnedIDs = append(pinnedIDs, item.id)
-		}
-		s.enforceLimitsLocked(now)
-		s.mu.Unlock()
-
-		var releaseOnce sync.Once
-		release = func(grace time.Duration) {
-			releaseOnce.Do(func() {
-				relNow := s.now()
-				s.mu.Lock()
-				for _, id := range pinnedIDs {
-					if entry, ok := s.entries[id]; ok {
-						if entry.activeWritePins > 0 {
-							entry.activeWritePins--
-						}
-						if grace > 0 {
-							entry.gracePinExpiries = append(entry.gracePinExpiries, relNow.Add(grace))
-						}
-						s.entries[id] = entry
+			for _, item := range r.newItems {
+				if existing, ok := s.entries[item.id]; ok {
+					if existing.isEffectivelyPinned(now) || existing.hash == item.hash {
+						// 两个并发预留刷新了同一个过期 ID：复用已提交的存活条目并累加 pin，
+						// 绝不删除并重置前一个响应的 activeWritePins / gracePinExpiries。
+						existing.createdAt = now
+						existing.activeWritePins++
+						s.touchEntryLocked(&existing, now)
+						s.entries[item.id] = existing
+						s.indexHashLocked(item.hash, item.id)
+						pinnedIDs = append(pinnedIDs, item.id)
+						continue
 					}
+					s.deleteEntryLocked(item.id, existing)
 				}
-				s.mu.Unlock()
-			})
+				entry := appServerHistoryMediaEntry{
+					id:              item.id,
+					contentType:     item.contentType,
+					data:            item.data,
+					hash:            item.hash,
+					createdAt:       now,
+					lastAccess:      now,
+					activeWritePins: 1,
+				}
+				s.touchEntryLocked(&entry, now)
+				s.entries[item.id] = entry
+				s.indexHashLocked(item.hash, item.id)
+				s.totalBytes += entry.totalBytes()
+				pinnedIDs = append(pinnedIDs, item.id)
+			}
+			s.enforceLimitsLocked(now)
+			s.mu.Unlock()
+
+			var releaseOnce sync.Once
+			selfRelease = func(grace time.Duration) {
+				releaseOnce.Do(func() {
+					relNow := s.now()
+					s.mu.Lock()
+					for _, id := range pinnedIDs {
+						if entry, ok := s.entries[id]; ok {
+							if entry.activeWritePins > 0 {
+								entry.activeWritePins--
+							}
+							if grace > 0 {
+								entry.gracePinExpiries = append(entry.gracePinExpiries, relNow.Add(grace))
+							}
+							s.entries[id] = entry
+						}
+					}
+					s.mu.Unlock()
+				})
+			}
+		}
+		extraReleases := make([]func(time.Duration), 0, len(r.additional))
+		for _, extra := range r.additional {
+			if fn := extra.commit(); fn != nil {
+				extraReleases = append(extraReleases, fn)
+			}
+		}
+		if selfRelease != nil || len(extraReleases) > 0 {
+			release = func(grace time.Duration) {
+				if selfRelease != nil {
+					selfRelease(grace)
+				}
+				for _, fn := range extraReleases {
+					fn(grace)
+				}
+			}
 		}
 	})
 	return release
@@ -514,28 +529,16 @@ func (r *Router) stageRedactAndDehydrateThreadListPayload(
 			dec := json.NewDecoder(bytes.NewReader(rewritten))
 			dec.UseNumber()
 			if dec.Decode(&root) == nil {
-				var blobs []preparedBlobInput
-				var reps []stagedMediaReplacement
-				collectStagedOutputBlobs(root, minimumItemBytes, 0, &blobs, &reps)
-				if len(blobs) > 0 {
-					res := r.historyOutput.reservePreparedBatchGreedy(blobs)
-					changed := false
-					for i, rep := range reps {
-						if res.admitted[i] {
-							rep.apply(res.ids[i])
-							changed = true
-						}
-					}
-					if changed {
-						if encoded, err := json.Marshal(root); err == nil && len(encoded) < len(rewritten) {
-							rewritten = encoded
-							outputRes = res
-						} else {
-							res.cancel()
-						}
+				res, changed := stageOutputWaves(root, minimumItemBytes, r.historyOutput)
+				if changed && res != nil {
+					if encoded, err := json.Marshal(root); err == nil && len(encoded) < len(rewritten) {
+						rewritten = encoded
+						outputRes = res
 					} else {
 						res.cancel()
 					}
+				} else if res != nil {
+					res.cancel()
 				}
 			}
 		}
@@ -623,85 +626,240 @@ func collectStagedMediaBlobs(value any, blobs *[]preparedBlobInput, reps *[]stag
 	}
 }
 
-func collectStagedOutputBlobs(value any, minimumItemBytes int, parentIndexPlusOne int, blobs *[]preparedBlobInput, reps *[]stagedMediaReplacement) {
+type limitedJSONWriter struct {
+	buf      bytes.Buffer
+	maxBytes int64
+}
+
+func (w *limitedJSONWriter) Write(p []byte) (int, error) {
+	if w.maxBytes > 0 && int64(w.buf.Len())+int64(len(p)) > w.maxBytes {
+		return 0, errLimitedJSONBufferExceeded
+	}
+	return w.buf.Write(p)
+}
+
+func limitedJSONMarshal(value any, maxBytes int64) ([]byte, bool) {
+	// json.Encoder.Encode 会在末尾附加单个 '\n'，多留 1 字节容差再裁剪。
+	writerLimit := maxBytes
+	if writerLimit > 0 {
+		writerLimit++
+	}
+	w := limitedJSONWriter{maxBytes: writerLimit}
+	enc := json.NewEncoder(&w)
+	if err := enc.Encode(value); err != nil {
+		return nil, false
+	}
+	out := bytes.TrimSuffix(w.buf.Bytes(), []byte{'\n'})
+	if maxBytes > 0 && int64(len(out)) > maxBytes {
+		return nil, false
+	}
+	return out, true
+}
+
+type stagedOutputWaveCandidate struct {
+	blob          preparedBlobInput
+	rep           stagedMediaReplacement
+	deferredChild any
+}
+
+const maxOutputStageWaves = 8
+
+// stageOutputWaves 自顶向下按波次延迟脱水：
+//   - 每波仅序列化当前最外层候选输出，绝不预先序列化其被覆盖的子树；
+//   - 父节点准入成功即立刻替换并跳过整个后代子树（零冗余 CPU/内存）；
+//   - 仅当父节点因单条上限或容量被拒时，才在下一波下沉其子节点，且严格限制总临时序列化字节上限。
+func stageOutputWaves(root any, minimumItemBytes int, store *appServerHistoryMediaStore) (*preparedBlobReservation, bool) {
+	if store == nil || root == nil {
+		return nil, false
+	}
+	maxItemBytes := store.maxItemBytes
+	if store.maxBytes > 0 && (maxItemBytes <= 0 || store.maxBytes < maxItemBytes) {
+		maxItemBytes = store.maxBytes
+	}
+	totalTempBudget := int64(appServerGatewayHistoryResponseCapBytes)
+	if store.maxBytes > 0 {
+		if b := store.maxBytes * 2; b > totalTempBudget {
+			totalTempBudget = b
+		}
+	}
+	if totalTempBudget <= 0 {
+		totalTempBudget = 16 << 20
+	}
+	if totalTempBudget > 32<<20 {
+		totalTempBudget = 32 << 20
+	}
+
+	var (
+		combined      *preparedBlobReservation
+		changed       bool
+		tempBytesUsed int64
+		waveRoots     = []any{root}
+	)
+	for wave := 0; wave < maxOutputStageWaves && len(waveRoots) > 0 && tempBytesUsed < totalTempBudget; wave++ {
+		var candidates []stagedOutputWaveCandidate
+		var overflowDeferred []any
+		for _, subRoot := range waveRoots {
+			collectOuterOutputWave(subRoot, minimumItemBytes, maxItemBytes, totalTempBudget, &tempBytesUsed, &candidates, &overflowDeferred)
+		}
+		var nextWaveRoots []any
+		if len(candidates) > 0 {
+			blobs := make([]preparedBlobInput, len(candidates))
+			for i, cand := range candidates {
+				blobs[i] = cand.blob
+			}
+			res := store.reservePreparedBatchGreedy(blobs)
+			waveAdmitted := false
+			for i, cand := range candidates {
+				if res.admitted[i] {
+					cand.rep.apply(res.ids[i])
+					changed = true
+					waveAdmitted = true
+				} else if cand.deferredChild != nil {
+					nextWaveRoots = append(nextWaveRoots, cand.deferredChild)
+				}
+			}
+			if waveAdmitted {
+				if combined == nil {
+					combined = res
+				} else {
+					combined.additional = append(combined.additional, res)
+				}
+			} else {
+				res.cancel()
+			}
+		}
+		if len(overflowDeferred) > 0 {
+			nextWaveRoots = append(nextWaveRoots, overflowDeferred...)
+		}
+		waveRoots = nextWaveRoots
+	}
+	return combined, changed
+}
+
+func collectOuterOutputWave(
+	value any,
+	minimumItemBytes int,
+	maxItemBytes int64,
+	totalTempBudget int64,
+	tempBytesUsed *int64,
+	candidates *[]stagedOutputWaveCandidate,
+	overflowDeferred *[]any,
+) {
+	if *tempBytesUsed >= totalTempBudget {
+		return
+	}
 	switch typed := value.(type) {
 	case map[string]any:
-		replacedKey := ""
-		childParentIndexPlusOne := parentIndexPlusOne
+		skipKey := ""
 		if _, alreadyRedacted := typed["historyOutputRef"]; !alreadyRedacted {
 			typeName, _ := typed["type"].(string)
 			typeName = strings.TrimSpace(typeName)
+			remaining := totalTempBudget - *tempBytesUsed
+			itemCap := maxItemBytes
+			if itemCap <= 0 || remaining < itemCap {
+				itemCap = remaining
+			}
 			var (
-				data        []byte
-				contentType string
-				preview     string
-				replace     func()
-				fieldKey    string
+				data          []byte
+				contentType   string
+				preview       string
+				replace       func()
+				fieldKey      string
+				deferredChild any
+				overflowed    bool
 			)
 			switch typeName {
 			case "commandExecution":
 				output, _ := typed["aggregatedOutput"].(string)
-				data = []byte(output)
-				contentType = "text/plain; charset=utf-8"
-				preview = historyOutputPreview(data)
-				obj, p := typed, preview
-				fieldKey = "aggregatedOutput"
-				replace = func() { obj["aggregatedOutput"] = p }
+				if len(output) >= minimumItemBytes {
+					if itemCap > 0 && int64(len(output)) > itemCap {
+						overflowed = true
+					} else {
+						data = []byte(output)
+						contentType = "text/plain; charset=utf-8"
+						preview = historyOutputPreview(data)
+						obj, p := typed, preview
+						fieldKey = "aggregatedOutput"
+						replace = func() { obj["aggregatedOutput"] = p }
+					}
+				}
 			case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
 				if result, ok := typed["result"]; ok && result != nil {
-					if text, ok := result.(string); ok {
-						data = []byte(text)
-						contentType = "text/plain; charset=utf-8"
+					if text, isStr := result.(string); isStr {
+						if len(text) >= minimumItemBytes {
+							if itemCap > 0 && int64(len(text)) > itemCap {
+								overflowed = true
+							} else {
+								data = []byte(text)
+								contentType = "text/plain; charset=utf-8"
+								preview = historyOutputPreview(data)
+								obj, p := typed, preview
+								fieldKey = "result"
+								replace = func() { obj["result"] = p }
+							}
+						}
 					} else {
-						data, _ = json.Marshal(result)
-						contentType = "application/json"
+						encoded, withinCap := limitedJSONMarshal(result, itemCap)
+						if !withinCap {
+							overflowed = true
+							skipKey = "result"
+							*overflowDeferred = append(*overflowDeferred, result)
+						} else if len(encoded) >= minimumItemBytes {
+							data = encoded
+							contentType = "application/json"
+							preview = historyOutputPreview(data)
+							obj, p := typed, preview
+							fieldKey = "result"
+							deferredChild = result
+							replace = func() { obj["result"] = p }
+						}
 					}
-					preview = historyOutputPreview(data)
-					obj, p := typed, preview
-					fieldKey = "result"
-					replace = func() { obj["result"] = p }
 				}
 			case "fileChange":
 				if changes, ok := typed["changes"].([]any); ok && len(changes) > 0 {
-					data, _ = json.Marshal(changes)
-					contentType = "application/json"
-					preview = historyOutputPreview(data)
-					obj, compact := typed, compactHistoryFileChanges(changes)
-					fieldKey = "changes"
-					replace = func() { obj["changes"] = compact }
+					encoded, withinCap := limitedJSONMarshal(changes, itemCap)
+					if !withinCap {
+						overflowed = true
+						skipKey = "changes"
+						*overflowDeferred = append(*overflowDeferred, changes)
+					} else if len(encoded) >= minimumItemBytes {
+						data = encoded
+						contentType = "application/json"
+						preview = historyOutputPreview(data)
+						obj, compact := typed, compactHistoryFileChanges(changes)
+						fieldKey = "changes"
+						deferredChild = changes
+						replace = func() { obj["changes"] = compact }
+					}
 				}
 			}
-			if len(data) >= minimumItemBytes && replace != nil {
+			if !overflowed && len(data) >= minimumItemBytes && replace != nil {
 				obj, ct, p, n, fn := typed, contentType, preview, len(data), replace
-				replacedKey = fieldKey
-				*blobs = append(*blobs, preparedBlobInput{
-					contentType:        ct,
-					data:               data,
-					parentIndexPlusOne: parentIndexPlusOne,
+				skipKey = fieldKey
+				*tempBytesUsed += int64(n)
+				*candidates = append(*candidates, stagedOutputWaveCandidate{
+					blob: preparedBlobInput{contentType: ct, data: data},
+					rep: stagedMediaReplacement{apply: func(id string) {
+						fn()
+						obj["historyOutputRef"] = appServerHistoryOutputURLPrefix + id
+						obj["historyOutputByteCount"] = n
+						obj["historyOutputContentType"] = ct
+						obj["historyOutputPreview"] = p
+						obj["historyOutputRedacted"] = true
+					}},
+					deferredChild: deferredChild,
 				})
-				childParentIndexPlusOne = len(*blobs)
-				*reps = append(*reps, stagedMediaReplacement{apply: func(id string) {
-					fn()
-					obj["historyOutputRef"] = appServerHistoryOutputURLPrefix + id
-					obj["historyOutputByteCount"] = n
-					obj["historyOutputContentType"] = ct
-					obj["historyOutputPreview"] = p
-					obj["historyOutputRedacted"] = true
-				}})
 			}
 		}
 		for key, child := range typed {
-			nextParent := parentIndexPlusOne
-			if replacedKey != "" && key == replacedKey {
-				// 将被父节点覆盖的子树标记为该父节点的后代：
-				// 仅在父节点准入成功后跳过后代预留；若父节点因容量/单条上限被拒，后代仍可独立脱水。
-				nextParent = childParentIndexPlusOne
+			if skipKey != "" && key == skipKey {
+				continue
 			}
-			collectStagedOutputBlobs(child, minimumItemBytes, nextParent, blobs, reps)
+			collectOuterOutputWave(child, minimumItemBytes, maxItemBytes, totalTempBudget, tempBytesUsed, candidates, overflowDeferred)
 		}
 	case []any:
 		for _, child := range typed {
-			collectStagedOutputBlobs(child, minimumItemBytes, parentIndexPlusOne, blobs, reps)
+			collectOuterOutputWave(child, minimumItemBytes, maxItemBytes, totalTempBudget, tempBytesUsed, candidates, overflowDeferred)
 		}
 	}
 }
