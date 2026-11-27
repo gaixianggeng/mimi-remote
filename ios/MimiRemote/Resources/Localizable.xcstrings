@@ -36348,13 +36348,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Missing path"
+            "value": "Original folder no longer exists (read-only)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "目录缺失"
+            "value": "原工作目录已不存在（只读）"
           }
         }
       }

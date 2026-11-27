@@ -645,7 +645,19 @@ struct SessionIndexRow: View {
             leadingGutter()
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
-                titleLine(tokens: tokens)
+                if session.cwdMissing == true {
+                    // 英文完整徽标较长：放得下就跟标题同一行，放不下就换到下一行完整显示，
+                    // 避免截断把 “read-only” 藏掉，也不把标题挤没。
+                    ViewThatFits(in: .horizontal) {
+                        titleLine(tokens: tokens, showsCwdMissingBadge: true)
+                        VStack(alignment: .leading, spacing: density.contentSpacing) {
+                            titleLine(tokens: tokens, showsCwdMissingBadge: false)
+                            cwdMissingBadge(tokens: tokens, allowsWrapping: true)
+                        }
+                    }
+                } else {
+                    titleLine(tokens: tokens, showsCwdMissingBadge: false)
+                }
                 if !isSessionLibrary || showsSessionPreview || !librarySupportingText.isEmpty || showsProjectRail {
                     metadataLine(tokens: tokens)
                 }
@@ -668,7 +680,7 @@ struct SessionIndexRow: View {
         // 两者叠在一起会读成"状态变了"；选中只留背景填充。
     }
 
-    private func titleLine(tokens: ThemeTokens) -> some View {
+    private func titleLine(tokens: ThemeTokens, showsCwdMissingBadge: Bool) -> some View {
         HStack(alignment: dynamicTypeSize.isAccessibilitySize ? .top : .firstTextBaseline, spacing: 7) {
             if isPinned && !isSessionLibrary {
                 SessionPinnedBadge(compact: true)
@@ -690,15 +702,8 @@ struct SessionIndexRow: View {
 
             Spacer(minLength: 12)
 
-            if session.cwdMissing == true {
-                Text(L10n.text("ui.session_cwd_missing_badge"))
-                    .font(themeStore.uiFont(.caption2, weight: .medium))
-                    .foregroundStyle(tokens.warning)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(tokens.warning.opacity(0.12), in: Capsule())
-                    .accessibilityIdentifier("session.cwdMissingBadge")
-                    .layoutPriority(2)
+            if showsCwdMissingBadge {
+                cwdMissingBadge(tokens: tokens, allowsWrapping: false)
             }
 
             if let originBadgeTitle = session.antigravityOriginBadgeTitle {
@@ -719,6 +724,21 @@ struct SessionIndexRow: View {
                 timestamp(tokens: tokens)
             }
         }
+    }
+
+    private func cwdMissingBadge(tokens: ThemeTokens, allowsWrapping: Bool) -> some View {
+        let badgeText = L10n.text("ui.session_cwd_missing_badge")
+        return Text(badgeText)
+            .font(themeStore.uiFont(.caption2, weight: .medium))
+            .foregroundStyle(tokens.warning)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: !allowsWrapping, vertical: false)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(tokens.warning.opacity(0.12), in: Capsule())
+            .accessibilityIdentifier("session.cwdMissingBadge")
+            .accessibilityLabel(badgeText)
+            .layoutPriority(2)
     }
 
     @ViewBuilder
