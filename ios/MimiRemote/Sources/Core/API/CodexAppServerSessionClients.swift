@@ -28,6 +28,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.threadGoalsSupported(runtimeProvider: runtimeProvider)
     }
 
+    func runtimeSupportsPreserveThreadPermissions(runtimeProvider: String) async throws -> Bool {
+        try await runtime.preserveThreadPermissionsSupported(runtimeProvider: runtimeProvider)
+    }
+
     func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool {
         try await runtime.turnSteerSupported(runtimeProvider: runtimeProvider)
     }
@@ -447,6 +451,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         // 原生 Harness 不消费 goal 参数；app-server 通道读共享快照里的声明。
         guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
         return CodexAppServerSessionRuntime.supportsThreadGoals(
+            runtimeProvider: runtimeProvider,
+            in: try await bundle.currentConfiguration()
+        )
+    }
+
+    func runtimeSupportsPreserveThreadPermissions(runtimeProvider: String) async throws -> Bool {
+        guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
+        return CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(
             runtimeProvider: runtimeProvider,
             in: try await bundle.currentConfiguration()
         )

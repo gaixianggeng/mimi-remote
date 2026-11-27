@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { AcpClient } from "../src/acp/client.ts";
 import type { AcpRequestPermissionParams, AcpRequestPermissionResult } from "../src/acp/types.ts";
+import { AgyOverlay } from "../src/agy/overlay.ts";
 import type { TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../src/agy/transcript.ts";
+import { capabilityDeclaration, createApp } from "../src/app.ts";
 import { serverApprovalFor } from "../src/runtime/approvals.ts";
 import { LiveTurn } from "../src/runtime/liveTurn.ts";
 import {
@@ -1011,4 +1016,208 @@ test("delayed final transcript inspection still publishes idle when a follow-up 
     .filter((n) => n.method === "thread/status/changed")
     .map((n) => (n.params.status as { type?: string } | undefined)?.type);
   expect(statuses).toEqual(["active", "idle"]);
+});
+
+test("#1177: preserving existing agy session permissions skips session/set_mode, handles transient plan, and respects explicit override", async () => {
+  const setModeCalls: string[] = [];
+  const fakeClient = {
+    isClosed: false,
+    onSession: () => () => {},
+    onPermission: () => () => {},
+    sessionLoadWithReplay: async () => ({
+      result: {
+        sessionId: "ext-session",
+        modes: { currentModeId: "accept-edits", availableModes: [] },
+      },
+      updates: [],
+    }),
+    sessionSetMode: async (_sessionId: string, modeId: string) => {
+      setModeCalls.push(modeId);
+    },
+    sessionSetConfigOption: async () => {},
+    sessionPrompt: async () => ({ stopReason: "end_turn" }),
+    sessionCancel: () => {},
+  } as unknown as AcpClient;
+
+  const host: RuntimeHost = {
+    publish: () => {},
+    request: async () => ({}),
+    acquireClient: async () => fakeClient,
+    idleCloseMs: 60_000,
+  };
+
+  const runtime = new ThreadRuntime(
+    "ext-session",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    true,
+    null,
+    undefined,
+    undefined,
+    true,
+  );
+
+  // 1) Preserved turn must NOT overwrite upstream currentModeId ("accept-edits") with default.
+  await runtime.startTurn({
+    input: [{ type: "text", text: "follow up", text_elements: [] }],
+    clientUserMessageId: "c1",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual([]);
+  expect(runtime.effectiveMode).toBe("accept-edits");
+
+  // 2) One-off Plan turn temporarily enters "plan", then next preserved turn restores "accept-edits".
+  await runtime.startTurn({
+    input: [{ type: "text", text: "plan first", text_elements: [] }],
+    clientUserMessageId: "c2",
+    preservePermissions: true,
+    planMode: true,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual(["plan"]);
+
+  await runtime.startTurn({
+    input: [{ type: "text", text: "back to normal", text_elements: [] }],
+    clientUserMessageId: "c3",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual(["plan", "accept-edits"]);
+
+  // 3) Explicit user permission selection overrides the preserved mode.
+  await runtime.startTurn({
+    input: [{ type: "text", text: "switch to auto", text_elements: [] }],
+    clientUserMessageId: "c4",
+    preservePermissions: false,
+    planMode: false,
+    settings: { mode: "auto", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual(["plan", "accept-edits", "auto"]);
+  expect(runtime.effectiveMode).toBe("auto");
+});
+
+test("#1177: reloading a detached external session refreshes preserved baseline before transient plan", async () => {
+  const setModeCalls: string[] = [];
+  let upstreamMode = "auto";
+  let closed = false;
+  const fakeClient = {
+    get isClosed() {
+      return closed;
+    },
+    onSession: () => () => {},
+    onPermission: () => () => {},
+    sessionLoadWithReplay: async () => {
+      closed = false;
+      return {
+        result: {
+          sessionId: "ext-reload",
+          modes: { currentModeId: upstreamMode, availableModes: [] },
+        },
+        updates: [],
+      };
+    },
+    sessionSetMode: async (_sessionId: string, modeId: string) => {
+      setModeCalls.push(modeId);
+    },
+    sessionSetConfigOption: async () => {},
+    sessionPrompt: async () => ({ stopReason: "end_turn" }),
+    sessionCancel: () => {},
+  } as unknown as AcpClient;
+
+  const host: RuntimeHost = {
+    publish: () => {},
+    request: async () => ({}),
+    acquireClient: async () => fakeClient,
+    idleCloseMs: 60_000,
+  };
+
+  const runtime = new ThreadRuntime(
+    "ext-reload",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    true,
+    null,
+    undefined,
+    undefined,
+    true,
+  );
+
+  // 1) Initial preserved turn loads upstream "auto".
+  await runtime.startTurn({
+    input: [{ type: "text", text: "first", text_elements: [] }],
+    clientUserMessageId: "r1",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual([]);
+  expect(runtime.effectiveMode).toBe("auto");
+
+  // 2) Simulate detach (e.g. idle close) and upstream mode change to "default".
+  closed = true;
+  upstreamMode = "default";
+
+  // 3) Reload on transient Plan turn must refresh baseMode to "default", then restore "default" on next normal turn.
+  await runtime.startTurn({
+    input: [{ type: "text", text: "plan after reload", text_elements: [] }],
+    clientUserMessageId: "r2",
+    preservePermissions: true,
+    planMode: true,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  await runtime.startTurn({
+    input: [{ type: "text", text: "normal after plan", text_elements: [] }],
+    clientUserMessageId: "r3",
+    preservePermissions: true,
+    planMode: false,
+    settings: {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(setModeCalls).toEqual(["plan", "default"]);
+  expect(runtime.effectiveMode).toBe("default");
+});
+
+test("#1177: adapter advertises preserveThreadPermissions and overlay persists explicit session permissions", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agy-perm-overlay-"));
+  try {
+    const app = createApp({ stateDir: dir, log: () => {} });
+    const caps = capabilityDeclaration(app.router);
+    expect(caps.preserveThreadPermissions).toBe(true);
+    await app.close();
+
+    const overlayFile = path.join(dir, "overlay.json");
+    const writer = new AgyOverlay(overlayFile);
+    await writer.recordSession("sess-1", {
+      permissions: {
+        mode: "accept-edits",
+        executionPolicy: { type: "workspaceWrite", networkAccess: false },
+        approvalPolicy: "on-request",
+        approvalsReviewer: "accept_edits",
+      },
+    });
+    await writer.flush();
+
+    const reader = new AgyOverlay(overlayFile);
+    await reader.load();
+    expect(reader.get("sess-1")?.permissions).toEqual({
+      mode: "accept-edits",
+      executionPolicy: { type: "workspaceWrite", networkAccess: false },
+      approvalPolicy: "on-request",
+      approvalsReviewer: "accept_edits",
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

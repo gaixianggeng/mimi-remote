@@ -27,10 +27,10 @@ extension SessionStore {
         for runtimeProvider: String?
     ) -> ComposerPermissionSelectionSnapshot {
         guard snapshot.preservesThreadSettings,
-              !RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider) else {
+              !supportsPreserveThreadPermissions(runtimeProvider: runtimeProvider) else {
             return snapshot
         }
-        // 非 Codex 通道（如 Claude / Antigravity）不允许携带 mimiPreserveThreadPermissions；
+        // 不支持 mimiPreserveThreadPermissions 的通道（或旧版 agentd）不能携带继承标记；
         // 即便旧缓存里遗留了继承标记，也在还原时回退为显式请求审批。
         var options = CodexAppServerTurnOptions.default
         ComposerPermissionMode.requestApproval.apply(to: &options)
@@ -59,8 +59,8 @@ extension SessionStore {
             ) {
                 return sanitizedPermissionSelection(snapshot, for: runtimeProvider)
             }
-            if !RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider) {
-                // 旧版本没有保存会话权限，非 Codex 适配器也不支持继承标记。
+            if !supportsPreserveThreadPermissions(runtimeProvider: runtimeProvider) {
+                // 不支持沿用原会话权限的通道（或旧版 agentd）：
                 // 无法还原的历史选择从请求审批开始，不能套用其他会话的完全访问偏好。
                 ComposerPermissionMode.requestApproval.apply(to: &options)
             } else {

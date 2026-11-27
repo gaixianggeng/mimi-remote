@@ -123,43 +123,95 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertTrue(RuntimeFeatureSupport.usesGlobalThreadListSearch(for: "agy"))
         XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "codex"))
         XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: nil))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "agy"))
         XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "claude"))
-        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "agy"))
         XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "deepseek"))
     }
 
-    func testAntigravityNeverEmitsPreserveThreadPermissionsFlag() {
-        var options = CodexAppServerTurnOptions.default
-        options.runtimeProvider = "agy"
-        options.preservesThreadPermissionSettings = true
+    func testPreserveThreadPermissionsRespectsChannelCapabilityAndProtectsLegacyGateway() {
+        var claudeOptions = CodexAppServerTurnOptions.default
+        claudeOptions.runtimeProvider = "claude"
+        claudeOptions.preservesThreadPermissionSettings = true
+        let sanitizedClaude = claudeOptions.sanitizedForRuntimePolicy()
+        XCTAssertFalse(sanitizedClaude.preservesThreadPermissionSettings)
+        XCTAssertNil(sanitizedClaude.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        XCTAssertNil(claudeOptions.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
 
-        let sanitized = options.sanitizedForRuntimePolicy()
-        XCTAssertFalse(sanitized.preservesThreadPermissionSettings)
-        XCTAssertNil(sanitized.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
-        XCTAssertNil(sanitized.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
-        // 即便未调用 sanitizedForRuntimePolicy，底层 wire 参数也不得向非 Codex 通道发送 true。
-        XCTAssertNil(options.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
-        XCTAssertNil(options.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        var agyOptions = CodexAppServerTurnOptions.default
+        agyOptions.runtimeProvider = "agy"
+        agyOptions.preservesThreadPermissionSettings = true
+        let sanitizedAgy = agyOptions.sanitizedForRuntimePolicy()
+        XCTAssertTrue(sanitizedAgy.preservesThreadPermissionSettings)
+        XCTAssertEqual(sanitizedAgy.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil, .bool(true))
+        XCTAssertNil(sanitizedAgy.turnParams(projectPath: "/tmp/project")["approvalPolicy"] ?? nil)
+        XCTAssertNil(sanitizedAgy.turnParams(projectPath: "/tmp/project")["sandboxPolicy"] ?? nil)
+        XCTAssertEqual(sanitizedAgy.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil, .bool(true))
+        XCTAssertNil(sanitizedAgy.threadParams(projectPath: "/tmp/project")["sandbox"] ?? nil)
+
+        let project = AgentProject(id: "proj_perm", name: "Perm", path: "/tmp/perm")
+        func agyChannel(preserve: Bool?) -> CodexAppServerChannelMetadata {
+            CodexAppServerChannelMetadata(
+                id: "agy",
+                runtimeID: "agy",
+                title: "Antigravity",
+                provider: "agy",
+                type: "agy_acp_adapter",
+                protocolName: "app_server_jsonrpc_stdio_v1",
+                gatewayWSURL: "ws://127.0.0.1:8787/api/app-server/ws?runtime=agy",
+                gatewayAvailable: true,
+                managed: false,
+                experimental: true,
+                lifecycle: nil,
+                bridge: nil,
+                methods: ["initialize", "thread/resume", "turn/start"],
+                capabilities: preserve.map { ["preserve_thread_permissions": $0] }
+            )
+        }
+        let modernConfig = makeDirectAppServerConfig(project: project, channels: [agyChannel(preserve: true)])
+        let legacyConfig = makeDirectAppServerConfig(project: project, channels: [agyChannel(preserve: nil)])
+        XCTAssertTrue(CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(runtimeProvider: "codex", in: legacyConfig))
+        XCTAssertTrue(CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(runtimeProvider: "agy", in: modernConfig))
+        XCTAssertFalse(CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(runtimeProvider: "agy", in: legacyConfig))
+        XCTAssertFalse(CodexAppServerSessionRuntime.supportsPreserveThreadPermissions(runtimeProvider: "claude", in: modernConfig))
     }
 
     @MainActor
-    func testRestoredAntigravityPermissionSelectionDoesNotPreserveThreadSettings() {
+    func testRestoredAntigravityPermissionSelectionPreservesThreadSettingsWhenSupported() async {
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": true, "agy": true]
+        )
         let store = SessionStore(
             appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
-            logStore: LogStore()
+            logStore: LogStore(),
+            clientFactory: { client }
         )
         let scope = ComposerDraftScopeKey.session("existing-agy-thread")
 
-        let restoredDefault = store.restoredComposerPermissionSelection(
+        // 新版 agentd/adapter 支持沿用已有 agy 会话权限，默认不降级也不套用 App 全局默认。
+        let restoredModern = store.restoredComposerPermissionSelection(
             for: scope,
             runtimeProvider: "agy",
             defaultMode: .fullAccess
         )
-        XCTAssertFalse(restoredDefault.preservesThreadSettings)
-        XCTAssertEqual(restoredDefault.mode, ComposerPermissionMode.requestApproval)
+        XCTAssertTrue(restoredModern.preservesThreadSettings)
 
-        // 若旧缓存中残留了 preservesThreadSettings = true，还原时必须归一化回显式模式。
+        // 若旧版 agentd 未声明 preserve_thread_permissions，刷新能力后自动回退为显式请求审批，避免 -32080。
+        client.runtimePreserveThreadPermissionSupport["agy"] = false
+        await store.refreshAppServerModelOptions()
+        XCTAssertFalse(store.supportsPreserveThreadPermissions(runtimeProvider: "agy"))
+
+        let restoredLegacy = store.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: "agy",
+            defaultMode: .fullAccess
+        )
+        XCTAssertFalse(restoredLegacy.preservesThreadSettings)
+        XCTAssertEqual(restoredLegacy.mode, ComposerPermissionMode.requestApproval)
+
+        // 旧缓存中残留 preservesThreadSettings = true 时，连接旧版 agentd 也必须自动归一化。
         var staleOptions = CodexAppServerTurnOptions.default
         staleOptions.preservesThreadPermissionSettings = true
         store.saveComposerPermissionSelection(

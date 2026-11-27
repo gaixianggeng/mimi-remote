@@ -1448,3 +1448,116 @@ func TestColdAgyStatusInspectsFailingShimOnce(t *testing.T) {
 		t.Fatalf("version calls across cold and cached reads: %q, %v", calls, err)
 	}
 }
+
+func TestAgyPreserveThreadPermissionsCapabilityAndPolicyValidation(t *testing.T) {
+	dir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "proj-1", Name: "Repo", Path: dir}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	fakeAgyBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	router := &Router{
+		cfg: config.Config{
+			Projects: []config.ProjectConfig{{ID: "proj-1", Name: "Repo", Path: dir}},
+			Agy: config.AgyConfig{
+				Enabled: true,
+				Env: map[string]string{
+					agybridge.AgyBinaryEnvKey: fakeAgyBin,
+				},
+			},
+		},
+		projects:   registry,
+		agyAdapter: newAgyAdapterSupervisor(),
+	}
+
+	// 旧版适配器未声明 preserveThreadPermissions：channel 不暴露该能力，网关拒绝 mimiPreserveThreadPermissions。
+	router.setAgyAdapterProbe(agyAdapterProbe{
+		Status:    "ready",
+		Path:      "/opt/mimi/mimi-agy-adapter",
+		Version:   "0.1.0",
+		Healthy:   true,
+		CheckedAt: time.Now().UTC(),
+		Capabilities: &agybridge.AdapterCapabilities{
+			Name:       "mimi-agy-adapter",
+			Version:    "0.1.0",
+			Methods:    []string{"initialize", "thread/resume", "turn/start"},
+			FullAccess: true,
+		},
+	})
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/app-server/config", nil)
+	if ch := router.agyChannelConfig(req); ch.Capabilities.PreserveThreadPermissions {
+		t.Fatalf("legacy adapter without capability must not advertise preserve_thread_permissions")
+	}
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "turn/start", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		"input":                               []any{map[string]any{"type": "text", "text": "hi"}},
+		gatewayPreserveThreadPermissionsParam: true,
+	}); err == nil {
+		t.Fatalf("expected legacy agy adapter to reject mimiPreserveThreadPermissions")
+	}
+
+	// 新版适配器声明 preserveThreadPermissions：channel 开放能力，thread/resume 与 turn/start 放行并剥离覆盖参数。
+	router.setAgyAdapterProbe(agyAdapterProbe{
+		Status:    "ready",
+		Path:      "/opt/mimi/mimi-agy-adapter",
+		Version:   "0.1.0",
+		Healthy:   true,
+		CheckedAt: time.Now().UTC(),
+		Capabilities: &agybridge.AdapterCapabilities{
+			Name:                      "mimi-agy-adapter",
+			Version:                   "0.1.0",
+			Methods:                   []string{"initialize", "thread/resume", "turn/start"},
+			FullAccess:                true,
+			PreserveThreadPermissions: true,
+		},
+	})
+	if ch := router.agyChannelConfig(req); !ch.Capabilities.PreserveThreadPermissions {
+		t.Fatalf("modern adapter must advertise preserve_thread_permissions")
+	}
+	for _, method := range []string{"thread/resume", "turn/start"} {
+		params := map[string]any{
+			"threadId":                            "thr-agy-1",
+			"cwd":                                 dir,
+			gatewayPreserveThreadPermissionsParam: true,
+		}
+		if method == "turn/start" {
+			params["input"] = []any{map[string]any{"type": "text", "text": "continue"}}
+		}
+		if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, method, params); err != nil {
+			t.Fatalf("%s with mimiPreserveThreadPermissions should be allowed for agy: %v", method, err)
+		}
+		var sanitized map[string]any
+		if method == "thread/resume" {
+			sanitized = sanitizedGatewayThreadParams(appServerRuntimeAgyID, method, params)
+		} else {
+			sanitized = sanitizedGatewayTurnParams(appServerRuntimeAgyID, params, dir)
+		}
+		for _, forbidden := range []string{"approvalPolicy", "approvalsReviewer", "sandbox", "sandboxPolicy", gatewayPreserveThreadPermissionsParam} {
+			if _, exists := sanitized[forbidden]; exists {
+				t.Fatalf("%s preserve mode must omit %s, got %+v", method, forbidden, sanitized)
+			}
+		}
+	}
+
+	// 与显式权限覆盖同时发送时仍必须拒绝；thread/fork 对 agy 仍不允许。
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "turn/start", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		"input":                               []any{map[string]any{"type": "text", "text": "conflict"}},
+		gatewayPreserveThreadPermissionsParam: true,
+		"approvalPolicy":                      "on-request",
+	}); err == nil {
+		t.Fatalf("expected conflict error when mimiPreserveThreadPermissions is combined with approvalPolicy")
+	}
+	if _, err := router.validateGatewayPolicyParams(appServerRuntimeAgyID, "thread/fork", map[string]any{
+		"threadId":                            "thr-agy-1",
+		"cwd":                                 dir,
+		gatewayPreserveThreadPermissionsParam: true,
+	}); err == nil {
+		t.Fatalf("expected agy thread/fork with mimiPreserveThreadPermissions to be rejected")
+	}
+}

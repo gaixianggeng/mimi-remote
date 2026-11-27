@@ -17,15 +17,71 @@ export interface AgyRunSettings {
   executionPolicy: ExecutionPolicy;
 }
 
-const KNOWN_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+export interface PersistedSessionPermissions {
+  mode: AgyModeId;
+  executionPolicy: ExecutionPolicy;
+  approvalPolicy: string;
+  approvalsReviewer: string;
+}
 
-function collaborationModeName(value: unknown): string | undefined {
+const KNOWN_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+const KNOWN_MODES = new Set<AgyModeId>(["default", "accept-edits", "auto", "plan"]);
+
+export function isAgyModeId(value: unknown): value is AgyModeId {
+  return typeof value === "string" && KNOWN_MODES.has(value as AgyModeId);
+}
+
+export function collaborationModeName(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const mode = (value as Params).mode;
     return typeof mode === "string" ? mode : undefined;
   }
   return undefined;
+}
+
+export function hasExplicitPermissionParams(params: Params): boolean {
+  return (
+    params.approvalPolicy !== undefined
+    || params.approvalsReviewer !== undefined
+    || params.sandboxPolicy !== undefined
+    || params.sandbox !== undefined
+  );
+}
+
+export function permissionMetaFor(
+  executionPolicy: ExecutionPolicy,
+  mode: AgyModeId,
+): { approvalPolicy: string; approvalsReviewer: string; sandbox: ExecutionPolicy } {
+  if (executionPolicy.type === "dangerFullAccess") {
+    return { approvalPolicy: "never", approvalsReviewer: "user", sandbox: executionPolicy };
+  }
+  if (executionPolicy.type === "readOnly" || mode === "plan") {
+    return {
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: executionPolicy.type === "readOnly" ? executionPolicy : { type: "readOnly", networkAccess: false },
+    };
+  }
+  if (mode === "accept-edits") {
+    return { approvalPolicy: "on-request", approvalsReviewer: "accept_edits", sandbox: executionPolicy };
+  }
+  if (mode === "auto") {
+    return { approvalPolicy: "on-request", approvalsReviewer: "auto_review", sandbox: executionPolicy };
+  }
+  return { approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: executionPolicy };
+}
+
+export function persistedPermissionsFor(params: Params, executionPolicy: ExecutionPolicy): PersistedSessionPermissions {
+  // 持久化的会话权限只记录基础权限档位，不把单轮临时 collaborationMode=plan 固化成永久权限。
+  const baseMode = agyModeFor({ ...params, collaborationMode: undefined }, executionPolicy);
+  const meta = permissionMetaFor(executionPolicy, baseMode);
+  return {
+    mode: baseMode,
+    executionPolicy,
+    approvalPolicy: meta.approvalPolicy,
+    approvalsReviewer: meta.approvalsReviewer,
+  };
 }
 
 export function executionPolicyFor(raw: unknown): ExecutionPolicy {

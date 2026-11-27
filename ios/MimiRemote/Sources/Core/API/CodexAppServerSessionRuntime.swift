@@ -937,7 +937,8 @@ actor CodexAppServerSessionRuntime {
             // Codex/Claude 继续遵守旧 app-server 对线程级模型字段的兼容约束。
             threadOptions.modelProvider = nil
         }
-        threadOptions = runtimeScopedThreadOptions(threadOptions)
+        let config = try await ensureConfig()
+        threadOptions = runtimeScopedThreadOptions(threadOptions, config: config)
         let resumeID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
         if payload.mimiTaskProposal != nil,
            (!resumeID.isEmpty || Self.normalizedRuntimeProvider(runtimeProvider) != "claude") {
@@ -1285,11 +1286,10 @@ actor CodexAppServerSessionRuntime {
         let baseProjects = try await projects()
         let project = AgentProject(id: workspace.id, name: workspace.name, path: workspace.path)
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
+        let config = try await ensureConfig()
         var options = CodexAppServerTurnOptions.default
         options.threadSource = reason.rawValue
-        options.preservesThreadPermissionSettings = RuntimeFeatureSupport.supportsPreserveThreadPermissions(
-            for: runtimeProvider
-        )
+        options.preservesThreadPermissionSettings = supportsPreserveThreadPermissions(in: config)
         if !options.preservesThreadPermissionSettings {
             ComposerPermissionMode.requestApproval.apply(to: &options)
         }
@@ -2745,8 +2745,9 @@ actor CodexAppServerSessionRuntime {
         clientMessageID: ClientMessageID?
     ) async throws -> CodexAppServerTurnStartOutcome {
         var payload = payload
-        // 与 thread/start 一样，以实际连接通道为准，归一化旧草稿的审批参数。
-        payload.options = runtimeScopedThreadOptions(payload.options)
+        // 与 thread/start 一样，以实际连接通道及当前网关能力为准，归一化旧草稿的审批参数。
+        let config = try await ensureConfig()
+        payload.options = runtimeScopedThreadOptions(payload.options, config: config)
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
@@ -3031,10 +3032,20 @@ actor CodexAppServerSessionRuntime {
     }
 
     // 实际 gateway 由 actor 的 runtimeProvider 决定，不能相信草稿中残留的通道。
-    func runtimeScopedThreadOptions(_ options: CodexAppServerTurnOptions) -> CodexAppServerTurnOptions {
+    // 若传入已探测的网关配置，则对未声明 preserve_thread_permissions 的旧网关降级为显式请求审批，避免 -32080。
+    func runtimeScopedThreadOptions(
+        _ options: CodexAppServerTurnOptions,
+        config: CodexAppServerConfigResponse? = nil
+    ) -> CodexAppServerTurnOptions {
         var scoped = options
         scoped.runtimeProvider = runtimeProvider
-        return scoped.sanitizedForRuntimePolicy()
+        scoped = scoped.sanitizedForRuntimePolicy()
+        if let config,
+           scoped.preservesThreadPermissionSettings,
+           !supportsPreserveThreadPermissions(in: config) {
+            ComposerPermissionMode.requestApproval.apply(to: &scoped)
+        }
+        return scoped
     }
 
     // 直连发送路径下，thread 可能只在 thread/list 或 thread/start 里出现过，但没有在当前 gateway
@@ -3095,18 +3106,15 @@ actor CodexAppServerSessionRuntime {
     ) async throws {
         let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
         let collaborationModeGeneration = collaborationModeGenerationBySessionID[sessionID, default: 0]
+        let config = try await ensureConfig()
         var passiveResumeOptions = CodexAppServerTurnOptions.default
-        // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
-        // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
-        passiveResumeOptions.preservesThreadPermissionSettings = RuntimeFeatureSupport.supportsPreserveThreadPermissions(
-            for: runtimeProvider
-        )
+        // 被动监听/重连不能把 Mimi 的安全默认重新写进已有会话；支持权限继承的通道（Codex 及声明了
+        // preserve_thread_permissions 的 Antigravity）统一沿用原会话权限，旧网关或 Claude 回退为请求审批。
+        passiveResumeOptions.preservesThreadPermissionSettings = supportsPreserveThreadPermissions(in: config)
         if !passiveResumeOptions.preservesThreadPermissionSettings {
-            // 非 Codex 适配器（Claude / Antigravity）不支持 mimiPreserveThreadPermissions；
-            // 被动恢复只连接会话，不应用下一轮的权限。
             ComposerPermissionMode.requestApproval.apply(to: &passiveResumeOptions)
         }
-        let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
+        let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions, config: config)
         let result: CodexAppServerJSONValue?
         do {
             let request = usesSharedServerQueue
@@ -3900,6 +3908,31 @@ actor CodexAppServerSessionRuntime {
 
     func threadGoalsSupported(runtimeProvider: String) async throws -> Bool {
         Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: try await ensureConfig())
+    }
+
+    /// 已有会话权限继承（`mimiPreserveThreadPermissions`）按通道能力声明判断（#1177）。
+    /// Codex 保持兼容旧版 agentd；Antigravity 等其他通道仅在 `channel.capabilities["preserve_thread_permissions"] == true` 时开放。
+    static func supportsPreserveThreadPermissions(
+        runtimeProvider raw: String,
+        in config: CodexAppServerConfigResponse
+    ) -> Bool {
+        let runtime = normalizedRuntimeProvider(raw)
+        if runtime == "codex" {
+            return true
+        }
+        let channel = config.channels.first { channel in
+            normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
+                normalizedRuntimeProvider(channel.provider) == runtime
+        }
+        return channel?.capabilities?["preserve_thread_permissions"] == true
+    }
+
+    func supportsPreserveThreadPermissions(in config: CodexAppServerConfigResponse) -> Bool {
+        Self.supportsPreserveThreadPermissions(runtimeProvider: runtimeProvider, in: config)
+    }
+
+    func preserveThreadPermissionsSupported(runtimeProvider: String) async throws -> Bool {
+        Self.supportsPreserveThreadPermissions(runtimeProvider: runtimeProvider, in: try await ensureConfig())
     }
 
     /// 当前回合引导（`turn/steer`）按通道声明判断（#1172）。通道返回了 `methods` 时只看它是否包含

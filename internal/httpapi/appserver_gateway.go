@@ -277,18 +277,19 @@ type appServerBridgeMetadata struct {
 }
 
 type appServerChannelCapability struct {
-	IdleTakeover     bool `json:"idle_takeover,omitempty"`
-	Streaming        bool `json:"streaming"`
-	History          bool `json:"history"`
-	ApprovalRequests bool `json:"approval_requests"`
-	FileDiffs        bool `json:"file_diffs"`
-	Goals            bool `json:"goals"`
-	Archive          bool `json:"archive"`
-	Fork             bool `json:"fork"`
-	Rename           bool `json:"rename"`
-	Compact          bool `json:"compact"`
-	Review           bool `json:"review"`
-	RateLimits       bool `json:"rate_limits"`
+	IdleTakeover              bool `json:"idle_takeover,omitempty"`
+	PreserveThreadPermissions bool `json:"preserve_thread_permissions,omitempty"`
+	Streaming                 bool `json:"streaming"`
+	History                   bool `json:"history"`
+	ApprovalRequests          bool `json:"approval_requests"`
+	FileDiffs                 bool `json:"file_diffs"`
+	Goals                     bool `json:"goals"`
+	Archive                   bool `json:"archive"`
+	Fork                      bool `json:"fork"`
+	Rename                    bool `json:"rename"`
+	Compact                   bool `json:"compact"`
+	Review                    bool `json:"review"`
+	RateLimits                bool `json:"rate_limits"`
 }
 
 type appServerChannelPolicy struct {

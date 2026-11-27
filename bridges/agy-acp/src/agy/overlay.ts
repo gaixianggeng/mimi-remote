@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { PersistedSessionPermissions } from "../runtime/settings.ts";
 import type { OwnTurnTranscriptWatermark } from "./transcript.ts";
 
 export interface TurnOutcomeRecord {
@@ -60,6 +61,7 @@ interface OverlayEntry {
   archivedTurnAttempts?: TurnAttemptRecord[];
   turnAttempts?: TurnAttemptRecord[];
   toolMappings?: Record<string, PersistedToolMapping[]>;
+  permissions?: PersistedSessionPermissions;
   /** 最近一次由本适配器正常/中断/失败结束且无外部冲突的 transcript 水印，防止重启或刷新时误判为电脑端运行。 */
   ownTurnWatermark?: OwnTurnTranscriptWatermark;
 }
@@ -309,6 +311,7 @@ export class AgyOverlay {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      permissions?: PersistedSessionPermissions;
       ownTurnWatermark?: OwnTurnTranscriptWatermark | null;
     },
   ): Promise<void> {
@@ -419,6 +422,7 @@ export class AgyOverlay {
       ...(archivedTurnAttempts ? { archivedTurnAttempts } : {}),
       ...(turnAttempts ? { turnAttempts } : {}),
       ...(toolMappings ? { toolMappings } : {}),
+      ...(patch.permissions ? { permissions: patch.permissions } : {}),
     };
     if (patch.ownTurnWatermark === null) {
       delete next.ownTurnWatermark;

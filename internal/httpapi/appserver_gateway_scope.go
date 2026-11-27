@@ -38,8 +38,15 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	}()
 	if value, exists := params[gatewayPreserveThreadPermissionsParam]; exists {
 		preserve, ok := value.(bool)
-		if !ok || !preserve || runtimeID != "codex" || (method != "thread/resume" && method != "thread/fork" && method != "turn/start") {
-			return validated, fmt.Errorf("%s 只允许 Codex thread/resume、thread/fork 或 turn/start 使用 true", gatewayPreserveThreadPermissionsParam)
+		allowedCodex := runtimeID == appServerRuntimeCodexID && (method == "thread/resume" || method == "thread/fork" || method == "turn/start")
+		allowedAgy := runtimeID == appServerRuntimeAgyID && (method == "thread/resume" || method == "turn/start")
+		if !ok || !preserve || (!allowedCodex && !allowedAgy) {
+			return validated, fmt.Errorf("%s 只允许 Codex thread/resume、thread/fork、turn/start 或 Antigravity thread/resume、turn/start 使用 true", gatewayPreserveThreadPermissionsParam)
+		}
+		if allowedAgy {
+			if probe := r.agyAdapterProbeSnapshot(); !probe.preserveThreadPermissionsAvailable() {
+				return validated, fmt.Errorf("当前 Antigravity 适配器尚不支持沿用已有会话权限")
+			}
 		}
 		for _, key := range []string{"approvalPolicy", "approvalsReviewer", "permissions", "sandbox", "sandboxPolicy"} {
 			if override, present := params[key]; present && override != nil {

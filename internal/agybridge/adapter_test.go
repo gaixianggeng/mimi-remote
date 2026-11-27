@@ -39,12 +39,13 @@ func TestParseAdapterCapabilitiesAndVersionGate(t *testing.T) {
 		"version":"0.1.0",
 		"methods":["initialize","thread/list","turn/start","slashCommand/list"],
 		"fullAccess":true,
+		"preserveThreadPermissions":true,
 		"agy":{"minimumVersion":"1.5.0"}
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !caps.FullAccess || !caps.Supports("slashCommand/list") {
+	if !caps.FullAccess || !caps.PreserveThreadPermissions || !caps.Supports("slashCommand/list") {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 	if !caps.AgySupported("1.5.10") || caps.AgySupported("1.4.9") {
