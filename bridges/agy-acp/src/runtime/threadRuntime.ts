@@ -15,6 +15,7 @@ import type { PersistedToolMapping } from "../agy/overlay.ts";
 import {
   detectExternalConcurrentWrite,
   type ExternalWriteBaseline,
+  type OwnTurnTranscriptWatermark,
   type TranscriptActivityInfo,
   type TranscriptSnapshotResult,
   type TranscriptTurnSnapshot,
@@ -63,6 +64,7 @@ export interface RuntimeHost {
   onSessionOpen?(openResult: AcpSessionOpenResult): void;
   onAvailableCommands?(cwd: string, commands: AcpAvailableCommand[]): void;
   onTitleUpdated?(threadId: string, title: string): void;
+  onOwnTurnWatermark?(threadId: string, watermark: OwnTurnTranscriptWatermark | null): void;
   onTurnPersisted?(
     threadId: string,
     patch: {
@@ -86,6 +88,7 @@ export interface RuntimeHost {
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
+      ownTurnWatermark?: OwnTurnTranscriptWatermark | null;
     },
   ): void;
   reserveTurnAttempt?(
@@ -302,6 +305,7 @@ export class ThreadRuntime {
       this.currentAttempt = attemptMeta;
       this.startingTurn = false;
 
+      this.host.onOwnTurnWatermark?.(this.threadId, null);
       this.host.publish(this.threadId, "thread/status/changed", {
         threadId: this.threadId,
         status: { type: "active", activeFlags: [] },
@@ -311,6 +315,7 @@ export class ThreadRuntime {
       this.host.onTurnPersisted?.(this.threadId, {
         ...(preview ? { preview } : {}),
         updatedAt: this.updatedAt,
+        ownTurnWatermark: null,
       });
 
       const initialInspection = await this.inspectTranscript();
@@ -431,7 +436,33 @@ export class ThreadRuntime {
     } finally {
       const isCurrentTurn = this.currentTurn === turn;
       const hadConflict = isCurrentTurn && Boolean(this.externalWriteConflict);
+      const savedBaseline = isCurrentTurn ? this.externalWriteBaseline : undefined;
+      const completedAtMs = Date.now();
+      const attemptStatus: "completed" | "failed" | "interrupted" =
+        finishedTurn?.status === "failed"
+          ? "failed"
+          : finishedTurn?.status === "interrupted"
+            ? "interrupted"
+            : "completed";
       if (isCurrentTurn) {
+        if (hadConflict) {
+          this.host.onOwnTurnWatermark?.(this.threadId, null);
+        } else {
+          const beforeLastUserStepIndex = initialSnapshot?.userInputStepIndices?.length
+            ? (initialSnapshot.userInputStepIndices[initialSnapshot.userInputStepIndices.length - 1] ?? null)
+            : null;
+          this.host.onOwnTurnWatermark?.(this.threadId, {
+            status: attemptStatus,
+            completedAtMs,
+            size: initialSnapshot?.size ?? 0,
+            mtimeMs: initialSnapshot?.mtimeMs ?? 0,
+            lastUserStepIndex: null,
+            lastStepIndex: initialSnapshot?.lastStepIndex ?? null,
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+            provisional: true,
+            beforeLastUserStepIndex,
+          });
+        }
         this.stopExternalWriteMonitor();
         this.externalWriteBaseline = undefined;
         this.externalWriteCheckInFlight = undefined;
@@ -439,7 +470,6 @@ export class ThreadRuntime {
         this.currentTurn = undefined;
         this.currentAttempt = undefined;
       }
-      const completedAtMs = Date.now();
       this.updatedAt = Math.max(this.updatedAt, Math.floor(completedAtMs / 1000));
       const afterInspection = await this.inspectTranscript();
       const afterSnapshot = afterInspection.kind === "present" ? afterInspection.snapshot : undefined;
@@ -464,12 +494,45 @@ export class ThreadRuntime {
           nativeUserStepIndex = idx;
         }
       }
-      const attemptStatus: "completed" | "failed" | "interrupted" =
-        finishedTurn?.status === "failed"
-          ? "failed"
-          : finishedTurn?.status === "interrupted"
-            ? "interrupted"
-            : "completed";
+      const finalExternalWriteConflict =
+        hadConflict
+        || (
+          savedBaseline !== undefined
+          && afterSnapshot !== undefined
+          && detectExternalConcurrentWrite(savedBaseline, afterSnapshot).detected
+        );
+      let settledWatermark: OwnTurnTranscriptWatermark | null | undefined;
+      if (this.turnGeneration === turnGeneration) {
+        if (finalExternalWriteConflict || afterInspection.kind === "error") {
+          settledWatermark = null;
+        } else if (afterSnapshot !== undefined) {
+          const lastUserStepIndex = afterSnapshot.userInputStepIndices?.length
+            ? (afterSnapshot.userInputStepIndices[afterSnapshot.userInputStepIndices.length - 1] ?? null)
+            : null;
+          settledWatermark = {
+            status: attemptStatus,
+            completedAtMs,
+            size: afterSnapshot.size,
+            mtimeMs: afterSnapshot.mtimeMs,
+            lastUserStepIndex,
+            lastStepIndex: afterSnapshot.lastStepIndex ?? null,
+            ...(attemptPersisted !== undefined ? { persistedAtSettlement: attemptPersisted } : {}),
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+          };
+        } else {
+          settledWatermark = {
+            status: attemptStatus,
+            completedAtMs,
+            size: 0,
+            mtimeMs: 0,
+            lastUserStepIndex: null,
+            lastStepIndex: null,
+            persistedAtSettlement: false,
+            ...(attemptMeta.promptText ? { expectedPromptText: attemptMeta.promptText } : {}),
+          };
+        }
+        this.host.onOwnTurnWatermark?.(this.threadId, settledWatermark);
+      }
       const toolEntries = turn.toolMappings();
       this.host.onTurnPersisted?.(this.threadId, {
         updatedAt: this.updatedAt,
@@ -490,12 +553,13 @@ export class ThreadRuntime {
           ...(attemptStatus !== "completed" && finishedTurn ? { syntheticTurn: finishedTurn } : {}),
         },
         ...(toolEntries.length > 0 ? { toolMappings: { turnId: finishedTurn?.id ?? attemptMeta.turnId, entries: toolEntries } } : {}),
+        ...(settledWatermark !== undefined ? { ownTurnWatermark: settledWatermark } : {}),
       });
       // 若在异步收尾期间已有新回合启动或会话已关闭，不得发布旧回合的终态覆盖新状态。
       if (this.turnGeneration !== turnGeneration) {
         return;
       }
-      const ext = hadConflict
+      const ext = finalExternalWriteConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
         : undefined;
       if (this.turnGeneration !== turnGeneration) {

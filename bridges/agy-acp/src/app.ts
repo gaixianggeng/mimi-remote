@@ -140,6 +140,7 @@ export function createApp(options: AppOptions): App {
       rateLimits.observePlanType(tierNameFromSessionMeta(open._meta));
     },
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
+    onOwnTurnWatermark: (threadId, watermark) => overlay.setEphemeralOwnTurnWatermark(threadId, watermark),
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
       historyRef?.invalidate(threadId);

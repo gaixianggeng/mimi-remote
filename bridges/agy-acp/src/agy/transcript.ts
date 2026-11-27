@@ -14,6 +14,7 @@ const execFileAsync = promisify(execFile);
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const EXTERNAL_BUSY_WINDOW_MS = 90_000;
 const EXTERNAL_RUNNING_TOOL_WINDOW_MS = 10 * 60_000;
+const POST_CANCEL_FLUSH_GRACE_MS = 5_000;
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
 const TAIL_READ_BYTES = 64 * 1024;
 const LARGE_TAIL_READ_BYTES = 256 * 1024;
@@ -57,8 +58,30 @@ export interface TranscriptTurnSnapshot {
   mtimeMs: number;
   userInputs: string[];
   userInputStepIndices?: Array<number | null>;
+  lastStepIndex?: number | null;
   plannerResponseCount: number;
   stepCount: number;
+}
+
+export interface OwnTurnTranscriptWatermark {
+  status: "completed" | "failed" | "interrupted";
+  completedAtMs: number;
+  /** 结束时观测到的 transcript 文件字节数；尚未落盘时为 0。 */
+  size: number;
+  /** 结束时观测到的 transcript mtime（毫秒）；尚未落盘时为 0。 */
+  mtimeMs: number;
+  /** 结束时最后一轮 USER_INPUT 的 step_index；缺失时为 null。 */
+  lastUserStepIndex: number | null;
+  /** 结束时整个 transcript 最后一条步骤的 step_index；缺失时为 null。 */
+  lastStepIndex: number | null;
+  /** 结束时本轮是否已确认落盘；false 表示刚中断时该轮 USER_INPUT 尚未刷盘。 */
+  persistedAtSettlement?: boolean;
+  /** 本轮用户提示词预览，仅用于在尚未落盘或 provisional 阶段核对是否仍属本轮。 */
+  expectedPromptText?: string;
+  /** 仅内存态：runPrompt 刚结束、afterInspection 尚未完成的毫秒级窗口内为 true，不落盘。 */
+  provisional?: boolean;
+  /** 仅内存态：provisional 阶段记录本轮启动前最后的 USER_INPUT step_index。 */
+  beforeLastUserStepIndex?: number | null;
 }
 
 export interface NativeToolStepLifecycle {
@@ -380,11 +403,148 @@ export interface InspectExternalActivityOptions {
   ownPids?: ReadonlySet<number>;
   /** 写路径与回合预留前绕过 300ms 进程快照缓存，实时复核当前外部持有者（C11 round5）。 */
   bypassProcessCache?: boolean;
+  /** 本适配器刚主动结束（中断/失败/完成）该会话回合时的 transcript 水印，用于避免把自身残留尾步误判为电脑端运行。 */
+  ownSettledWatermark?: OwnTurnTranscriptWatermark;
   findExternalHolderPid?: (
     sessionId: string,
     ownPids: ReadonlySet<number>,
     options?: { bypassCache?: boolean },
   ) => Promise<number | null>;
+}
+
+function promptsRoughlyMatch(observed: string, expectedRaw: string | undefined): boolean {
+  const expected = normalizePromptCompare(expectedRaw ?? "");
+  if (!expected || !observed) return false;
+  return observed === expected || observed.includes(expected) || expected.includes(observed);
+}
+
+function extractTailWatermarkMeta(steps: readonly TranscriptStep[]): {
+  lastUserIdx: number;
+  lastUserStepIndex: number | null;
+  lastUserPrompt: string;
+  lastStepIndex: number | null;
+  userInputCountInTail: number;
+  hasPlannerResponse: boolean;
+} {
+  let lastUserIdx = -1;
+  let lastUserStepIndex: number | null = null;
+  let lastUserPrompt = "";
+  let lastStepIndex: number | null = null;
+  let userInputCountInTail = 0;
+  let hasPlannerResponse = false;
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i]!;
+    if (typeof step.step_index === "number") {
+      lastStepIndex = step.step_index;
+    }
+    if (step.type === "USER_INPUT") {
+      lastUserIdx = i;
+      userInputCountInTail += 1;
+      lastUserStepIndex = typeof step.step_index === "number" ? step.step_index : null;
+      lastUserPrompt = normalizePromptCompare(formatTranscriptUserText(step.content ?? ""));
+    } else if (step.type === "PLANNER_RESPONSE") {
+      hasPlannerResponse = true;
+    }
+  }
+  return { lastUserIdx, lastUserStepIndex, lastUserPrompt, lastStepIndex, userInputCountInTail, hasPlannerResponse };
+}
+
+function isSuppressedByOwnTurnWatermark(
+  watermark: OwnTurnTranscriptWatermark,
+  info: { size: number; mtimeMs: number },
+  tailSteps: readonly TranscriptStep[],
+): boolean {
+  const meta = extractTailWatermarkMeta(tailSteps);
+
+  if (watermark.provisional) {
+    if (info.mtimeMs > watermark.completedAtMs + POST_CANCEL_FLUSH_GRACE_MS) {
+      return false;
+    }
+    if (meta.lastUserIdx < 0) {
+      return true;
+    }
+    if (
+      watermark.beforeLastUserStepIndex !== undefined
+      && watermark.beforeLastUserStepIndex !== null
+      && meta.lastUserStepIndex === watermark.beforeLastUserStepIndex
+    ) {
+      return true;
+    }
+    if (watermark.expectedPromptText) {
+      return promptsRoughlyMatch(meta.lastUserPrompt, watermark.expectedPromptText);
+    }
+    return true;
+  }
+
+  // Case 1: 自本机回合结束以来 transcript 没有任何新字节/新步骤写入。
+  if (watermark.size > 0 && info.size <= watermark.size) {
+    if (
+      watermark.lastUserStepIndex !== null
+      && meta.lastUserStepIndex !== null
+      && meta.lastUserStepIndex !== watermark.lastUserStepIndex
+    ) {
+      return false;
+    }
+    if (
+      watermark.lastStepIndex !== null
+      && meta.lastStepIndex !== null
+      && meta.lastStepIndex !== watermark.lastStepIndex
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  // Case 2: 本机中断/失败后极短窗口内（<= 5s），agy acp 异步刷出本轮残留尾步（不含新 PLANNER_RESPONSE 或外部 USER_INPUT）。
+  if (
+    (watermark.status === "interrupted" || watermark.status === "failed")
+    && info.mtimeMs <= watermark.completedAtMs + POST_CANCEL_FLUSH_GRACE_MS
+  ) {
+    // 2a: 中断/失败时 transcript 尚未创建，随后仅落盘本轮自身 USER_INPUT。
+    if (watermark.size === 0) {
+      return (
+        meta.userInputCountInTail === 1
+        && !meta.hasPlannerResponse
+        && promptsRoughlyMatch(meta.lastUserPrompt, watermark.expectedPromptText)
+      );
+    }
+
+    if (watermark.lastStepIndex === null || meta.lastStepIndex === null) {
+      return false;
+    }
+    const appendedSteps = tailSteps.filter(
+      (step) => typeof step.step_index === "number" && step.step_index > watermark.lastStepIndex!,
+    );
+    if (appendedSteps.some((step) => step.type === "PLANNER_RESPONSE")) {
+      return false;
+    }
+
+    // 2b: 中断/失败时本轮 USER_INPUT 尚未落盘，随后延迟补写了一条匹配的 USER_INPUT（无 PLANNER_RESPONSE）。
+    if (watermark.persistedAtSettlement === false) {
+      const appendedUserInputs = appendedSteps.filter((step) => step.type === "USER_INPUT");
+      if (appendedUserInputs.length === 1) {
+        const prompt = normalizePromptCompare(formatTranscriptUserText(appendedUserInputs[0]?.content ?? ""));
+        return promptsRoughlyMatch(prompt, watermark.expectedPromptText);
+      }
+      if (appendedUserInputs.length > 1) {
+        return false;
+      }
+    }
+
+    if (appendedSteps.some((step) => step.type === "USER_INPUT")) {
+      return false;
+    }
+    if (meta.lastUserStepIndex !== null) {
+      if (watermark.lastUserStepIndex !== null) {
+        return meta.lastUserStepIndex === watermark.lastUserStepIndex;
+      }
+      return promptsRoughlyMatch(meta.lastUserPrompt, watermark.expectedPromptText);
+    }
+    // 超长单回合尾部未包含 USER_INPUT 时，仅当能完整看到 watermark.lastStepIndex 之后的追加步骤才放行。
+    return tailSteps.some((step) => step.step_index === watermark.lastStepIndex);
+  }
+
+  return false;
 }
 
 export async function inspectTranscriptActivity(
@@ -430,6 +590,9 @@ export async function inspectTranscriptActivity(
       } else {
         externallyBusy = analysis.busy && ageMs <= EXTERNAL_BUSY_WINDOW_MS;
       }
+      if (externallyBusy && opts.ownSettledWatermark && isSuppressedByOwnTurnWatermark(opts.ownSettledWatermark, info, tailSteps)) {
+        externallyBusy = false;
+      }
     }
     return {
       path: filePath,
@@ -473,6 +636,7 @@ export async function snapshotTranscriptStateDetailed(
     }
     const userInputs: string[] = [];
     const userInputStepIndices: Array<number | null> = [];
+    let lastStepIndex: number | null = null;
     let plannerResponseCount = 0;
     let stepCount = 0;
     for (const line of raw.split("\n")) {
@@ -493,6 +657,9 @@ export async function snapshotTranscriptStateDetailed(
       }
       const step = parsed as TranscriptStep;
       stepCount += 1;
+      if (typeof step.step_index === "number") {
+        lastStepIndex = step.step_index;
+      }
       if (step.type === "USER_INPUT") {
         userInputs.push(normalizePromptCompare(formatTranscriptUserText(step.content ?? "")));
         userInputStepIndices.push(typeof step.step_index === "number" ? step.step_index : null);
@@ -508,6 +675,7 @@ export async function snapshotTranscriptStateDetailed(
         mtimeMs: info.mtimeMs,
         userInputs,
         userInputStepIndices,
+        lastStepIndex,
         plannerResponseCount,
         stepCount,
       },
