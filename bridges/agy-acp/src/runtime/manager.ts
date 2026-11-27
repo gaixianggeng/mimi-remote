@@ -236,6 +236,13 @@ export class ThreadManager {
       .sort();
   }
 
+  hasBusyTurnInDirectory(appDataDirName: string): boolean {
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.appDataDirName === appDataDirName && runtime.isBusy()) return true;
+    }
+    return false;
+  }
+
   isSessionBusy(session: Session): boolean {
     for (const threadId of this.subscriptions.get(session) ?? []) {
       if (this.runtimes.get(threadId)?.isBusy()) return true;

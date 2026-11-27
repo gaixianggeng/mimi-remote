@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { ErrorCode, RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import { readLines } from "@mimi/appserver-kit/rpc/lines.ts";
 import { logger } from "../util/logging.ts";
-import { AcpClient, type AcpClientOptions, type AcpTransport } from "../acp/client.ts";
+import { AcpClient, DEFAULT_ACP_INITIALIZE_TIMEOUT_MS, type AcpClientOptions, type AcpTransport } from "../acp/client.ts";
 import type { AcpSessionUpdate } from "../acp/types.ts";
 import { MINIMUM_AGY_VERSION, ADAPTER_NAME, ADAPTER_VERSION } from "../version.ts";
 import { resolveAgyDataPaths, sanitizeAgyEnv } from "./env.ts";
@@ -218,7 +218,8 @@ export async function startAgyAcpClient(
  */
 export class SharedReadonlyAcp {
   private client: AcpClient | undefined;
-  private connecting: Promise<AcpClient> | undefined;
+  private connecting: { ready: Promise<AcpClient>; controller: AbortController; waiters: Set<symbol> } | undefined;
+  private retiring: Promise<void> | undefined;
   private disposed = false;
   private readonly updateListeners = new Set<(sessionId: string, update: AcpSessionUpdate) => void>();
 
@@ -227,6 +228,7 @@ export class SharedReadonlyAcp {
     private readonly spawnTransport: SpawnAgyTransport,
     private readonly env: () => NodeJS.ProcessEnv = () => process.env,
     private readonly appDataDirName?: string,
+    private readonly hasActiveTurn: () => boolean = () => false,
   ) {}
 
   subscribeUpdates(listener: (sessionId: string, update: AcpSessionUpdate) => void): () => void {
@@ -241,35 +243,54 @@ export class SharedReadonlyAcp {
   }
 
   async acquire(options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<AcpClient> {
+    if (this.retiring) await this.retiring;
     if (this.disposed) {
       throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp has been closed");
     }
-    if (options?.signal?.aborted) {
+    const signal = options?.signal;
+    if (signal?.aborted) {
       throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp acquire aborted");
     }
-    if (this.client && !this.client.isClosed) {
-      return this.client;
-    }
-    if (this.connecting) {
-      const inflight = this.connecting;
-      if (!options?.signal) return inflight;
-      return await new Promise<AcpClient>((resolve, reject) => {
-        const onAbort = () => reject(new RpcError(ErrorCode.internalError, "SharedReadonlyAcp acquire aborted"));
-        options.signal!.addEventListener("abort", onAbort, { once: true });
-        inflight.then(
-          (value) => {
-            options.signal!.removeEventListener("abort", onAbort);
-            resolve(value);
-          },
-          (err) => {
-            options.signal!.removeEventListener("abort", onAbort);
-            reject(err);
-          },
-        );
+    if (this.client && !this.client.isClosed) return this.client;
+    if (!this.connecting) {
+      const controller = new AbortController();
+      const ready = this.connect(controller.signal, options?.timeoutMs).finally(() => {
+        this.connecting = undefined;
       });
+      this.connecting = { ready, controller, waiters: new Set() };
     }
+    const flight = this.connecting;
+    if (flight.controller.signal.aborted) {
+      await flight.ready.catch(() => {});
+      return this.acquire(options);
+    }
+    const waiter = Symbol();
+    flight.waiters.add(waiter);
+    let onAbort: (() => void) | undefined;
+    try {
+      if (!signal) return await flight.ready;
+      return await new Promise<AcpClient>((resolve, reject) => {
+        onAbort = () => {
+          flight.waiters.delete(waiter);
+          if (flight.waiters.size === 0 && !this.hasActiveTurn()) {
+            // A stalled cold start with no remaining owner is reclaimed before the next list retry.
+            flight.controller.abort();
+          } else {
+            reject(new RpcError(ErrorCode.internalError, "SharedReadonlyAcp acquire aborted"));
+          }
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        flight.ready.then(resolve, reject);
+      });
+    } finally {
+      flight.waiters.delete(waiter);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async connect(signal: AbortSignal, timeoutMs?: number): Promise<AcpClient> {
     let createdClient: AcpClient | undefined;
-    const connectPromise = startAgyAcpClient(
+    createdClient = await startAgyAcpClient(
       this.spawnTransport,
       {
         executable: this.executable(),
@@ -290,37 +311,25 @@ export class SharedReadonlyAcp {
           }
         },
       },
-      options,
+      { signal, timeoutMs: Math.max(timeoutMs ?? 0, DEFAULT_ACP_INITIALIZE_TIMEOUT_MS) },
     );
-    this.connecting = connectPromise;
-    try {
-      createdClient = await connectPromise;
-      if (this.disposed || options?.signal?.aborted) {
-        await createdClient.close().catch(() => {});
-        throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp closed while connecting");
-      }
-      this.client = createdClient;
-      return createdClient;
-    } finally {
-      if (this.connecting === connectPromise) {
-        this.connecting = undefined;
-      }
+    if (this.disposed || signal.aborted) {
+      await createdClient.close().catch(() => {});
+      throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp closed while connecting");
     }
+    this.client = createdClient;
+    return createdClient;
   }
 
-  /**
-   * 主动关闭并清理卡死的常驻子进程而不置 disposed，使下一次请求可重新拉起健康进程（C10）。
-   * 若传入 expectedClient，则仅回收发起超时的对应实例，避免误杀已恢复的新实例（C10 round4）。
-   */
-  async reset(expectedClient?: AcpClient): Promise<void> {
-    if (expectedClient && this.client !== expectedClient) {
-      await expectedClient.close().catch(() => {});
-      return;
-    }
-    const current = this.client;
+  private async retireIfIdle(client: AcpClient): Promise<void> {
+    if (this.client !== client || this.hasActiveTurn() || client.hasPendingWork) return;
     this.client = undefined;
-    if (current) {
-      await current.close().catch(() => {});
+    // Keep a single writer per data directory until the retiring process has actually exited.
+    this.retiring = client.close().catch(() => {});
+    try {
+      await this.retiring;
+    } finally {
+      this.retiring = undefined;
     }
   }
 
@@ -330,7 +339,7 @@ export class SharedReadonlyAcp {
       return await fn(client);
     } catch (error) {
       if (options?.signal?.aborted) {
-        await this.reset(client);
+        await this.retireIfIdle(client);
         throw error;
       }
       if (client.isClosed && !this.disposed) {
@@ -343,6 +352,9 @@ export class SharedReadonlyAcp {
 
   async close(): Promise<void> {
     this.disposed = true;
+    this.connecting?.controller.abort();
+    await this.connecting?.ready.catch(() => {});
+    await this.retiring;
     const current = this.client;
     this.client = undefined;
     if (current) {

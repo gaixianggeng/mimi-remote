@@ -171,7 +171,7 @@ export class ThreadRuntime {
     private settings: AgyRunSettings,
     private persisted: boolean,
     initialTitle: string | null = null,
-    private readonly appDataDirName?: string,
+    readonly appDataDirName?: string,
     initialTimestamps?: { createdAt?: number; updatedAt?: number },
     preserveExistingMode = false,
   ) {
