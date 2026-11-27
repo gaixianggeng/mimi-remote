@@ -219,7 +219,7 @@ func TailcatPairWithManagedHost(
 		PairIssuedAt:  now.Format(time.RFC3339Nano),
 		PairExpiresAt: expiresAt.Format(time.RFC3339Nano),
 		Warnings: []string{
-			"Tailcat 是邀请实验；二维码在所示时间前有效，且不会包含长期访问码。",
+			"Tailcat 二维码在所示时间前有效，且不会包含长期访问码。",
 		},
 	}, nil
 }

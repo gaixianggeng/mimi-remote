@@ -58,7 +58,7 @@ func Resolve(configured string) (string, error) {
 	case "windows":
 		return "", fmt.Errorf("安装目录中缺少 %s；请重新运行最新的 Mimi Remote Windows 安装器后重试；Tailcat 保持关闭", name)
 	}
-	return "", fmt.Errorf("未安装 %s；Tailcat 实验保持关闭", name)
+	return "", fmt.Errorf("未安装 %s；Tailcat 保持关闭", name)
 }
 
 // Version 运行辅助程序的 version 子命令（不是 --version）。

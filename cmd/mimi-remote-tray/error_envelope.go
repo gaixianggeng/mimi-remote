@@ -1576,7 +1576,7 @@ func trayPairingWarnings(warnings []string) []string {
 		switch warning {
 		case "局域网配对仅适用于与这台电脑位于同一局域网的设备",
 			"仅用于受信任的局域网；仍需 Mimi 配对鉴权",
-			"Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。",
+			"Tailcat 二维码十分钟内有效，且不会包含长期访问码。",
 			"agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑",
 			"当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；移动设备连接前建议先安装并登录 Tailscale，或显式启用受限的局域网访问":
 		default:

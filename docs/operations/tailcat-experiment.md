@@ -1,10 +1,12 @@
-# Tailcat 远程连接实验
+# Tailcat 远程连接
+
+> 文件名沿用早期实验阶段的 `tailcat-experiment`。Tailcat 现为可选的内置连接，默认关闭；下文“验证记录”是 2026-09 的历史结果，不代表当前状态。
 
 ## 目标
 
 验证 iPad 不安装 Tailscale 客户端时，Mimi Remote 能否仅通过 Tailcat 连接 Mac 上的 `agentd`，并保持现有 HTTP、WebSocket、认证和大文件传输能力。
 
-本实验固定使用 Tailcat `v0.7.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。未配置自定义中继时，使用上游常量 `DefaultDERPMapURL`（`https://tailcat.dev/derpmap.json`），即 Tailcat 项目提供、由 Tailscale 运营的免费限速公共中继；Mimi Remote 不运营该中继。
+当前固定使用 Tailcat `v0.7.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。未配置自定义中继时，使用上游常量 `DefaultDERPMapURL`（`https://tailcat.dev/derpmap.json`），即 Tailcat 项目提供、由 Tailscale 运营的免费限速公共中继；Mimi Remote 不运营该中继。
 
 ## 方案
 
@@ -18,7 +20,7 @@ iPad App 内嵌 Tailcat Go 客户端。客户端在本机打开一个随机 loop
 
 sidecar 意外退出时，`agentd` 按 1 秒起步、最长 5 分钟的退避自动重启，持续重试直到恢复；连续稳定运行 2 分钟后退避清零。主机身份和地址不变，已配对设备无需重新扫码，托管授权在重启后立即重放。`agentd` 启动时第一次拉起失败（例如刚开机没网、中继暂时不可达）按同样的退避重试，就绪后才启动托管策略同步。用户关闭 Tailcat、切换模式或中继、重置以及 `agentd` 退出都不会触发重启，也会取消进行中的重试。用户手动开启失败仍回滚为关闭状态，不进入重试。
 
-Mac 和 iPad 设置页都提供显式实验开关。开关打开后，App 只使用 Tailcat 路由，不回退到 Tailscale 地址或本机直连。开关关闭后，App 立即恢复原连接档案，且不会改写档案地址或 Agent Token。
+Mac 设置中的“内置连接（Tailcat）”和 iPad 设置中的“连接方式”都提供显式选项，默认关闭。选用 Tailcat 后，App 只使用 Tailcat 路由，不回退到 Tailscale 地址或本机直连。切回已保存的连接方式后，App 立即恢复原连接档案，且不会改写档案地址或 Agent Token。
 
 配对使用 10 分钟有效的签名二维码。二维码不包含长期 Agent Token。iPad 先通过临时 Tailcat 服务提交自己的公钥，Mac 将该公钥写入稳定服务的允许列表，再返回稳定连接地址。任何验证、Keychain 写入或档案提交失败都会恢复原路由。
 
@@ -38,11 +40,11 @@ bash ./scripts/build-tailcat-mobile.sh
 ios/MimiRemote/Generated/TailcatMobile.xcframework
 ```
 
-该产物不提交到 Git。本地实验需要先运行上述脚本；TestFlight 发布入口会从仓库固定的 Tailcat 版本自动重新生成。缺少该产物时，普通 Debug App 仍能构建，但 Tailcat 开关不可用。
+该产物不提交到 Git。本地构建需要先运行上述脚本；TestFlight 发布入口会从仓库固定的 Tailcat 版本自动重新生成。缺少该产物时，普通 Debug App 仍能构建，但 Tailcat 开关不可用。
 
-### 2. 在 Mac 开启实验并生成二维码
+### 2. 在 Mac 开启 Tailcat 并生成二维码
 
-打开 Mac 版 Mimi 的“实验功能”，开启 Tailcat 实验。状态必须显示 sidecar 正在运行。中继节点可选“Tailcat 默认”或“自定义”。自定义模式填写完整的 DERP Map HTTPS 地址，再点击“应用中继配置”。切换成功后需要重新生成二维码并扫码；切换失败时会自动恢复原中继。
+在 Mac 版 Mimi 的设置中开启“内置连接（Tailcat）”。状态必须显示 sidecar 正在运行。中继节点可选“Tailcat 默认”或“自定义”。自定义模式填写完整的 DERP Map HTTPS 地址，再点击“应用中继配置”。切换成功后需要重新生成二维码并扫码；切换失败时会自动恢复原中继。
 
 也可以用命令行执行同一控制流程：
 
@@ -209,9 +211,9 @@ bash ./scripts/ios-dev.sh leases
 bash ./scripts/ios-dev.sh run
 ```
 
-从常规的“添加电脑”或“修复当前电脑”入口扫描 Mac 二维码。扫码成功后，iPad 会自动开启 Tailcat 实验。无需粘贴连接地址或手工复制公钥。
+从常规的“添加电脑”或“修复当前电脑”入口扫描 Mac 二维码。扫码成功后，iPad 会自动切换到 Tailcat 连接方式。无需粘贴连接地址或手工复制公钥。
 
-完成后可在“设置 → 实验功能 → 连接诊断”查看当前路径延迟和一次真实 HTTP 请求耗时。诊断区分直连、Peer Relay 和 DERP 中转。本机只保留最近 10 条脱敏结果。
+完成后可在“设置 → 连接方式”页的路径诊断查看当前路径延迟和一次真实 HTTP 请求耗时。诊断区分直连、Peer Relay 和 DERP 中转。本机只保留最近 10 条脱敏结果。
 
 ### 偶发连不上时对照两侧记录
 
@@ -244,9 +246,9 @@ iPhone 或 iPad 上，“连接诊断”页显示最近的连接失败，“复�
 - WebSocket 流式输出不中断。
 - 图片或其他大于 1 MB 的二进制内容可以上传。
 - Mac sidecar 重启后，原连接地址仍可使用。
-- 关闭实验开关后，App 恢复原 Tailscale 连接档案。
+- 切回已保存的连接方式后，App 恢复原 Tailscale 连接档案。
 
-### 当前验证结果
+### 验证记录（历史，截至 2026-09-12）
 
 截至 2026-09-01，以下自动验证已通过：
 
@@ -266,7 +268,7 @@ iPhone 或 iPad 上，“连接诊断”页显示最近的连接失败，“复�
 - 默认公共 DERP 上（开发机当前网络），`v0.5.0` 客户端连 `v0.5.0` 服务端也会超时，`v0.6.0` 客户端 2–3 秒连通。
   现象与 `v0.6.0` 的 meow 重发改动一致，但尚未确认根因。
 
-真实 iPad 的跨网络、后台恢复和长期稳定性还没有完成，因此当前结论是“技术链路可行，但不能替换生产 Tailscale”。
+真实 iPad 的跨网络、后台恢复和长期稳定性还没有完成，因此当时的结论是“技术链路可行，但不能替换生产 Tailscale”。这是 2026-09-12 的历史结论，之后的修复和验证没有回写到本节，不代表当前状态；当前状态以 `docs/project-status.md` 为准。
 
 ## 风险与优化
 

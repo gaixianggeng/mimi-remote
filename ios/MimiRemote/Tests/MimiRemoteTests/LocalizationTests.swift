@@ -89,7 +89,6 @@ final class LocalizationTests: XCTestCase {
             ("ui.token_activity", "Token Activity", "Token 活动"),
             ("ui.my_preferences", "My Preferences", "我的偏好设置"),
             ("ui.more", "More", "更多"),
-            ("ui.experimental_features", "Experimental Features", "实验功能"),
             ("ui.tailcat_experiment", "Tailcat", "Tailcat"),
             ("ui.managed_subscription_title", "Mimi Relay", "Mimi 中转"),
             ("ui.custom_tailcat", "Built-in connection · Free", "内置连接 · 免费"),

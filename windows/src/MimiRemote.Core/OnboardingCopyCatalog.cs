@@ -1574,7 +1574,7 @@ public static class OnboardingCopyCatalog
             {
                 var warning = text switch
                 {
-                    "Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。"
+                    "Tailcat 二维码十分钟内有效，且不会包含长期访问码。"
                         or "仅用于受信任的局域网；仍需 Mimi 配对鉴权"
                         or "局域网配对仅适用于与这台电脑位于同一局域网的设备"
                         or "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑"
