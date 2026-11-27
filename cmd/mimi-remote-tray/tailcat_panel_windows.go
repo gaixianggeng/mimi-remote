@@ -59,6 +59,10 @@ func defaultPairingUsesTailcat(status agentStatus, tailcat tailcatTrayStatus, ha
 
 func (p *controlPanel) actionButtonLabel(command uint32) string {
 	switch command {
+	case panelFirstSetup:
+		return fallbackText(p.firstSetupLabel, "完成首次设置…")
+	case panelLanMaintenance:
+		return fallbackText(p.lanMaintenanceLabel, "开启专用局域网访问…")
 	case panelTailcatToggle:
 		return fallbackText(p.tailcatToggleLabel, "开启内置连接")
 	case panelPairNetwork:
@@ -82,6 +86,9 @@ func (p *controlPanel) syncTailcatRow(presentation tailcatPresentation) {
 }
 
 func (p *controlPanel) pairNetworkEnabled() bool {
+	if p == nil || p.app.isBrokerBlocked() {
+		return false
+	}
 	p.app.mu.RLock()
 	busy := p.app.busy
 	p.app.mu.RUnlock()

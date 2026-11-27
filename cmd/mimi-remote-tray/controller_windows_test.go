@@ -166,6 +166,49 @@ func TestManualStatusGetsFullExecutionBudgetAfterQueueWait(t *testing.T) {
 	}
 }
 
+func TestStatusWithNetworkPolicyGetsFullWindowsPolicyBudget(t *testing.T) {
+	var coldBudget, warmBudget time.Duration
+	var coldArgs, warmArgs []string
+	controller := &agentController{statusGate: make(chan struct{}, 1)}
+	call := 0
+	controller.statusRunner = func(ctx context.Context, args ...string) ([]byte, error) {
+		call++
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("status command missing deadline")
+		}
+		remaining := time.Until(deadline)
+		if call == 1 {
+			coldBudget = remaining
+			coldArgs = append([]string(nil), args...)
+		} else {
+			warmBudget = remaining
+			warmArgs = append([]string(nil), args...)
+		}
+		return []byte(`{"version":"1.2.3","network_status":{"mode":"loopback","policy_checked":true,"policy_ok":true}}`), nil
+	}
+
+	if _, err := controller.status(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(coldArgs, "--network-policy") {
+		t.Fatalf("cold status did not request --network-policy: %v", coldArgs)
+	}
+	if coldBudget < networkPolicyStatusCommandTimeout-time.Second || coldBudget < 35*time.Second {
+		t.Fatalf("cold --network-policy status budget %s is too short for Windows cold policy checks", coldBudget)
+	}
+
+	if _, err := controller.status(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(warmArgs, "--network-policy") {
+		t.Fatalf("warm cached status unexpectedly requested --network-policy: %v", warmArgs)
+	}
+	if warmBudget > backgroundStatusCommandTimeout+time.Second {
+		t.Fatalf("warm background status budget %s should remain compact", warmBudget)
+	}
+}
+
 func TestStatusRefreshKeepsLastGoodValueAndRejectsLateOlderResult(t *testing.T) {
 	app := &trayApplication{status: agentStatus{Version: "1.0.0", ProcessOK: true}}
 	older := app.beginStatusRequest()

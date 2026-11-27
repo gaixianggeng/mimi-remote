@@ -158,7 +158,9 @@ try {
     if (-not (Test-Path -LiteralPath $hostBinary -PathType Leaf)) { throw "Native AOT did not produce mimi-agent-host.exe: $hostBinary" }
     Copy-Item -LiteralPath $hostBinary -Destination $stage
     & (Join-Path $root 'scripts\check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'mimi-agent-host.exe') -Expected GUI
-    & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.releaseVersion=$Version" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
+    $trayFlags = "-s -w -H=windowsgui -X main.releaseVersion=$Version"
+    if ($PfxPath) { $trayFlags += " -X main.releasePublisherSHA256=$publisher" }
+    & go build -trimpath -ldflags $trayFlags -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
     if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }
     # Tailcat 辅助程序是独立 Go module，要求比根 module 更新的工具链。与 .goreleaser.yml 的
     # linux-tailcat 一样只对它允许自动选择工具链，其余组件的构建环境不变。

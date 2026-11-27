@@ -318,7 +318,7 @@ public sealed class OnboardingViewModelTests
             RunLanFirewallMaintenance = _ =>
             {
                 maintenanceCalls++;
-                return Task.FromResult(false);
+                return Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.UacCancelled));
             },
             Report = BuildWindowsReport(
                 stage: "pair",
@@ -340,10 +340,479 @@ public sealed class OnboardingViewModelTests
         Assert.Equal(1, maintenanceCalls);
         Assert.Empty(backend.EnabledTransports);
         Assert.Contains("同一局域网保持关闭", controller.Note, StringComparison.Ordinal);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, controller.FallbackDownloadUrl);
+
+        // Status refreshes must preserve the typed maintenance failure message and download link.
+        await controller.RefreshAsync();
+        Assert.Contains("同一局域网保持关闭", controller.Note, StringComparison.Ordinal);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, controller.FallbackDownloadUrl);
 
         // Other ready transport (tailcat) remains fully usable.
         controller.SelectTransport("tailcat");
         Assert.True(controller.CanGenerate);
+        Assert.False(controller.HasFallbackDownload);
+    }
+
+    [Fact]
+    public async Task 默认安装私有网络下首次启用LAN走受信维护向导()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var defaultInstallReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanDisabled: true);
+        var readyLanReport = defaultInstallReport with
+        {
+            Checks =
+            [
+                .. defaultInstallReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+
+        var verifiedLanTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-lan-ticket",
+            PairExpiresAt = now.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
+        var pairingMaintenanceCalls = 0;
+        var pairingBackend = new FakePairingBackend(() => now)
+        {
+            Report = defaultInstallReport,
+            RunLanFirewallMaintenance = _ =>
+            {
+                pairingMaintenanceCalls++;
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。",
+                    readyLanReport,
+                    verifiedLanTicket));
+            },
+        };
+
+        using var controller = new PairingSessionController(pairingBackend);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+        var preflightCallsBeforeMaintenance = pairingBackend.PreflightCalls;
+        var pairCallsBeforeMaintenance = pairingBackend.PairCalls;
+        controller.SelectTransport("lan");
+        Assert.True(controller.CanEnableSelectedTransport);
+        Assert.True(controller.SelectedTransportItem?.NeedsFirewallMaintenance);
+        await controller.EnableSelectedTransportAsync();
+        Assert.Equal(1, pairingMaintenanceCalls);
+        Assert.Empty(pairingBackend.EnabledTransports);
+        Assert.Equal(preflightCallsBeforeMaintenance, pairingBackend.PreflightCalls);
+        Assert.Equal(pairCallsBeforeMaintenance, pairingBackend.PairCalls);
+        Assert.True(controller.HasActiveTicket);
+
+        var wizardVerifiedTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-wizard-lan",
+            PairExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
+        var wizardMaintenanceCalls = 0;
+        var wizardBackend = new FakeWizardBackend
+        {
+            OnPreflight = (_, _, _) => Task.FromResult(defaultInstallReport),
+            RunLanFirewallMaintenance = _ =>
+            {
+                wizardMaintenanceCalls++;
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。",
+                    readyLanReport,
+                    wizardVerifiedTicket));
+            },
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        await wizard.ProceedToConnectStepAsync();
+        var wizardPreflightsBefore = wizardBackend.PreflightCalls;
+        var wizardPairsBefore = wizardBackend.PairCalls;
+        wizard.SelectTransport("lan");
+        Assert.True(wizard.CanEnableSelectedTransport);
+        await wizard.EnableSelectedTransportAsync();
+        Assert.Equal(1, wizardMaintenanceCalls);
+        Assert.Empty(wizardBackend.EnabledTransports);
+        Assert.Equal(wizardPreflightsBefore, wizardBackend.PreflightCalls);
+        Assert.Equal(wizardPairsBefore, wizardBackend.PairCalls);
+        Assert.True(wizard.HasIssuedTicket);
+    }
+
+    [Fact]
+    public async Task 局域网维护成功后刷新状态并生成二维码且失败暴露正式下载入口()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var lanEnabled = false;
+        var openedUrls = new List<string>();
+        var blockedReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanFirewallBlocked: true);
+        var readyLanReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true);
+        readyLanReport = readyLanReport with
+        {
+            Checks =
+            [
+                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+        var verifiedLanTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-after-repair",
+            PairExpiresAt = now.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
+        var includeVerifiedPreflight = true;
+        var backend = new FakePairingBackend(() => now)
+        {
+            OnOpenUrl = url => openedUrls.Add(url),
+            RunLanFirewallMaintenance = _ =>
+            {
+                if (!lanEnabled)
+                {
+                    return Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.OldHostUnsupported));
+                }
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。",
+                    includeVerifiedPreflight ? readyLanReport : null,
+                    includeVerifiedPreflight ? verifiedLanTicket : null));
+            },
+            Report = blockedReport,
+        };
+
+        using var controller = new PairingSessionController(backend);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+
+        controller.SelectTransport("lan");
+        Assert.Contains("受信任的安装维护向导", controller.Note, StringComparison.Ordinal);
+        await controller.EnableSelectedTransportAsync();
+        Assert.True(controller.HasFallbackDownload);
+        controller.OpenFallbackDownload();
+        Assert.Equal([OnboardingCopyCatalog.UrlDesktop], openedUrls);
+
+        // Missing verified preflight must fail closed without invoking unverified refresh/pair.
+        lanEnabled = true;
+        includeVerifiedPreflight = false;
+        var preflightsBeforeMissing = backend.PreflightCalls;
+        var pairsBeforeMissing = backend.PairCalls;
+        await controller.EnableSelectedTransportAsync();
+        Assert.Equal(preflightsBeforeMissing, backend.PreflightCalls);
+        Assert.Equal(pairsBeforeMissing, backend.PairCalls);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.False(controller.HasActiveTicket);
+
+        // Once maintenance returns verified preflight and verified pairing ticket,
+        // both are applied without invoking unverified refresh/pair.
+        includeVerifiedPreflight = true;
+        await controller.EnableSelectedTransportAsync();
+        Assert.Equal(preflightsBeforeMissing, backend.PreflightCalls);
+        Assert.Equal(pairsBeforeMissing, backend.PairCalls);
+        Assert.False(controller.HasFallbackDownload);
+        Assert.True(controller.HasActiveTicket);
+
+        // Wizard Step 4 keeps the diagnostic catalog-aligned and exposes download fallback on the typed result.
+        var wizardOpenedUrls = new List<string>();
+        var wizardBackend = new FakeWizardBackend
+        {
+            OnOpenUrl = url => wizardOpenedUrls.Add(url),
+            RunLanFirewallMaintenance = _ => Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.DigestMismatch)),
+            OnPreflight = (_, _, _) => Task.FromResult(blockedReport),
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        Assert.True(wizard.CanEnableSelectedTransport);
+        await wizard.EnableSelectedTransportAsync();
+        Assert.True(wizard.HasMaintenanceFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, wizard.MaintenanceFallbackDownloadUrl);
+        Assert.Equal(MaintenanceFailureKind.DigestMismatch, wizard.LastLanMaintenanceResult?.FailureKind);
+        Assert.Equal(OnboardingFix.OpenSettings("windows_firewall"), wizard.PairingError?.AllowedFix);
+        wizard.OpenMaintenanceFallbackDownload();
+        Assert.Equal([OnboardingCopyCatalog.UrlDesktop], wizardOpenedUrls);
+    }
+
+    [Fact]
+    public async Task 局域网维护期间窗口失焦保留已验证票据并在重新激活时展示而导航切传输或过期则作废()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var blockedReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanFirewallBlocked: true);
+        var readyLanReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true);
+        readyLanReport = readyLanReport with
+        {
+            Checks =
+            [
+                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+
+        MaintenanceRunResult BuildSuccessResult(string sig, DateTimeOffset expiresAt) =>
+            MaintenanceRunResult.Success(
+                new HostStatus
+                {
+                    Version = "1.2.3",
+                    ProcessOk = true,
+                    ServiceOk = true,
+                    WorkspaceConfirmed = true,
+                    ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                    NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                },
+                "专用网络防火墙与局域网访问已生效。",
+                readyLanReport,
+                new PairingTicketReceipt
+                {
+                    Ok = true,
+                    Endpoint = "http://192.168.1.20:8787",
+                    PairUrl = $"mimiremote://pair?pair_sig={sig}",
+                    PairExpiresAt = expiresAt.ToString("O", CultureInfo.InvariantCulture),
+                    Network = "lan",
+                });
+
+        // 1) PairingSessionController: focus lost to wizard while maintenance runs,
+        // maintenance finishes while inactive, returning focus activates the held verified ticket.
+        TaskCompletionSource<MaintenanceRunResult> pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pairingBackend = new FakePairingBackend(() => now)
+        {
+            Report = blockedReport,
+            RunLanFirewallMaintenance = _ => pendingPairingMaintenance.Task,
+        };
+        using var controller = new PairingSessionController(pairingBackend);
+        var observedTickets = new List<string?>();
+        controller.TicketChanged += (_, url) => observedTickets.Add(url);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        var preflightsBefore = pairingBackend.PreflightCalls;
+        var pairsBefore = pairingBackend.PairCalls;
+
+        var enableTask = controller.EnableSelectedTransportAsync();
+        // Maintenance wizard takes focus from WinUI.
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("focus-held-lan", now.AddMinutes(5)));
+        await enableTask;
+        // Must NOT expose the QR/copyable link while window is deactivated.
+        Assert.False(controller.HasActiveTicket);
+        Assert.False(controller.CanCopyLink);
+        Assert.Empty(observedTickets);
+
+        // Returning focus to the same page and transport promotes the held verified receipt.
+        controller.SetActive(true);
+        Assert.True(controller.HasActiveTicket);
+        Assert.True(controller.CanCopyLink);
+        Assert.Equal("mimiremote://pair?pair_sig=focus-held-lan", Assert.Single(observedTickets));
+        Assert.Equal(preflightsBefore, pairingBackend.PreflightCalls);
+        Assert.Equal(pairsBefore, pairingBackend.PairCalls);
+
+        // 2) PairingSessionController: focus lost and regained BEFORE maintenance completes.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableBeforeReturn = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        controller.SetActive(true);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("focus-returned-early", now.AddMinutes(5)));
+        await enableBeforeReturn;
+        Assert.True(controller.HasActiveTicket);
+        Assert.Equal("mimiremote://pair?pair_sig=focus-returned-early", Assert.Single(observedTickets));
+
+        // 3) PairingSessionController: navigation away invalidates the held receipt.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableNavAway = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("nav-away-discarded", now.AddMinutes(5)));
+        await enableNavAway;
+        controller.InvalidateForNavigation();
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 4) PairingSessionController: transport change invalidates the held receipt even if switched back.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableSwitch = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("transport-switch-discarded", now.AddMinutes(5)));
+        await enableSwitch;
+        controller.SelectTransport("tailcat");
+        controller.SelectTransport("lan");
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 5) PairingSessionController: expiry before reactivation invalidates the held receipt.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableExpiry = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("expired-discarded", now.AddMinutes(2)));
+        await enableExpiry;
+        now = now.AddMinutes(3);
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 6) OnboardingWizardStateMachine (Setup Step 4): focus lost while wizard runs,
+        // held until reactivation, and invalidated on navigation, transport change, or expiry.
+        TaskCompletionSource<MaintenanceRunResult> pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardBackend = new FakeWizardBackend
+        {
+            Clock = () => now,
+            OnPreflight = (_, _, _) => Task.FromResult(blockedReport),
+            RunLanFirewallMaintenance = _ => pendingWizardMaintenance.Task,
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        var wizardTickets = new List<string?>();
+        wizard.IssuedTicketChanged += (_, url) => wizardTickets.Add(url);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        var wizardEnable = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-focus-held", now.AddMinutes(5)));
+        await wizardEnable;
+        Assert.False(wizard.HasIssuedTicket);
+        Assert.Empty(wizardTickets);
+
+        wizard.SetPairingActive(true);
+        Assert.True(wizard.HasIssuedTicket);
+        Assert.Equal("mimiremote://pair?pair_sig=wizard-focus-held", Assert.Single(wizardTickets));
+
+        // Navigation invalidates held wizard ticket.
+        wizardTickets.Clear();
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardNav = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-nav-discarded", now.AddMinutes(5)));
+        await wizardNav;
+        wizard.InvalidateForNavigation();
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // Transport switch invalidates held wizard ticket.
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardSwitch = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-switch-discarded", now.AddMinutes(5)));
+        await wizardSwitch;
+        wizard.SelectTransport("tailcat");
+        wizard.SelectTransport("lan");
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // Expiry invalidates held wizard ticket.
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardExpiry = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-expired-discarded", now.AddMinutes(1)));
+        await wizardExpiry;
+        now = now.AddMinutes(2);
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // 7) SetupViewModel full focus transition via SetActiveAsync(false) -> SetActiveAsync(true).
+        var setupContext = new ClientContext();
+        setupContext.Agent.PreflightHandler = (_, _, _) => Task.FromResult(blockedReport);
+        TaskCompletionSource<MaintenanceRunResult> pendingVmMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        setupContext.RunInstallerMaintenance = (_, _) => pendingVmMaintenance.Task;
+
+        using var setupVm = new SetupViewModel(setupContext);
+        var vmQrPayloads = new List<string?>();
+        setupVm.QrPayloadChanged += (_, url) => vmQrPayloads.Add(url);
+        await setupVm.SetActiveAsync(true);
+        await setupVm.Wizard.ProceedToConnectStepAsync();
+        setupVm.SelectTransportCommand.Execute("lan");
+
+        var callsBeforeVmMaintenance = setupContext.Agent.Calls.Count;
+        var vmEnable = setupVm.EnableTransportCommand.ExecuteAsync(null);
+        await setupVm.SetActiveAsync(false);
+        pendingVmMaintenance.SetResult(BuildSuccessResult("setup-vm-focus-held", DateTimeOffset.UtcNow.AddMinutes(5)));
+        await vmEnable;
+        Assert.False(setupVm.Wizard.HasIssuedTicket);
+
+        await setupVm.SetActiveAsync(true);
+        Assert.True(setupVm.Wizard.HasIssuedTicket);
+        Assert.Contains(vmQrPayloads, url => string.Equals(url, "mimiremote://pair?pair_sig=setup-vm-focus-held", StringComparison.Ordinal));
+        Assert.Equal(callsBeforeVmMaintenance, setupContext.Agent.Calls.Count);
+
+        // Navigating away from SetupViewModel discards any held ticket.
+        setupVm.OnNavigatedFrom();
+        Assert.False(setupVm.Wizard.HasIssuedTicket);
     }
 
     [Fact]
@@ -818,6 +1287,7 @@ public sealed class OnboardingViewModelTests
         bool tailcatReady = false,
         bool lanPublicBlocked = false,
         bool lanFirewallBlocked = false,
+        bool lanDisabled = false,
         string? configCode = null)
     {
         var effectiveBrowse = browseRoot ?? scanRoot;
@@ -1204,22 +1674,41 @@ public sealed class OnboardingViewModelTests
                     HasCodeKey = true,
                     HasFixKey = true,
                 }
-                : new OnboardingCheck
-                {
-                    Id = "network_lan",
-                    Group = "network",
-                    State = "optional",
-                    Title = "同一局域网",
-                    Detail = "未检测到可信局域网。",
-                    Blocking = false,
-                    Enabled = false,
-                    Available = false,
-                    Code = "lan_unavailable",
-                    Fix = OnboardingFix.Retry,
-                    HasAvailableKey = true,
-                    HasCodeKey = true,
-                    HasFixKey = true,
-                };
+                : lanDisabled
+                    ? new OnboardingCheck
+                    {
+                        Id = "network_lan",
+                        Group = "network",
+                        State = "optional",
+                        Title = "同一局域网",
+                        Detail = "同一局域网连接可用，可在配对设置中启用。",
+                        Blocking = false,
+                        Enabled = false,
+                        Available = true,
+                        Code = "lan_disabled",
+                        Fix = configured
+                            ? (isPair ? OnboardingFix.RunFix("enable_lan") : OnboardingFix.OpenSettings("connections"))
+                            : OnboardingFix.RunFix("save_setup"),
+                        HasAvailableKey = true,
+                        HasCodeKey = true,
+                        HasFixKey = true,
+                    }
+                    : new OnboardingCheck
+                    {
+                        Id = "network_lan",
+                        Group = "network",
+                        State = "optional",
+                        Title = "同一局域网",
+                        Detail = "未检测到可信局域网。",
+                        Blocking = false,
+                        Enabled = false,
+                        Available = false,
+                        Code = "lan_unavailable",
+                        Fix = OnboardingFix.Retry,
+                        HasAvailableKey = true,
+                        HasCodeKey = true,
+                        HasFixKey = true,
+                    };
 
         var anyNetwork = tailscaleReady || tailcatReady;
         string? recommendedTransport = (tailscaleReady || tailscaleDisabledAvailable)
@@ -1317,11 +1806,17 @@ public sealed class OnboardingViewModelTests
         public Func<Task<bool>>? OnWorkspaceUpdate { get; set; }
         public Func<Task<UpReadinessReceipt>>? OnRestart { get; set; }
 
+        public int PreflightCalls { get; private set; }
+        public int PairCalls { get; private set; }
+
         public Task<OnboardingPreflightReport> PreflightAsync(
             OnboardingPreflightOptions options,
             Action<OnboardingCheck>? onProgress,
-            CancellationToken cancellationToken) =>
-            OnPreflight!(options, onProgress, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            PreflightCalls++;
+            return OnPreflight!(options, onProgress, cancellationToken);
+        }
 
         public Task<SetupReceipt> SetupNoPairAsync(string scanRoot, OnboardingSetupOptions options, CancellationToken cancellationToken)
         {
@@ -1345,8 +1840,10 @@ public sealed class OnboardingViewModelTests
                 : Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
 
-        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>
-            Task.FromResult(new PairingTicketReceipt
+        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken)
+        {
+            PairCalls++;
+            return Task.FromResult(new PairingTicketReceipt
             {
                 Ok = true,
                 Endpoint = "http://127.0.0.1:8787",
@@ -1354,6 +1851,7 @@ public sealed class OnboardingViewModelTests
                 PairExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
                 Network = network,
             });
+        }
 
         public Task SetRuntimePathAsync(string runtimeId, string value, CancellationToken cancellationToken)
         {
@@ -1384,13 +1882,15 @@ public sealed class OnboardingViewModelTests
             RestartCalls++;
             return OnRestart?.Invoke() ?? Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => null;
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; init; }
+        public Action<string>? OnOpenUrl { get; init; }
+        public Func<DateTimeOffset>? Clock { get; init; }
         public bool DirectoryExists(string path) => ExistingDirs.Contains(path);
         public void CreateDirectory(string path) => ExistingDirs.Add(path);
-        public void OpenUrl(string url) { }
+        public void OpenUrl(string url) => OnOpenUrl?.Invoke(url);
         public void OpenSettings(string target) { }
         public bool CopyToClipboard(string text) => true;
-        public DateTimeOffset Now() => DateTimeOffset.UtcNow;
+        public DateTimeOffset Now() => Clock?.Invoke() ?? DateTimeOffset.UtcNow;
     }
 
     private sealed class FakePairingBackend(Func<DateTimeOffset> clock) : IPairingSessionBackend
@@ -1401,15 +1901,24 @@ public sealed class OnboardingViewModelTests
         public List<string> EnabledTransports { get; } = [];
         public List<string> OpenedSettings { get; } = [];
         public string? LastCopiedText { get; private set; }
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; init; }
         public Task<TailcatStatus>? PendingTailcatStatus { get; set; }
         public Func<string, Task>? OnEnableTransport { get; set; }
+        public Action<string>? OnOpenUrl { get; init; }
 
-        public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(Report);
+        public int PreflightCalls { get; private set; }
+        public int PairCalls { get; private set; }
 
-        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>
-            PendingTicket ?? Task.FromResult(NextTicket ?? new PairingTicketReceipt
+        public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken)
+        {
+            PreflightCalls++;
+            return Task.FromResult(Report);
+        }
+
+        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken)
+        {
+            PairCalls++;
+            return PendingTicket ?? Task.FromResult(NextTicket ?? new PairingTicketReceipt
             {
                 Ok = true,
                 Endpoint = "http://127.0.0.1:8787",
@@ -1417,6 +1926,7 @@ public sealed class OnboardingViewModelTests
                 PairExpiresAt = clock().AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
                 Network = network,
             });
+        }
 
         public Task EnableTransportAsync(string transport, CancellationToken cancellationToken)
         {
@@ -1430,7 +1940,7 @@ public sealed class OnboardingViewModelTests
         public Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> ConfirmAsync(string title, string message) => Task.FromResult(true);
         public void OpenSettings(string target) => OpenedSettings.Add(target);
-        public void OpenUrl(string url) { }
+        public void OpenUrl(string url) => OnOpenUrl?.Invoke(url);
         public bool CopyToClipboard(string text)
         {
             LastCopiedText = text;

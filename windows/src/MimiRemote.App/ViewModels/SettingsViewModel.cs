@@ -12,6 +12,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
     private string serviceVersion = "尚未读取";
     private string scanRoot = "";
     private string browseRoot = "";
+    private string? maintenanceFallbackDownloadUrl;
 
     public string ClientVersion => Context.Build.Display;
     public string ServiceVersion { get => serviceVersion; private set => SetProperty(ref serviceVersion, value); }
@@ -19,6 +20,10 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public bool Notifications { get => notifications; set => SetProperty(ref notifications, value); }
     public bool IsGateConfirmed => OnboardingNavigationGate.IsSettingsEditable(Context.GateState);
     public bool IsReadOnlyMode => !IsGateConfirmed;
+    public bool IsPendingConfirmation => Context.GateState == OnboardingGateState.PendingConfirmation && Context.RunInstallerMaintenance is not null && !Context.Preview;
+    public bool HasMaintenanceDownloadFallback =>
+        (!Context.Preview && (!Context.HasAgent || Context.IsMaintenanceIdentityRejected))
+        || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl);
     public string GateNotice => OnboardingNavigationGate.DescribeState(Context.GateState);
     public string ScanRoot { get => scanRoot; private set => SetProperty(ref scanRoot, value); }
     public string BrowseRoot
@@ -51,6 +56,8 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public IRelayCommand NotifyCommand { get; }
     public IRelayCommand OpenSetupCommand { get; }
     public IRelayCommand OpenDiagnosticsCommand { get; }
+    public IAsyncRelayCommand ConfirmWorkspaceViaMaintenanceCommand { get; }
+    public IRelayCommand OpenMaintenanceDownloadCommand { get; }
 
     public SettingsViewModel(ClientContext context) : base(context)
     {
@@ -79,6 +86,21 @@ public sealed class SettingsViewModel : ClientPageViewModel
         NotifyCommand = new RelayCommand(() => { _ = RunAsync(() => { Context.Notify("Mimi Remote", "服务与更新事件会在这里通知你。"); return Task.CompletedTask; }); });
         OpenSetupCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteSetup));
         OpenDiagnosticsCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteDiagnostics));
+        ConfirmWorkspaceViaMaintenanceCommand = new AsyncRelayCommand(() => RunAsync(ConfirmWorkspaceViaMaintenanceAsync), () => IsPendingConfirmation);
+        OpenMaintenanceDownloadCommand = new RelayCommand(
+            () =>
+            {
+                var url = maintenanceFallbackDownloadUrl;
+                if (url is null && !Context.Preview && (!Context.HasAgent || Context.IsMaintenanceIdentityRejected))
+                {
+                    url = WindowsMaintenanceClient.OfficialDownloadUrl;
+                }
+                if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
+                {
+                    Context.OpenUrl(url);
+                }
+            },
+            () => HasMaintenanceDownloadFallback);
         context.GateStateChanged += OnGateStateChanged;
         PropertyChanged += (_, args) =>
         {
@@ -94,6 +116,13 @@ public sealed class SettingsViewModel : ClientPageViewModel
         if (Context.Preview)
         {
             ServiceVersion = (await Context.ReadStatusAsync(force: force, token: Lifetime.Token)).Version;
+            return;
+        }
+        if (Context.IsMaintenanceIdentityRejected)
+        {
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            Report(MaintenanceRunResult.DescribeFailure(Context.MaintenanceRejectionLatch.FailureKind).Message, error: true);
             return;
         }
         if (Context.HasAgent)
@@ -181,16 +210,64 @@ public sealed class SettingsViewModel : ClientPageViewModel
         Report("已恢复为仅允许浏览所选代码目录。");
     }
 
+    private async Task ConfirmWorkspaceViaMaintenanceAsync()
+    {
+        if (!IsPendingConfirmation || Context.RunInstallerMaintenance is null)
+        {
+            return;
+        }
+        SetMaintenanceFallbackUrl(null);
+        var result = await RunPageMaintenanceAsync(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
+        SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        if (!Context.IsMaintenanceIdentityRejected && result.BrokerVerified)
+        {
+            if (result.PostRunStatus is { } verifiedStatus && !string.IsNullOrWhiteSpace(verifiedStatus.Version))
+            {
+                ServiceVersion = verifiedStatus.Version;
+            }
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                Context.UpdateGateFromPreflight(verifiedPreflight);
+                ScanRoot = verifiedPreflight.ScanRoot;
+                BrowseRoot = verifiedPreflight.BrowseRoot;
+            }
+            else if (result.Succeeded)
+            {
+                // Never fall back to the unverified launcher when verified preflight is absent.
+                SetMaintenanceFallbackUrl(WindowsMaintenanceClient.OfficialDownloadUrl);
+                Report(
+                    MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message
+                    + " 如持续无法确认，请前往桌面端正式下载页获取已签名的安装包："
+                    + WindowsMaintenanceClient.OfficialDownloadUrl,
+                    error: true);
+                return;
+            }
+        }
+        Report(result.Message, error: !result.Succeeded);
+    }
+
+    private void SetMaintenanceFallbackUrl(string? url)
+    {
+        if (SetProperty(ref maintenanceFallbackDownloadUrl, url, nameof(HasMaintenanceDownloadFallback)))
+        {
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        }
+    }
+
     private void OnGateStateChanged(object? sender, OnboardingGateState state)
     {
         OnPropertyChanged(nameof(IsGateConfirmed));
         OnPropertyChanged(nameof(IsReadOnlyMode));
+        OnPropertyChanged(nameof(IsPendingConfirmation));
         OnPropertyChanged(nameof(GateNotice));
         OnPropertyChanged(nameof(CanInstall));
         SaveCommand.NotifyCanExecuteChanged();
         InstallCommand.NotifyCanExecuteChanged();
         WidenBrowseRootCommand.NotifyCanExecuteChanged();
         TightenBrowseRootCommand.NotifyCanExecuteChanged();
+        ConfirmWorkspaceViaMaintenanceCommand.NotifyCanExecuteChanged();
     }
 
     private async Task CheckAsync()

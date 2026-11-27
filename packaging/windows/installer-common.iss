@@ -3,9 +3,11 @@ const
   ProductRegistryKey = 'Software\Mimi Remote';
   FirewallMarkerName = 'PrivateLanFirewallRule';
   PendingBootstrapName = 'InitialBootstrapPending';
+  MaintenanceUacCancelledExitCode = 1223;
 
 var
-  PostInstallFailed, RequireExistingConfig, DirectoryConfirmed: Boolean;
+  PostInstallFailed, RequireExistingConfig, DirectoryConfirmed, MaintenanceUacCancelled: Boolean;
+  LastMaintenanceExitCode: Integer;
   WorkspacePage: TInputDirWizardPage;
 
 function Quote(const Value: String): String;
@@ -78,7 +80,13 @@ function RunMaintenance(const Action: String): Boolean;
 var
   Code: Integer;
 begin
-  Result := ExecConsoleHidden(InstallDirectory + '\agentd.exe', 'installer-maintenance ' + Action, Code) and (Code = 0);
+  if ExecConsoleHidden(AgentExecutable, 'installer-maintenance ' + Action, Code) then begin
+    LastMaintenanceExitCode := Code;
+    Result := Code = 0;
+  end else begin
+    LastMaintenanceExitCode := -1;
+    Result := False;
+  end;
 end;
 
 function FirewallCheck(const Mode: String): Boolean;
@@ -94,7 +102,12 @@ end;
 
 function GetCustomSetupExitCode: Integer;
 begin
-  if PostInstallFailed then Result := 1 else Result := 0;
+  if MaintenanceUacCancelled then
+    Result := MaintenanceUacCancelledExitCode
+  else if PostInstallFailed then
+    Result := 1
+  else
+    Result := 0;
 end;
 
 // Only recognized codes from the safe --json envelope can reach the log/UI.
@@ -127,6 +140,7 @@ begin
   Enabled := False;
   CleanupFailed := False;
   NewRule := False;
+  MaintenanceUacCancelled := False;
   SelectedRoot := '';
   if not WizardSilent then
     if DirectoryConfirmed and WizardIsTaskSelected('confirmworkspace') and DirExists(WorkspacePage.Values[0]) then
@@ -139,14 +153,19 @@ begin
         NewRule := True;
         RegWriteDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, 1);
         Enabled := FirewallCheck('Validate');
+      end else if LastMaintenanceExitCode = MaintenanceUacCancelledExitCode then begin
+        MaintenanceUacCancelled := True;
       end;
     end;
   end;
   if (not Requested) and RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, Marker) and (Marker = 1) then begin
     if (not WizardSilent) and RunMaintenance('disable-lan') then
       RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName)
-    else
+    else begin
       CleanupFailed := True;
+      if LastMaintenanceExitCode = MaintenanceUacCancelledExitCode then
+        MaintenanceUacCancelled := True;
+    end;
   end;
   Parameters := 'up --installer-bootstrap --lan-enabled=';
   if Enabled then Parameters := Parameters + 'true' else Parameters := Parameters + 'false';
@@ -154,23 +173,33 @@ begin
   if RequireExistingConfig then Parameters := Parameters + ' --require-existing';
   if SelectedRoot <> '' then
     Parameters := Parameters + ' --scan-root ' + Quote(AddBackslash(SelectedRoot) + '.');
-  if not ExecAndCaptureOutput(InstallDirectory + '\agentd.exe', Parameters, ExpandConstant('{sys}'), SW_HIDE,
+  if not ExecAndCaptureOutput(AgentExecutable, Parameters, ExpandConstant('{sys}'), SW_HIDE,
     ewWaitUntilTerminated, Code, Output) then Code := -1;
   if (Code = 0) or FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) then
     RegDeleteValue(HKCU, ProductRegistryKey, PendingBootstrapName);
   if Code <> 0 then begin
-    if NewRule and RunMaintenance('disable-lan') then
-      RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
+    if NewRule then begin
+      if RunMaintenance('disable-lan') then
+        RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName)
+      else if LastMaintenanceExitCode = MaintenanceUacCancelledExitCode then
+        MaintenanceUacCancelled := True;
+    end;
     PostInstallFailed := True;
     Failure := BootstrapFailure(Output);
-    Log('Installer bootstrap: ' + Failure);
+    if MaintenanceUacCancelled then
+      Log('Installer bootstrap: ' + Failure + ' (lan_firewall_blocked: ERROR_CANCELLED)')
+    else
+      Log('Installer bootstrap: ' + Failure);
     if not WizardSilent then
       MsgBox('Setup could not verify the service or selected policy (' + Failure + '). Keep your configuration and check Mimi Remote diagnostics.', mbError, MB_OK);
     Exit;
   end;
   if (Requested and (not Enabled)) or CleanupFailed then begin
     PostInstallFailed := True;
-    Log('lan_firewall_blocked: LAN disabled; review the Private network and installer-owned rule.');
+    if MaintenanceUacCancelled then
+      Log('lan_firewall_blocked: ERROR_CANCELLED; LAN disabled.')
+    else
+      Log('lan_firewall_blocked: LAN disabled; review the Private network and installer-owned rule.');
     if not WizardSilent then
       MsgBox('The core service is ready. LAN is off. Confirm the workspace and check the Private network and firewall, then retry from signed Setup.', mbInformation, MB_OK);
   end;

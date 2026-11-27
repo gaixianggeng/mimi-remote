@@ -39,8 +39,20 @@ func commandExit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "错误：%v\n", err)
 		appendManagedServiceFailure(args, err)
 	}
+	var coded *exitCodeError
+	if errors.As(err, &coded) && coded.exitCode != 0 {
+		return coded.exitCode
+	}
 	return 1
 }
+
+type exitCodeError struct {
+	exitCode int
+	err      error
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+func (e *exitCodeError) Unwrap() error { return e.err }
 
 func onboardingJSONCommand(args []string) bool {
 	if len(args) < 3 || !commandBool(args[2:], "json") {

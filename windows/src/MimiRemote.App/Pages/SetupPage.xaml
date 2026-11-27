@@ -28,6 +28,26 @@
             <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
                 Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
 
+            <Border Style="{StaticResource NativeCardStyle}" Visibility="{x:Bind ViewModel.IsPendingWorkspaceConfirmation, Mode=OneWay}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="使用受信维护向导确认代码目录" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="已安装的正式签名版可通过受信任的安装维护向导确认代码目录并刷新服务状态。" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Content="通过安装维护向导确认目录…" Command="{x:Bind ViewModel.ConfirmWorkspaceViaMaintenanceCommand}"/>
+                        <Button Content="下载正式安装包" Command="{x:Bind ViewModel.OpenMaintenanceDownloadCommand}"
+                            Visibility="{x:Bind ViewModel.HasMaintenanceDownloadFallback, Mode=OneWay}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource NativeCardStyle}" Visibility="{x:Bind ViewModel.IsMissingBroker, Mode=OneWay}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="未找到核心代理（agentd.exe）" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="本机缺少已安装的 Mimi Remote 核心代理，请前往桌面端正式下载页安装已签名安装包，然后重新打开此窗口。" TextWrapping="Wrap"/>
+                    <Button Content="下载正式安装包" Command="{x:Bind ViewModel.OpenMaintenanceDownloadCommand}"/>
+                </StackPanel>
+            </Border>
+
             <Border Style="{StaticResource NativeCardStyle}" Visibility="{x:Bind ViewModel.Wizard.IsRecoveryVisible, Mode=OneWay}">
                 <StackPanel Spacing="8">
                     <TextBlock Text="配置恢复说明（只读）" Style="{StaticResource BodyStrongTextBlockStyle}"/>
@@ -137,6 +157,8 @@
                         IsEnabled="{x:Bind ViewModel.Wizard.CanIssuePairingQr, Mode=OneWay}"/>
                     <Button Content="复制配对链接" Command="{x:Bind ViewModel.CopyLinkCommand}"
                         IsEnabled="{x:Bind ViewModel.Wizard.CanCopyPairingLink, Mode=OneWay}"/>
+                    <Button Content="下载正式安装包" Command="{x:Bind ViewModel.OpenMaintenanceDownloadCommand}"
+                        Visibility="{x:Bind ViewModel.HasMaintenanceDownloadFallback, Mode=OneWay}"/>
                 </StackPanel>
                 <Image x:Name="Step4QrImage" Width="260" Height="260" HorizontalAlignment="Center"
                     Visibility="{x:Bind ViewModel.Wizard.HasIssuedTicket, Mode=OneWay}" AutomationProperties.Name="短期配对二维码"/>

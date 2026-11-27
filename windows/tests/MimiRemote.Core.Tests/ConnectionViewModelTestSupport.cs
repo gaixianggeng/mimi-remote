@@ -34,9 +34,16 @@ namespace MimiRemote.App
     {
         private OnboardingGateState gateState;
 
+        public ClientContext()
+        {
+            Agent = new PollingTestAgent(MaintenanceRejectionLatch);
+        }
+
         public bool Preview { get; set; }
         public bool HasAgent { get; set; } = true;
-        public PollingTestAgent Agent { get; } = new();
+        public MaintenanceRejectionLatch MaintenanceRejectionLatch { get; } = new();
+        public bool IsMaintenanceIdentityRejected => MaintenanceRejectionLatch.IsRejected;
+        public PollingTestAgent Agent { get; }
         public HostStatus Status { get; set; } = new() { ServiceOk = false };
         public OnboardingPreflightReport? LastPreflight { get; private set; }
         public OnboardingResolvedDiagnostic? LastPreflightError { get; private set; }
@@ -54,7 +61,39 @@ namespace MimiRemote.App
         public Action<string> OpenUrl { get; set; } = _ => { };
         public Action<string> OpenSettings { get; set; } = _ => { };
         public Func<string, bool> CopyToClipboard { get; set; } = _ => true;
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
+        public Func<MaintenancePurpose, CancellationToken, Task<MaintenanceRunResult>>? RunInstallerMaintenance { get; set; }
+
+        public async Task<MaintenanceRunResult> RunMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token = default)
+        {
+            if (RunInstallerMaintenance is not { } run)
+            {
+                var unavailable = MaintenanceRunResult.Failure(MaintenanceFailureKind.UnsignedBuild);
+                RecordMaintenanceResult(unavailable);
+                return unavailable;
+            }
+            var result = await run(purpose, token);
+            RecordMaintenanceResult(result);
+            return result;
+        }
+
+        public void RecordMaintenanceResult(MaintenanceRunResult result)
+        {
+            ArgumentNullException.ThrowIfNull(result);
+            var rejected = MaintenanceRunResult.IsTerminalImageRejection(result.FailureKind);
+            MaintenanceRejectionLatch.ApplyResult(result);
+            if (rejected || !result.BrokerVerified)
+            {
+                return;
+            }
+            if (result.PostRunStatus is { } refreshed)
+            {
+                Status = refreshed;
+            }
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                UpdateGateFromPreflight(verifiedPreflight);
+            }
+        }
 
         public void SetVerifiedCapability(string? capability)
         {
@@ -76,11 +115,17 @@ namespace MimiRemote.App
         public async Task<OnboardingPreflightReport> ReadPreflightAsync(OnboardingPreflightOptions options,
             Action<OnboardingCheck>? onProgress, CancellationToken cancellationToken)
         {
+            MaintenanceRejectionLatch.ThrowIfRejected();
             try
             {
                 var report = await Agent.PreflightAsync(options, onProgress, "windows", cancellationToken);
+                MaintenanceRejectionLatch.ThrowIfRejected();
                 UpdateGateFromPreflight(report);
                 return report;
+            }
+            catch (MaintenanceFailureException)
+            {
+                throw;
             }
             catch (InvalidOperationException error)
             {
@@ -89,25 +134,33 @@ namespace MimiRemote.App
             }
         }
 
-        public Task<HostStatus> ReadStatusAsync(bool runtime = false, bool force = false, CancellationToken token = default) =>
-            Task.FromResult(Status);
+        public Task<HostStatus> ReadStatusAsync(bool runtime = false, bool force = false, CancellationToken token = default)
+        {
+            MaintenanceRejectionLatch.ThrowIfRejected();
+            return Task.FromResult(Status);
+        }
 
         public async Task ChangeAsync(Func<Task> action)
         {
             await action();
             StatusChanged?.Invoke(this, EventArgs.Empty);
         }
+
+        public void RaiseStatusChanged() => StatusChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public sealed class PollingTestAgent : IAgentCommand
+    public sealed class PollingTestAgent(MaintenanceRejectionLatch? rejectionLatch = null) : IAgentCommand
     {
         public List<string[]> Calls { get; } = [];
         public Func<CancellationToken, Task<TailcatStatus>> ReadTailcat { get; set; } = _ => Task.FromResult(new TailcatStatus());
         public Func<string[], CancellationToken, Task<string>>? RunHandler { get; set; }
         public Func<OnboardingPreflightOptions, Action<OnboardingCheck>?, CancellationToken, Task<OnboardingPreflightReport>>? PreflightHandler { get; set; }
 
-        public async Task<T> ReadAsync<T>(string[] arguments, CancellationToken token = default) =>
-            (T)(object)await ReadTailcat(token);
+        public async Task<T> ReadAsync<T>(string[] arguments, CancellationToken token = default)
+        {
+            rejectionLatch?.ThrowIfRejected();
+            return (T)(object)await ReadTailcat(token);
+        }
 
         public async Task<OnboardingPreflightReport> PreflightAsync(
             OnboardingPreflightOptions options,
@@ -115,6 +168,7 @@ namespace MimiRemote.App
             string platform = "windows",
             CancellationToken cancellationToken = default)
         {
+            rejectionLatch?.ThrowIfRejected();
             Calls.Add(AgentClient.PreflightArguments(options));
             if (PreflightHandler is not null)
             {
@@ -172,12 +226,14 @@ namespace MimiRemote.App
 
         public Task<string> RunAsync(string[] arguments, bool allowFailure, CancellationToken cancellationToken = default)
         {
+            rejectionLatch?.ThrowIfRejected();
             Calls.Add(arguments);
             return RunHandler is not null ? RunHandler(arguments, cancellationToken) : Task.FromResult("{}");
         }
 
         public Task<string> RunWithInputAsync(string[] arguments, string input, CancellationToken cancellationToken = default)
         {
+            rejectionLatch?.ThrowIfRejected();
             Calls.Add(arguments);
             return RunHandler is not null ? RunHandler(arguments, cancellationToken) : Task.FromResult("{}");
         }

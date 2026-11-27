@@ -96,6 +96,7 @@ const (
 	panelTailcatToggle
 	panelPairNetwork
 	panelFirstSetup
+	panelLanMaintenance
 )
 
 const (
@@ -237,15 +238,16 @@ type controlPanel struct {
 	tailcatValue    uintptr
 	footerLabel     uintptr
 
-	firstSetup uintptr
-	refresh    uintptr
-	start      uintptr
-	restart    uintptr
-	stop       uintptr
-	pair       uintptr
-	doctor     uintptr
-	doctorFix  uintptr
-	logs       uintptr
+	firstSetup     uintptr
+	lanMaintenance uintptr
+	refresh        uintptr
+	start          uintptr
+	restart        uintptr
+	stop           uintptr
+	pair           uintptr
+	doctor         uintptr
+	doctorFix      uintptr
+	logs           uintptr
 
 	tailcatToggle      uintptr
 	tailcatToggleLabel string
@@ -279,44 +281,50 @@ type controlPanel struct {
 	pairingTailcat bool
 	pairingNetwork string
 
-	firstSetupVisible   bool
-	statusColor         uint32
-	statusBackground    uint32
-	codexStatusColor    uint32
-	claudeStatusColor   uint32
-	agyStatusColor      uint32
-	deepseekStatusColor uint32
-	tailcatStatusColor  uint32
+	firstSetupVisible     bool
+	firstSetupLabel       string
+	lanMaintenanceVisible bool
+	lanMaintenanceLabel   string
+	statusColor           uint32
+	statusBackground      uint32
+	codexStatusColor      uint32
+	claudeStatusColor     uint32
+	agyStatusColor        uint32
+	deepseekStatusColor   uint32
+	tailcatStatusColor    uint32
 }
 
 type controlPanelPresentation struct {
-	StateTitle        string
-	StateBadge        string
-	StateSummary      string
-	EndpointValue     string
-	VersionValue      string
-	NetworkValue      string
-	ProjectsValue     string
-	CodexValue        string
-	ClaudeValue       string
-	AgyValue          string
-	DeepSeekValue     string
-	StatusColor       uint32
-	StatusBackground  uint32
-	CodexColor        uint32
-	ClaudeColor       uint32
-	AgyColor          uint32
-	DeepSeekColor     uint32
-	FirstSetupVisible bool
-	FirstSetupEnabled bool
-	RefreshEnabled    bool
-	StartEnabled      bool
-	RestartEnabled    bool
-	StopEnabled       bool
-	PairEnabled       bool
-	DoctorEnabled     bool
-	FixEnabled        bool
-	LogsEnabled       bool
+	StateTitle            string
+	StateBadge            string
+	StateSummary          string
+	EndpointValue         string
+	VersionValue          string
+	NetworkValue          string
+	ProjectsValue         string
+	CodexValue            string
+	ClaudeValue           string
+	AgyValue              string
+	DeepSeekValue         string
+	StatusColor           uint32
+	StatusBackground      uint32
+	CodexColor            uint32
+	ClaudeColor           uint32
+	AgyColor              uint32
+	DeepSeekColor         uint32
+	FirstSetupVisible     bool
+	FirstSetupEnabled     bool
+	LanMaintenanceVisible bool
+	LanMaintenanceEnabled bool
+	LanMaintenanceLabel   string
+	RefreshEnabled        bool
+	StartEnabled          bool
+	RestartEnabled        bool
+	StopEnabled           bool
+	PairEnabled           bool
+	DoctorEnabled         bool
+	FixEnabled            bool
+	LogsEnabled           bool
 }
 
 func (a *trayApplication) showControlPanel() {
@@ -540,6 +548,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.statusDotLabel = p.createControl(instance, "STATIC", "●", wsChild|wsVisible|ssCenter|ssNoPrefix, 31, 94, 24, 28, 0)
 	p.statusLabel = p.createControl(instance, "STATIC", "正在检查服务", wsChild|wsVisible|ssLeft|ssNoPrefix, 58, 94, 326, 28, 0)
 	p.firstSetup = p.createControl(instance, "BUTTON", "完成首次设置…", wsChild|wsTabStop|bsOwnerDraw, 394, 90, 156, 34, panelFirstSetup)
+	p.lanMaintenance = p.createControl(instance, "BUTTON", "开启专用局域网访问…", wsChild|wsTabStop|bsOwnerDraw, 394, 90, 156, 34, panelLanMaintenance)
 	p.summaryLabel = p.createControl(instance, "STATIC", "正在读取本机服务状态…", wsChild|wsVisible|ssLeft|ssNoPrefix, 58, 124, 480, 22, 0)
 
 	p.endpointLabel = p.createControl(instance, "STATIC", "连接地址", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 158, 76, 18, 0)
@@ -584,7 +593,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.pairNetwork = p.createControl(instance, "BUTTON", "连接方式", wsChild|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelPairNetwork)
 
 	controls := []uintptr{
-		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.firstSetup, p.summaryLabel,
+		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.firstSetup, p.lanMaintenance, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
@@ -622,7 +631,7 @@ func (p *controlPanel) applyFonts() {
 		setControlPanelFont(control, p.normalFont)
 	}
 	for _, control := range []uintptr{
-		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.firstSetup, p.summaryLabel,
+		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.firstSetup, p.lanMaintenance, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
@@ -650,7 +659,7 @@ func (p *controlPanel) applyFonts() {
 	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.codexLabel, p.claudeLabel, p.agyLabel, p.deepseekLabel, p.tailcatLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
 		setControlPanelFont(control, p.smallFont)
 	}
-	for _, control := range []uintptr{p.firstSetup, p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.tailcatToggle, p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork} {
+	for _, control := range []uintptr{p.firstSetup, p.lanMaintenance, p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.tailcatToggle, p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork} {
 		setControlPanelFont(control, p.buttonFont)
 	}
 }
@@ -669,6 +678,7 @@ func (p *controlPanel) layoutControls() {
 		{p.statusDotLabel, 31, 94, 24, 28},
 		{p.statusLabel, 58, 94, 326, 28},
 		{p.firstSetup, 394, 90, 156, 34},
+		{p.lanMaintenance, 394, 90, 156, 34},
 		{p.summaryLabel, 58, 124, 480, 22},
 		{p.endpointLabel, 48, 158, 76, 18},
 		{p.endpointValue, 134, 158, 144, 18},
@@ -800,18 +810,27 @@ func (p *controlPanel) syncFromApplication() {
 	pairingBusy := p.app.pairingBusy
 	tailcat, hasTailcat, tailcatErr := p.app.tailcat, p.app.hasTailcat, p.app.tailcatErr
 	p.app.mu.RUnlock()
-	presentation := makeControlPanelPresentationWithSetup(
+	identityRejected := p.app.isMaintenanceIdentityRejected()
+	brokerBlocked := p.app.controller == nil || identityRejected
+	presentation := makeControlPanelPresentationWithMaintenance(
 		status,
 		statusErr,
 		preflightPending,
+		identityRejected,
 		busy,
 		pairingBusy,
 	)
 	p.firstSetupVisible = presentation.FirstSetupVisible
-	if p.pairingView && (statusErr != nil || !status.ServiceOK || p.firstSetupVisible) {
+	p.lanMaintenanceVisible = presentation.LanMaintenanceVisible
+	p.lanMaintenanceLabel = presentation.LanMaintenanceLabel
+	if p.pairingView && (brokerBlocked || statusErr != nil || !status.ServiceOK || p.firstSetupVisible) {
 		p.showDashboardView()
 	}
-	p.syncTailcatRow(makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy))
+	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
+	if brokerBlocked {
+		tailcatPresentation.ToggleEnabled = false
+	}
+	p.syncTailcatRow(tailcatPresentation)
 	if p.pairingView {
 		setControlPanelEnabled(p.pairNetwork, p.pairNetworkEnabled())
 		procPanelInvalidateRect.Call(p.pairNetwork, 0, 1)
@@ -821,8 +840,17 @@ func (p *controlPanel) syncFromApplication() {
 		p.statusBackground = presentation.StatusBackground
 		p.updateStatusBrush(presentation.StatusBackground)
 		setControlPanelText(p.badgeLabel, presentation.StateBadge)
+		firstSetupLabel := "完成首次设置…"
+		if p.app.controller == nil || identityRejected {
+			firstSetupLabel = "下载正式安装包…"
+		}
+		p.firstSetupLabel = firstSetupLabel
+		setControlPanelText(p.firstSetup, firstSetupLabel)
 		setControlPanelVisible([]uintptr{p.firstSetup}, presentation.FirstSetupVisible)
 		setControlPanelEnabled(p.firstSetup, presentation.FirstSetupEnabled)
+		setControlPanelText(p.lanMaintenance, presentation.LanMaintenanceLabel)
+		setControlPanelVisible([]uintptr{p.lanMaintenance}, presentation.LanMaintenanceVisible)
+		setControlPanelEnabled(p.lanMaintenance, presentation.LanMaintenanceEnabled)
 	}
 	setControlPanelText(p.statusLabel, presentation.StateTitle)
 	setControlPanelText(p.summaryLabel, presentation.StateSummary)
@@ -918,6 +946,7 @@ func (p *controlPanel) showDashboardView() {
 	setControlPanelText(p.subtitleLabel, "Windows 控制面板")
 	setControlPanelVisible(p.dashboardControls, true)
 	setControlPanelVisible([]uintptr{p.firstSetup}, p.firstSetupVisible)
+	setControlPanelVisible([]uintptr{p.lanMaintenance}, p.lanMaintenanceVisible)
 	setControlPanelVisible(p.pairingControls, false)
 	procPanelInvalidateRect.Call(p.window, 0, 1)
 }
@@ -928,6 +957,9 @@ func (p *controlPanel) showPairingView(preferTailcat bool) {
 	setControlPanelVisible(p.relayControls, false)
 	setControlPanelVisible([]uintptr{p.relayPicker}, true)
 	if p == nil || p.window == 0 {
+		return
+	}
+	if p.app.blockIfBrokerUnavailable() {
 		return
 	}
 	if p.app.firstSetupRequired() {
@@ -948,7 +980,7 @@ func (p *controlPanel) showPairingView(preferTailcat bool) {
 	p.pairingView = true
 	setControlPanelText(p.subtitleLabel, "安全连接新设备")
 	setControlPanelVisible(p.dashboardControls, false)
-	setControlPanelVisible([]uintptr{p.firstSetup}, false)
+	setControlPanelVisible([]uintptr{p.firstSetup, p.lanMaintenance}, false)
 	setControlPanelVisible(p.pairingControls, true)
 	p.syncPairingControls()
 	procPanelSetFocus.Call(p.pairRefresh)
@@ -959,8 +991,11 @@ func (p *controlPanel) refreshPairing() {
 	if p == nil || p.window == 0 {
 		return
 	}
+	if p.app.blockIfBrokerUnavailable() {
+		return
+	}
 	p.app.mu.Lock()
-	if p.app.pairingBusy || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
+	if p.app.pairingBusy || p.app.isMaintenanceIdentityRejected() || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
 		p.app.mu.Unlock()
 		return
 	}
@@ -979,6 +1014,9 @@ func (p *controlPanel) refreshPairing() {
 	p.pairingErr = nil
 	p.syncPairingControls()
 	window := p.window
+	if p.app.controller == nil {
+		return
+	}
 	pair := p.app.controller.pairing
 	if p.pairingTailcat {
 		pair = p.app.controller.tailcatPairing
@@ -1130,36 +1168,53 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 }
 
 func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, preflightPending bool, busy bool, pairingBusy bool) controlPanelPresentation {
+	return makeControlPanelPresentationWithMaintenance(status, statusErr, preflightPending, false, busy, pairingBusy)
+}
+
+func makeControlPanelPresentationWithMaintenance(status agentStatus, statusErr error, preflightPending bool, identityRejected bool, busy bool, pairingBusy bool) controlPanelPresentation {
 	neutralRuntimeColor := rgbColor(101, 101, 110)
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
+	var maintErr *maintenanceError
+	brokerMissing := errors.As(statusErr, &maintErr) && maintErr.Kind == maintenanceFailureImageMissing
+	rejected := identityRejected || (errors.As(statusErr, &maintErr) && isMaintenanceIdentityRejection(maintErr.Kind) && maintErr.Kind != maintenanceFailureElevatedSession)
+	brokerBlocked := brokerMissing || rejected
+	firstSetupVisible := firstSetupNeeded || brokerBlocked
+	lanMaintenanceVisible := !firstSetupVisible && canRunLanMaintenance(status, statusErr, preflightPending, brokerMissing, rejected)
+	lanMaintenanceLabel := ""
+	if lanMaintenanceVisible {
+		lanMaintenanceLabel = lanMaintenanceMenuLabel(status)
+	}
 	presentation := controlPanelPresentation{
-		StateTitle:        "正在检查服务",
-		StateBadge:        "正在检查",
-		StateSummary:      "正在读取本机服务状态…",
-		EndpointValue:     "—",
-		VersionValue:      "—",
-		NetworkValue:      "—",
-		ProjectsValue:     "—",
-		CodexValue:        "正在检查",
-		ClaudeValue:       "正在检查",
-		AgyValue:          "正在检查",
-		DeepSeekValue:     "正在检查",
-		StatusColor:       rgbColor(91, 96, 108),
-		StatusBackground:  rgbColor(239, 240, 243),
-		CodexColor:        neutralRuntimeColor,
-		ClaudeColor:       neutralRuntimeColor,
-		AgyColor:          neutralRuntimeColor,
-		DeepSeekColor:     neutralRuntimeColor,
-		FirstSetupVisible: firstSetupNeeded,
-		FirstSetupEnabled: firstSetupNeeded && !busy,
-		RefreshEnabled:    !busy,
-		StartEnabled:      !busy && !status.ProcessOK,
-		RestartEnabled:    !busy && status.ProcessOK,
-		StopEnabled:       !busy && status.ProcessOK,
-		PairEnabled:       !busy && statusErr == nil && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
-		DoctorEnabled:     !busy,
-		FixEnabled:        !busy,
-		LogsEnabled:       !busy,
+		StateTitle:            "正在检查服务",
+		StateBadge:            "正在检查",
+		StateSummary:          "正在读取本机服务状态…",
+		EndpointValue:         "—",
+		VersionValue:          "—",
+		NetworkValue:          "—",
+		ProjectsValue:         "—",
+		CodexValue:            "正在检查",
+		ClaudeValue:           "正在检查",
+		AgyValue:              "正在检查",
+		DeepSeekValue:         "正在检查",
+		StatusColor:           rgbColor(91, 96, 108),
+		StatusBackground:      rgbColor(239, 240, 243),
+		CodexColor:            neutralRuntimeColor,
+		ClaudeColor:           neutralRuntimeColor,
+		AgyColor:              neutralRuntimeColor,
+		DeepSeekColor:         neutralRuntimeColor,
+		FirstSetupVisible:     firstSetupVisible,
+		FirstSetupEnabled:     firstSetupVisible && !busy,
+		LanMaintenanceVisible: lanMaintenanceVisible,
+		LanMaintenanceEnabled: lanMaintenanceVisible && !busy,
+		LanMaintenanceLabel:   lanMaintenanceLabel,
+		RefreshEnabled:        !busy && !brokerBlocked,
+		StartEnabled:          !busy && !brokerBlocked && !status.ProcessOK,
+		RestartEnabled:        !busy && !brokerBlocked && status.ProcessOK,
+		StopEnabled:           !busy && !brokerBlocked && status.ProcessOK,
+		PairEnabled:           !busy && !brokerBlocked && statusErr == nil && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
+		DoctorEnabled:         !busy && !brokerBlocked,
+		FixEnabled:            !busy && !brokerBlocked,
+		LogsEnabled:           !busy,
 	}
 	if statusErr != nil && status.Version == "" {
 		presentation.StateTitle = "无法读取服务状态"
@@ -1179,7 +1234,7 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		if firstSetupNeeded {
 			presentation.StateTitle = "待完成首次设置"
 			presentation.StateBadge = "待设置"
-			presentation.StateSummary = "点击“完成首次设置…”查看安装程序的修改步骤。"
+			presentation.StateSummary = "点击“完成首次设置…”启动维护向导，确认代码目录后即可配对。"
 			presentation.StatusColor = rgbColor(154, 91, 0)
 			presentation.StatusBackground = rgbColor(255, 245, 226)
 		}
@@ -1205,7 +1260,7 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		case firstSetupNeeded:
 			presentation.StateTitle = "待完成首次设置"
 			presentation.StateBadge = "待设置"
-			presentation.StateSummary = "点击“完成首次设置…”查看安装程序的修改步骤。"
+			presentation.StateSummary = "点击“完成首次设置…”启动维护向导，确认代码目录后即可配对。"
 			presentation.StatusColor = rgbColor(154, 91, 0)
 			presentation.StatusBackground = rgbColor(255, 245, 226)
 		case status.lifecycleTitle() == "运行正常":
@@ -1230,6 +1285,13 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		if statusErr != nil {
 			presentation.StateSummary = "刷新失败，当前显示上次状态：" + compactControlPanelError(statusErr)
 		}
+	}
+	if rejected {
+		presentation.StateTitle = "维护身份校验失败"
+		presentation.StateBadge = "需重新安装"
+		presentation.StateSummary = compactControlPanelError(newMaintenanceError(maintenanceFailureIdentityMismatch))
+		presentation.StatusColor = rgbColor(184, 42, 50)
+		presentation.StatusBackground = rgbColor(255, 239, 240)
 	}
 	if busy {
 		presentation.StateBadge = "处理中"
@@ -1677,6 +1739,8 @@ func panelActionLabel(command uint32) string {
 		return "配对设备…"
 	case panelFirstSetup:
 		return "完成首次设置…"
+	case panelLanMaintenance:
+		return "开启专用局域网访问…"
 	case panelDoctor:
 		return "运行诊断"
 	case panelDoctorFix:
@@ -1727,6 +1791,9 @@ func (p *controlPanel) drawButtonIcon(dc uintptr, command uint32, x int32, y int
 		drawPanelLineWithCurrentPen(dc, x+s(7), y+s(13), x+s(10), y+s(13))
 	case panelFirstSetup:
 		drawPanelPolyline(dc, []point{{X: x + s(2), Y: y + s(9)}, {X: x + s(6), Y: y + s(13)}, {X: x + s(14), Y: y + s(3)}})
+	case panelLanMaintenance:
+		procPanelRoundRect.Call(dc, uintptr(x+s(2)), uintptr(y+s(2)), uintptr(x+s(14)), uintptr(y+s(14)), uintptr(s(4)), uintptr(s(4)))
+		drawPanelLineWithCurrentPen(dc, x+s(5), y+s(8), x+s(11), y+s(8))
 	case panelDoctor:
 		drawPanelPolyline(dc, []point{{X: x, Y: y + s(9)}, {X: x + s(4), Y: y + s(9)}, {X: x + s(6), Y: y + s(3)}, {X: x + s(9), Y: y + s(14)}, {X: x + s(11), Y: y + s(9)}, {X: x + s(16), Y: y + s(9)}})
 	case panelDoctorFix:
@@ -1849,7 +1916,9 @@ func (p *controlPanel) dispatch(command uint32) {
 		p.openSelfHostedRelayGuide()
 		p.syncFromApplication()
 	case panelFirstSetup:
-		p.app.showFirstSetupInstructions(showMessage)
+		p.app.runFirstSetupMaintenance()
+	case panelLanMaintenance:
+		p.app.runLanFirewallMaintenance()
 	case panelRefresh:
 		p.app.refreshStatusInteractive()
 	case panelStart:
@@ -1865,7 +1934,7 @@ func (p *controlPanel) dispatch(command uint32) {
 	case panelDoctorFix:
 		p.app.runDoctor(true)
 	case panelLogs:
-		if err := p.app.controller.openLogsTerminal(); err != nil {
+		if err := openManagedLogs(); err != nil {
 			p.app.showError(err)
 		}
 	case panelPairBack:

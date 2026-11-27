@@ -76,6 +76,11 @@ begin
   Result := ExpandConstant('{app}');
 end;
 
+function AgentExecutable: String;
+begin
+  Result := InstallDirectory + '\agentd.exe';
+end;
+
 #include "installer-common.iss"
 
 function InitializeSetup: Boolean;

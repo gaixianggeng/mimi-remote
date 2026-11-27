@@ -77,6 +77,9 @@ func tailcatPairingArguments() []string {
 }
 
 func (c *agentController) runCommand(ctx context.Context, args ...string) ([]byte, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return nil, err
+	}
 	if c.commandRunner != nil {
 		return c.commandRunner(ctx, args...)
 	}
@@ -173,7 +176,7 @@ func tailcatToggleConfirmation(enable bool) (string, string, uint32) {
 // refreshTailcat 只在 agentd 进程可用时读取 Tailcat；服务停止时清空旧状态，
 // 避免停机后仍显示“运行中”。
 func (a *trayApplication) refreshTailcat(processOK bool) {
-	if !processOK {
+	if !processOK || a.controller == nil || a.isMaintenanceIdentityRejected() {
 		a.mu.Lock()
 		a.tailcat, a.hasTailcat, a.tailcatErr = tailcatTrayStatus{}, false, nil
 		a.mu.Unlock()
@@ -186,6 +189,9 @@ func (a *trayApplication) refreshTailcat(processOK bool) {
 }
 
 func (a *trayApplication) storeTailcat(status tailcatTrayStatus, err error) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.tailcatErr = err
@@ -201,6 +207,9 @@ func (a *trayApplication) tailcatSnapshot() (tailcatTrayStatus, bool, error) {
 }
 
 func (a *trayApplication) toggleTailcat() {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	status, has, err := a.tailcatSnapshot()
 	if !has || err != nil {
 		a.showError(errors.New("Tailcat 状态暂不可用，请刷新状态后重试"))
@@ -212,6 +221,9 @@ func (a *trayApplication) toggleTailcat() {
 // confirmAndSetTailcat 在用户确认后开启或关闭 Tailcat。notifyWindow 非零时，开启
 // 成功后向该窗口投递 wmPanelTailcatEnabled，让配对视图切到 Tailcat 二维码。
 func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr) {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	title, text, flags := tailcatToggleConfirmation(enable)
 	if showMessage(a.window, title, text, flags) != idYes || !a.beginBusy() {
 		return
@@ -222,6 +234,9 @@ func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr
 	}
 	go func() {
 		defer a.endBusy()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		ctx, cancel := actionContext()
 		status, err := a.controller.setTailcat(ctx, enable)
 		cancel()
@@ -249,10 +264,17 @@ func (a *trayApplication) showRelayServiceInfo() {
 }
 
 func (a *trayApplication) setTailcatForPairing(window uintptr) {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
 	go func() {
+		if a.isMaintenanceIdentityRejected() {
+			a.endBusy()
+			return
+		}
 		ctx, cancel := actionContext()
 		status, err := a.controller.setTailcat(ctx, true)
 		cancel()
@@ -270,6 +292,9 @@ func (a *trayApplication) setTailcatForPairing(window uintptr) {
 }
 
 func (a *trayApplication) requestTailcatPairing() {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if a.firstSetupRequired() {
 		a.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))
 		return

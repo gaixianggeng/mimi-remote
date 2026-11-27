@@ -7,7 +7,7 @@ public interface IPairingSessionBackend
     Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken);
     Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
-    Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; }
+    Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; }
     Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken);
     Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken);
     Task<bool> ConfirmAsync(string title, string message);
@@ -40,6 +40,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     private DateTimeOffset? issuedExpiresAt;
     private string? issuedNetwork;
     private ulong generation;
+    private ulong maintenanceSessionGeneration;
+    private PairingTicketReceipt? pendingVerifiedTicket;
+    private string? pendingVerifiedTicketNetwork;
     private CancellationTokenSource? issueCts;
 
     private TailcatStatus? tailcatStatus;
@@ -50,8 +53,24 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     private string relayNotice = "";
     private bool relayNoticeOpen;
     private bool relayFailed;
+    private string? fallbackDownloadUrl;
+    private string? preservedMaintenanceNote;
     private bool active;
     private bool disposed;
+
+    public string? FallbackDownloadUrl
+    {
+        get => fallbackDownloadUrl;
+        private set
+        {
+            if (SetProperty(ref fallbackDownloadUrl, value))
+            {
+                OnPropertyChanged(nameof(HasFallbackDownload));
+            }
+        }
+    }
+
+    public bool HasFallbackDownload => !string.IsNullOrWhiteSpace(FallbackDownloadUrl);
 
     public event EventHandler<string?>? TicketChanged;
 
@@ -199,7 +218,17 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             Clear();
         }
+        else
+        {
+            TryActivatePendingVerifiedTicket();
+        }
         NotifyActionState();
+    }
+
+    public void InvalidateForNavigation()
+    {
+        ClearPendingVerifiedTicket();
+        Clear();
     }
 
     /// <summary>Selecting a transport clears any active ticket and NEVER writes or enables anything.</summary>
@@ -215,6 +244,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         SelectedTransport = transportId;
+        preservedMaintenanceNote = null;
+        FallbackDownloadUrl = null;
+        ClearPendingVerifiedTicket();
         Clear();
         UpdateIdleNote();
     }
@@ -234,8 +266,14 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 return;
             }
             ApplyReport(latest);
+            if (SelectedTransportItem is { Id: "lan", Ready: true })
+            {
+                preservedMaintenanceNote = null;
+                FallbackDownloadUrl = null;
+            }
             if (!RouteReady || IsExpired)
             {
+                ClearPendingVerifiedTicket();
                 Clear();
             }
             UpdateIdleNote();
@@ -255,6 +293,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             Transports = [];
             BlockingRows = [];
             OnPropertyChanged(nameof(HasBlockingRows));
+            ClearPendingVerifiedTicket();
             Clear();
             Note = error is OnboardingCliException { Diagnostic: { } diag }
                 ? diag.Message
@@ -278,7 +317,12 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             return;
         }
+        hasUserSelectedTransport = true;
+        ClearPendingVerifiedTicket();
         Clear();
+        preservedMaintenanceNote = null;
+        FallbackDownloadUrl = null;
+        var maintenanceSelection = maintenanceSessionGeneration;
         var selection = generation;
         if (string.Equals(target, "lan", StringComparison.Ordinal))
         {
@@ -295,35 +339,65 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                     return;
                 }
                 IsEnablingTransport = true;
+                MaintenanceRunResult maintenanceResult;
                 try
                 {
-                    var ok = await repair(cancellationToken);
-                    if (!ok)
-                    {
-                        Note = "未完成专用网络防火墙规则配置，同一局域网保持关闭。你仍可使用其他连接方式。";
-                        return;
-                    }
+                    maintenanceResult = await repair(cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                     return;
                 }
-                catch (Exception error) when (error is OnboardingCliException or InvalidOperationException or InvalidDataException
+                catch (Exception error) when (error is OnboardingCliException or MaintenanceFailureException or InvalidOperationException or InvalidDataException
                     or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
                 {
-                    Note = error is OnboardingCliException { Diagnostic: { } diag }
-                        ? diag.Message
-                        : "防火墙规则配置未完成，同一局域网保持关闭。";
+                    var fallback = MaintenanceRunResult.Failure(error is MaintenanceFailureException maint ? maint.FailureKind : MaintenanceFailureKind.LaunchFailed);
+                    Note = error is OnboardingCliException { Diagnostic: { } diag } ? diag.Message : fallback.Message;
+                    preservedMaintenanceNote = Note;
+                    FallbackDownloadUrl = error is OnboardingCliException ? null : fallback.DownloadUrl;
                     return;
                 }
                 finally
                 {
                     IsEnablingTransport = false;
                 }
-                await RefreshAsync(cancellationToken);
-                if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
+                if (!maintenanceResult.Succeeded)
                 {
-                    await GenerateAsync(cancellationToken);
+                    Note = maintenanceResult.Message;
+                    preservedMaintenanceNote = maintenanceResult.Message;
+                    FallbackDownloadUrl = maintenanceResult.FallbackToDownload ? maintenanceResult.DownloadUrl : null;
+                    if (maintenanceResult.BrokerVerified && maintenanceResult.PostRunPreflight is { } verifiedFailureReport)
+                    {
+                        ApplyReport(verifiedFailureReport);
+                        UpdateIdleNote();
+                    }
+                    return;
+                }
+                if (maintenanceResult.PostRunPreflight is not { } verifiedReport)
+                {
+                    var missingMessage = MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message;
+                    Note = missingMessage;
+                    preservedMaintenanceNote = missingMessage;
+                    FallbackDownloadUrl = WindowsMaintenanceClient.OfficialDownloadUrl;
+                    return;
+                }
+                preservedMaintenanceNote = null;
+                FallbackDownloadUrl = null;
+                ApplyReport(verifiedReport);
+                UpdateIdleNote();
+                if (maintenanceSelection == maintenanceSessionGeneration
+                    && string.Equals(SelectedTransport, target, StringComparison.Ordinal)
+                    && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
+                {
+                    if (active && CanGenerate)
+                    {
+                        ApplyVerifiedPairingTicket(target, verifiedTicket);
+                    }
+                    else if (RouteReady && IsVerifiedTicketValid(target, verifiedTicket, out _))
+                    {
+                        pendingVerifiedTicket = verifiedTicket;
+                        pendingVerifiedTicketNetwork = target;
+                    }
                 }
                 return;
             }
@@ -363,6 +437,67 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         }
     }
 
+    private void ClearPendingVerifiedTicket()
+    {
+        maintenanceSessionGeneration++;
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+    }
+
+    private void TryActivatePendingVerifiedTicket()
+    {
+        if (pendingVerifiedTicket is not { } pending || pendingVerifiedTicketNetwork is not { } pendingNetwork)
+        {
+            return;
+        }
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+        if (disposed
+            || !active
+            || !CanGenerate
+            || !string.Equals(SelectedTransport, pendingNetwork, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!IsVerifiedTicketValid(pendingNetwork, pending, out _))
+        {
+            return;
+        }
+        ApplyVerifiedPairingTicket(pendingNetwork, pending);
+    }
+
+    private bool IsVerifiedTicketValid(string target, PairingTicketReceipt receipt, out DateTimeOffset expiry)
+    {
+        expiry = default;
+        return (receipt.Network is null || string.Equals(receipt.Network, target, StringComparison.Ordinal))
+            && OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            && OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out expiry)
+            && expiry > backend.Now();
+    }
+
+    private void ApplyVerifiedPairingTicket(string target, PairingTicketReceipt receipt)
+    {
+        if (disposed || !active || !RouteReady || !string.Equals(SelectedTransport, target, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!IsVerifiedTicketValid(target, receipt, out var expiry))
+        {
+            Note = "配对信息无效或已经过期，请刷新二维码。";
+            return;
+        }
+        issuedPairUrl = receipt.PairUrl;
+        issuedExpiresAt = expiry;
+        issuedNetwork = target;
+        DidCopyLink = false;
+        CountdownText = OnboardingWizardStateMachine.FormatCountdown(expiry - backend.Now(), expiry);
+        Note = receipt.Warnings.Count > 0
+            ? string.Join("\n", receipt.Warnings)
+            : "请使用手机端 Mimi Remote 扫描二维码，或点击“复制配对链接”。";
+        NotifyActionState();
+        TicketChanged?.Invoke(this, issuedPairUrl);
+    }
+
     public async Task GenerateAsync(CancellationToken cancellationToken = default)
     {
         if (disposed || !CanGenerate)
@@ -370,6 +505,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         var target = SelectedTransport;
+        ClearPendingVerifiedTicket();
         Clear();
         var request = ++generation;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -488,6 +624,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             }
             await backend.SetTailcatRelayAsync(arguments, cancellationToken);
             relayEdited = false;
+            ClearPendingVerifiedTicket();
             Clear();
             await RefreshTailcatRelayAsync(cancellationToken);
             ReportRelay(
@@ -514,8 +651,21 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         }
     }
 
+    public void OpenFallbackDownload()
+    {
+        if (FallbackDownloadUrl is { } url && OnboardingCopyCatalog.IsAllowedUrl(url))
+        {
+            backend.OpenUrl(url);
+        }
+    }
+
     public void OpenTransportHelp()
     {
+        if (FallbackDownloadUrl is { } fallbackUrl && OnboardingCopyCatalog.IsAllowedUrl(fallbackUrl))
+        {
+            backend.OpenUrl(fallbackUrl);
+            return;
+        }
         var item = SelectedTransportItem;
         if (item?.Fix is null)
         {
@@ -603,6 +753,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             && OnboardingWizardStateMachine.OrderedTransportIds.Contains(recommended, StringComparer.Ordinal)
             && !string.Equals(SelectedTransport, recommended, StringComparison.Ordinal))
         {
+            ClearPendingVerifiedTicket();
             Clear();
             SelectedTransport = recommended;
         }
@@ -656,6 +807,10 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             var available = check?.Available == true;
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
+            var lanDisabledNeedsMaintenance = string.Equals(id, "lan", StringComparison.Ordinal)
+                && string.Equals(check?.Code, "lan_disabled", StringComparison.Ordinal)
+                && backend.RunLanFirewallMaintenance is not null;
+            var needsFirewallMaintenance = firewallBlocked || lanDisabledNeedsMaintenance;
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
             var canEnable = diag is { Trusted: true } && (firewallBlocked
                 ? backend.RunLanFirewallMaintenance is not null
@@ -683,7 +838,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 available,
                 ready,
                 canEnable,
-                firewallBlocked,
+                needsFirewallMaintenance,
                 publicBlocked,
                 check?.Code,
                 diag?.AllowedFix));
@@ -697,6 +852,11 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             return;
         }
+        if (!string.IsNullOrWhiteSpace(preservedMaintenanceNote))
+        {
+            Note = preservedMaintenanceNote;
+            return;
+        }
         var selected = SelectedTransportItem;
         if (Report is null)
         {
@@ -706,6 +866,11 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         if (selected is { Ready: true } && Report.Ok)
         {
             Note = DefaultPrompt;
+            return;
+        }
+        if (selected is { CanEnableInPlace: true, NeedsFirewallMaintenance: true })
+        {
+            Note = "同一局域网需要配置专用网络防火墙规则。点击“启用此连接方式”以启动受信任的安装维护向导。";
             return;
         }
         if (selected is { CanEnableInPlace: true, NeedsFirewallMaintenance: false })
@@ -740,6 +905,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         disposed = true;
+        ClearPendingVerifiedTicket();
         Clear();
     }
 }

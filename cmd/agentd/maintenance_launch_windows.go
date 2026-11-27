@@ -3,15 +3,39 @@ package main
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"golang.org/x/sys/windows"
 )
+
+const (
+	maintenanceUACCancelledExitCode = 1223
+	jobObjectMsgActiveProcessZero   = 4
+	jobPollIntervalMs               = 200
+	jobPostTerminationDrainTimeout  = 15 * time.Second
+)
+
+type jobObjectAssociateCompletionPort struct {
+	CompletionKey  uintptr
+	CompletionPort windows.Handle
+}
+
+type jobObjectBasicAccountingInformation struct {
+	TotalUserTime            int64
+	TotalKernelTime          int64
+	ThisPeriodTotalUserTime  int64
+	ThisPeriodTotalKernel    int64
+	TotalPageFaultCount      uint32
+	TotalProcesses           uint32
+	ActiveProcesses          uint32
+	TotalTerminatedProcesses uint32
+}
 
 var errMaintenanceLaunch = errors.New("维护程序未完成，请返回桌面应用重新检查状态")
 var shellExecuteMaintenance = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
@@ -52,21 +76,209 @@ func runInstallerMaintenance(args []string) error {
 	if err != nil {
 		return errMaintenanceIdentity
 	}
-	return withLockedMaintenance(filepath.Dir(agent), maintenanceImageSHA256, verifyMaintenancePublisher, func(path string) error {
+	return withLockedMaintenanceIdentity(filepath.Dir(agent), maintenanceImageSHA256, verifyMaintenancePublisher, func(identity pinnedFileIdentity) error {
 		system, err := windows.GetSystemDirectory()
 		if err != nil {
 			return errMaintenanceLaunch
 		}
 		if action.elevate {
-			return runElevatedMaintenance(path, action.parameters, system)
+			return runElevatedMaintenance(identity.path, action.parameters, system)
 		}
-		cmd := exec.Command(path, action.parameters)
-		cmd.Dir = system
-		if cmd.Run() != nil {
+		exitCode, err := runBoundMaintenanceProcess(identity, action.parameters, system)
+		if err != nil {
+			return err
+		}
+		if exitCode == maintenanceUACCancelledExitCode {
+			return maintenanceUACCancelledError()
+		}
+		if exitCode != 0 {
 			return errMaintenanceLaunch
 		}
 		return nil
 	})
+}
+
+func maintenanceUACCancelledError() error {
+	return &exitCodeError{
+		exitCode: maintenanceUACCancelledExitCode,
+		err: onboardingFailure(
+			"lan_firewall_blocked",
+			"network_lan",
+			true,
+			errors.New("管理员授权已取消，请回到桌面应用检查局域网设置"),
+		),
+	}
+}
+
+func runBoundMaintenanceProcess(identity pinnedFileIdentity, rawParams, dir string) (uint32, error) {
+	// Track Inno's loader and unpacked setup children in a Job Object without
+	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so an unexpected broker exit cannot
+	// terminate the maintenance wizard mid-apply (after stopping the service
+	// and before restarting it or recording firewall state). Pre-resume
+	// failures still explicitly terminate the suspended process.
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, errMaintenanceLaunch
+	}
+	defer windows.CloseHandle(job)
+
+	iocp, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		return 0, errMaintenanceLaunch
+	}
+	defer windows.CloseHandle(iocp)
+
+	const completionKey uintptr = 1
+	assoc := jobObjectAssociateCompletionPort{
+		CompletionKey:  completionKey,
+		CompletionPort: iocp,
+	}
+	if _, err := windows.SetInformationJobObject(
+		job,
+		windows.JobObjectAssociateCompletionPortInformation,
+		uintptr(unsafe.Pointer(&assoc)),
+		uint32(unsafe.Sizeof(assoc)),
+	); err != nil {
+		return 0, errMaintenanceLaunch
+	}
+
+	appName, err := windows.UTF16PtrFromString(identity.path)
+	if err != nil {
+		return 0, errMaintenanceIdentity
+	}
+	commandText := windows.EscapeArg(identity.path)
+	if strings.TrimSpace(rawParams) != "" {
+		commandText += " " + rawParams
+	}
+	cmdLine, err := windows.UTF16FromString(commandText)
+	if err != nil {
+		return 0, errMaintenanceLaunch
+	}
+	cwd, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return 0, errMaintenanceLaunch
+	}
+
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	var pi windows.ProcessInformation
+	if err := windows.CreateProcess(
+		appName,
+		&cmdLine[0],
+		nil,
+		nil,
+		false,
+		windows.CREATE_SUSPENDED,
+		nil,
+		cwd,
+		&si,
+		&pi,
+	); err != nil {
+		return 0, errMaintenanceLaunch
+	}
+	defer windows.CloseHandle(pi.Thread)
+	defer windows.CloseHandle(pi.Process)
+
+	if err := verifyProcessMatchesIdentity(pi.Process, identity); err != nil {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_, _ = windows.WaitForSingleObject(pi.Process, 5000)
+		return 0, errMaintenanceIdentity
+	}
+	if err := windows.AssignProcessToJobObject(job, pi.Process); err != nil {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_, _ = windows.WaitForSingleObject(pi.Process, 5000)
+		return 0, errMaintenanceLaunch
+	}
+	if _, err := windows.ResumeThread(pi.Thread); err != nil {
+		_ = windows.TerminateJobObject(job, 1)
+		_ = waitForJobEmpty(job, iocp, completionKey, jobPostTerminationDrainTimeout)
+		return 0, errMaintenanceLaunch
+	}
+
+	waitResult, waitErr := windows.WaitForSingleObject(pi.Process, windows.INFINITE)
+	var exitCode uint32
+	if waitErr != nil || waitResult != windows.WAIT_OBJECT_0 || windows.GetExitCodeProcess(pi.Process, &exitCode) != nil {
+		_ = waitForJobEmpty(job, iocp, completionKey, 0)
+		return 0, errMaintenanceLaunch
+	}
+	// Keep verification pins held until JobObjectBasicAccountingInformation
+	// confirms every process in the job (including Inno's unpacked setup child)
+	// has exited.
+	if err := waitForJobEmpty(job, iocp, completionKey, 0); err != nil {
+		return 0, errMaintenanceLaunch
+	}
+	return exitCode, nil
+}
+
+func queryJobActiveProcesses(job windows.Handle) (uint32, error) {
+	var info jobObjectBasicAccountingInformation
+	var returned uint32
+	size := uint32(unsafe.Sizeof(info))
+	err := windows.QueryInformationJobObject(
+		job,
+		windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)),
+		size,
+		&returned,
+	)
+	if err != nil || returned < size {
+		return 0, errMaintenanceLaunch
+	}
+	return info.ActiveProcesses, nil
+}
+
+func waitForJobEmpty(job, iocp windows.Handle, expectedKey uintptr, maxWait time.Duration) error {
+	var deadline time.Time
+	if maxWait > 0 {
+		deadline = time.Now().Add(maxWait)
+	}
+	for {
+		active, err := queryJobActiveProcesses(job)
+		if err != nil {
+			return err
+		}
+		if active == 0 {
+			return nil
+		}
+		waitMs := uint32(jobPollIntervalMs)
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				finalActive, finalErr := queryJobActiveProcesses(job)
+				if finalErr == nil && finalActive == 0 {
+					return nil
+				}
+				return errMaintenanceLaunch
+			}
+			if ms := uint32(remaining.Milliseconds()); ms > 0 && ms < waitMs {
+				waitMs = ms
+			}
+		}
+
+		var msg uint32
+		var key uintptr
+		var overlapped *windows.Overlapped
+		err = windows.GetQueuedCompletionStatus(iocp, &msg, &key, &overlapped, waitMs)
+		if err == nil {
+			if key == expectedKey && msg == jobObjectMsgActiveProcessZero {
+				verified, verifyErr := queryJobActiveProcesses(job)
+				if verifyErr != nil {
+					return verifyErr
+				}
+				if verified == 0 {
+					return nil
+				}
+			}
+			continue
+		}
+		if !errors.Is(err, syscall.Errno(258)) {
+			finalActive, finalErr := queryJobActiveProcesses(job)
+			if finalErr == nil && finalActive == 0 {
+				return nil
+			}
+			return errMaintenanceLaunch
+		}
+	}
 }
 
 // Native SHELLEXECUTEINFOW. Request a process handle so the locks cover UAC
@@ -115,7 +327,7 @@ func runElevatedMaintenance(path, args, dir string) error {
 	ok, _, callErr := shellExecuteMaintenance.Call(uintptr(unsafe.Pointer(&info)))
 	if ok == 0 || info.Process == 0 {
 		if errors.Is(callErr, windows.ERROR_CANCELLED) {
-			return onboardingFailure("lan_firewall_blocked", "network_lan", true, errors.New("管理员授权已取消，请回到桌面应用检查局域网设置"))
+			return maintenanceUACCancelledError()
 		}
 		return errMaintenanceLaunch
 	}

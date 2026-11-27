@@ -5,12 +5,15 @@ package windowslan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
+	"golang.org/x/sys/windows"
 )
 
 const privateLANFirewallRuleName = "Mimi Remote agentd (Private LAN)"
@@ -117,13 +120,95 @@ if ($result.profile_private) {
 $result | ConvertTo-Json -Compress
 `
 
+// CanonicalFirewallPath derives the mounted DOS drive-letter path
+// (e.g. C:\...\agentd.exe) for a verified executable image so Windows Firewall
+// Program filters match even when the process was started via a \\?\Volume{GUID}
+// path. Reparse points, directories, devices, and unmounted volumes are rejected.
+func CanonicalFirewallPath(agentPath string) (string, error) {
+	trimmed := strings.TrimSpace(agentPath)
+	if trimmed == "" {
+		return "", fmt.Errorf("agentd.exe 路径不能为空")
+	}
+	utf16Path, err := windows.UTF16PtrFromString(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("解析 agentd.exe 路径失败：%w", err)
+	}
+	handle, err := windows.CreateFile(
+		utf16Path,
+		windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return "", fmt.Errorf("无法打开已验证的 agentd.exe：%w", err)
+	}
+	defer windows.CloseHandle(handle)
+
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return "", fmt.Errorf("无法读取 agentd.exe 文件标识：%w", err)
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DEVICE|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+		return "", errors.New("agentd.exe 路径不能是符号链接、目录或设备")
+	}
+
+	const volumeNameDOS = 0x0
+	buf := make([]uint16, 4096)
+	for {
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), volumeNameDOS)
+		if err != nil || n == 0 {
+			return "", fmt.Errorf("无法解析 agentd.exe 的规范卷路径：%w", err)
+		}
+		if int(n) < len(buf) {
+			resolved := stripExtendedDrivePrefix(windows.UTF16ToString(buf[:n]))
+			if !isDriveLetterPath(resolved) {
+				return "", errors.New("agentd.exe 所在卷缺少规范盘符路径")
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if n > 32768 {
+			return "", errors.New("agentd.exe 规范路径超出长度上限")
+		}
+		buf = make([]uint16, n+1)
+	}
+}
+
+func stripExtendedDrivePrefix(path string) string {
+	if strings.HasPrefix(path, `\\?\`) {
+		candidate := path[4:]
+		if isDriveLetterPath(candidate) {
+			return candidate
+		}
+	}
+	return path
+}
+
+func isDriveLetterPath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '\\' {
+		return false
+	}
+	drive := path[0]
+	return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
+}
+
 func Check(ctx context.Context, agentPath string) (Status, error) {
 	resolvedPath, err := systemPowerShell()
 	if err != nil {
 		return Status{}, fmt.Errorf("未找到 Windows PowerShell，无法验证局域网安全策略")
 	}
-	if strings.TrimSpace(agentPath) == "" {
+	agentPath = strings.TrimSpace(agentPath)
+	if agentPath == "" {
 		return Status{}, fmt.Errorf("agentd.exe 路径不能为空")
+	}
+	if strings.HasPrefix(agentPath, `\\?\`) {
+		canonical, err := CanonicalFirewallPath(agentPath)
+		if err != nil {
+			return Status{}, err
+		}
+		agentPath = canonical
 	}
 	output, diagnostic, err := cliinspect.Output(ctx, func() (*exec.Cmd, error) {
 		cmd := exec.CommandContext(

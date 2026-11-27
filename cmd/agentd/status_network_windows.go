@@ -10,13 +10,22 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/windowslan"
 )
 
-var windowsLANStatusCheck = windowslan.Check
+var (
+	windowsLANStatusCheck       = windowslan.Check
+	statusExecutablePath        = os.Executable
+	statusCanonicalFirewallPath = windowslan.CanonicalFirewallPath
+)
 
 func inspectPlatformNetworkStatus(ctx context.Context, cfg config.Config) agentNetworkStatus {
 	result := configuredAgentNetworkStatus(cfg)
 	result.PolicyChecked = true
 
-	agentPath, err := os.Executable()
+	rawPath, err := statusExecutablePath()
+	if err != nil {
+		result.PolicyInspectionErr = true
+		return result
+	}
+	agentPath, err := statusCanonicalFirewallPath(rawPath)
 	if err != nil {
 		result.PolicyInspectionErr = true
 		return result

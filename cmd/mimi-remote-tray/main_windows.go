@@ -91,6 +91,8 @@ const (
 	menuTailcatStatus
 	menuTailcatManaged
 	menuFirstSetup
+	menuDownloadRecovery
+	menuLanMaintenance
 )
 
 // wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
@@ -189,27 +191,31 @@ type notifyIconData struct {
 }
 
 type trayApplication struct {
-	window                uintptr
-	icon                  uintptr
-	ownsIcon              bool
-	taskbarCreated        uint32
-	controller            *agentController
-	mu                    sync.RWMutex
-	status                agentStatus
-	statusErr             error
-	preflightSetupPending bool
-	statusRequest         uint64
-	statusApplied         uint64
-	busy                  bool
-	pairingBusy           bool
-	quitting              bool
-	initialPairing        bool
-	initialShow           bool
-	refreshStop           chan struct{}
-	panel                 *controlPanel
-	tailcat               tailcatTrayStatus
-	hasTailcat            bool
-	tailcatErr            error
+	window                 uintptr
+	icon                   uintptr
+	ownsIcon               bool
+	taskbarCreated         uint32
+	controller             *agentController
+	mu                     sync.RWMutex
+	status                 agentStatus
+	statusErr              error
+	preflightSetupPending  bool
+	statusRequest          uint64
+	statusApplied          uint64
+	busy                   bool
+	pairingBusy            bool
+	quitting               bool
+	initialPairing         bool
+	initialShow            bool
+	refreshStop            chan struct{}
+	panel                  *controlPanel
+	tailcat                tailcatTrayStatus
+	hasTailcat             bool
+	tailcatErr             error
+	fallbackRejectionLatch maintenanceRejectionLatch
+	maintenanceOverride    *maintenanceRunner
+	showDialogFn           func(uintptr, string, string, uint32) int
+	openURLFn              func(string) error
 }
 
 var currentTray *trayApplication
@@ -225,7 +231,7 @@ func main() {
 	defer runtime.UnlockOSThread()
 
 	controller, err := newAgentController()
-	if err != nil {
+	if err != nil && !errors.Is(err, errMissingAgentBinary) {
 		showMessage(0, "Mimi Remote", err.Error(), mbOK|mbIconError)
 		return
 	}
@@ -234,6 +240,9 @@ func main() {
 		initialPairing: *pairAfterInstall,
 		initialShow:    *showAfterStart,
 		refreshStop:    make(chan struct{}),
+	}
+	if controller == nil {
+		app.statusErr = newMaintenanceError(maintenanceFailureImageMissing)
 	}
 	if err := app.run(); err != nil {
 		showMessage(0, "Mimi Remote", err.Error(), mbOK|mbIconError)
@@ -521,6 +530,15 @@ func (a *trayApplication) removeIcon() {
 }
 
 func (a *trayApplication) bootstrap() {
+	if a.controller == nil {
+		request := a.beginStatusRequest()
+		a.completeStatusRequestWithSetup(request, agentStatus{}, newMaintenanceError(maintenanceFailureImageMissing), false)
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+		}
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	// The installer can restart agentd immediately before the tray starts. A
 	// single status check in that short gap used to leave the tray showing an
 	// unavailable service until the next 20-second refresh, making a manual
@@ -576,15 +594,31 @@ func (a *trayApplication) refreshStatus() {
 }
 
 func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	request := a.beginStatusRequest()
+	if a.controller == nil {
+		a.completeStatusRequestWithSetup(request, agentStatus{}, newMaintenanceError(maintenanceFailureImageMissing), false)
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+		}
+		return
+	}
 	ctx, cancel := statusContext()
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	preflightPending := false
 	if status.workspacePendingConfirmation() || (err != nil && !isFirstSetupError(err)) {
 		preflightCtx, stop := context.WithTimeout(context.Background(), trayCommandTimeout("windows", "preflight"))
 		report, preflightErr := a.controller.preflight(preflightCtx, "setup", nil, request, nil)
 		stop()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		if preflightErr == nil {
 			preflightPending, preflightErr = pendingFromSetupReport(report)
 		}
@@ -595,7 +629,7 @@ func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 		}
 	}
 	a.completeStatusRequestWithSetup(request, status, err, preflightPending)
-	if err == nil {
+	if err == nil && !a.isMaintenanceIdentityRejected() {
 		a.refreshTailcat(status.ProcessOK)
 	}
 	if a.window != 0 {
@@ -615,9 +649,12 @@ func (a *trayApplication) completeStatusRequest(request uint64, status agentStat
 }
 
 func (a *trayApplication) completeStatusRequestWithSetup(request uint64, status agentStatus, err error, preflightPending bool) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if request < a.statusApplied {
+	if a.isMaintenanceIdentityRejected() || request < a.statusApplied {
 		return
 	}
 	a.statusApplied = request
@@ -657,13 +694,20 @@ func (a *trayApplication) showMenu() {
 	a.mu.RUnlock()
 
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
+	brokerMissing := a.controller == nil
+	identityRejected := a.isMaintenanceIdentityRejected()
+	brokerBlocked := brokerMissing || identityRejected
 	header := "状态：" + status.lifecycleTitle()
-	if firstSetupNeeded {
+	if brokerMissing {
+		header = "状态：缺少核心代理（需重新安装）"
+	} else if identityRejected {
+		header = "状态：维护身份校验失败（需重新安装）"
+	} else if firstSetupNeeded {
 		header = "状态：待完成首次设置"
 	} else if status.Version == "" {
 		header = "状态：正在检查"
 	}
-	if statusErr != nil && !firstSetupNeeded {
+	if statusErr != nil && !firstSetupNeeded && !brokerBlocked {
 		if status.Version == "" {
 			header = "状态：服务不可用"
 		} else {
@@ -671,29 +715,37 @@ func (a *trayApplication) showMenu() {
 		}
 	}
 	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
-	if firstSetupNeeded {
+	if brokerBlocked {
+		appendMenu(menu, mfString, menuDownloadRecovery, "下载正式安装包…")
+	} else if firstSetupNeeded {
 		appendMenu(menu, menuFlags(busy), menuFirstSetup, "完成首次设置…")
+	} else if canRunLanMaintenance(status, statusErr, preflightPending, brokerMissing, identityRejected) {
+		appendMenu(menu, menuFlags(busy), menuLanMaintenance, lanMaintenanceMenuLabel(status))
 	}
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGray, menuStatus, header)
-	appendMenu(menu, mfString, menuRefresh, "刷新状态")
+	appendMenu(menu, menuFlags(brokerBlocked), menuRefresh, "刷新状态")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || status.ProcessOK), menuStart, "启动服务")
-	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuRestart, "重新启动服务")
-	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || status.ProcessOK), menuStart, "启动服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || !status.ProcessOK), menuRestart, "重新启动服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
-	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
-	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
-	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy), menuDoctor, "运行诊断…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
 	appendMenu(menu, mfSeparator, 0, "")
 	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
 	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "内置连接："+tailcatPresentation.Value)
-	appendMenu(menu, menuFlags(!tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
-	appendMenu(menu, menuFlags(!tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
+	appendMenu(menu, menuFlags(brokerBlocked || !tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
+	appendMenu(menu, menuFlags(brokerBlocked || !tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy), menuExitAndStop, "退出并停止服务…")
+	exitLabel := "退出并停止服务…"
+	if brokerBlocked {
+		exitLabel = "退出托盘"
+	}
+	appendMenu(menu, menuFlags(busy), menuExitAndStop, exitLabel)
 
 	var cursor point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
@@ -734,7 +786,11 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuControlPanel:
 		a.showControlPanel()
 	case menuFirstSetup:
-		a.showFirstSetupInstructions(showMessage)
+		a.runFirstSetupMaintenance()
+	case menuLanMaintenance:
+		a.runLanFirewallMaintenance()
+	case menuDownloadRecovery:
+		a.openOfficialDownloadRecovery()
 	case menuRefresh:
 		a.refreshStatusInteractive()
 	case menuStart:
@@ -756,7 +812,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuDoctorFix:
 		a.runDoctor(true)
 	case menuLogs:
-		if err := a.controller.openLogsTerminal(); err != nil {
+		if err := openManagedLogs(); err != nil {
 			a.showError(err)
 		}
 	case menuExitAndStop:
@@ -765,6 +821,9 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 }
 
 func (a *trayApplication) refreshStatusInteractive() {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
@@ -775,11 +834,17 @@ func (a *trayApplication) refreshStatusInteractive() {
 }
 
 func (a *trayApplication) runAction(label string, action string) {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
 	go func() {
 		defer a.endBusy()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		ctx, cancel := actionContext()
 		err := a.controller.action(ctx, action)
 		cancel()
@@ -793,11 +858,17 @@ func (a *trayApplication) runAction(label string, action string) {
 }
 
 func (a *trayApplication) runDoctor(fix bool) {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
 	go func() {
 		defer a.endBusy()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		ctx, cancel := actionContext()
 		result, err := a.controller.doctor(ctx, fix)
 		cancel()
@@ -816,16 +887,10 @@ func (a *trayApplication) runDoctor(fix bool) {
 	}()
 }
 
-// BE-6 must identify the single authenticated Inno maintenance image before
-// the tray can launch it. Any future launcher must start the exact file it
-// verified. Until then this action only displays local instructions.
-func (a *trayApplication) showFirstSetupInstructions(show func(uintptr, string, string, uint32) int) {
-	if a.firstSetupRequired() {
-		show(a.window, "完成首次设置", "请手动运行 Mimi Remote 安装程序，选择“修改”，按提示确认代码目录。完成后，回到托盘并点击“刷新状态”。", mbOK|mbIconInfo)
-	}
-}
-
 func (a *trayApplication) requestPairing() {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if a.firstSetupRequired() {
 		trayLogf("pairing request rejected because workspace confirmation is pending")
 		a.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))
@@ -862,6 +927,15 @@ func (a *trayApplication) showStatus() {
 }
 
 func (a *trayApplication) exitAndStop() {
+	if a.controller == nil || a.isMaintenanceIdentityRejected() {
+		a.mu.Lock()
+		a.quitting = true
+		a.mu.Unlock()
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmClose, 0, 0)
+		}
+		return
+	}
 	result := showMessage(
 		a.window,
 		"退出并停止 Mimi Remote？",

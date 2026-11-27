@@ -13,12 +13,21 @@ func (c *Checker) windowsLANCheck(ctx context.Context) Check {
 	if !c.cfg.Network.AllowLAN {
 		return Check{}
 	}
-	agentPath, err := os.Executable()
+	rawPath, err := os.Executable()
 	if err != nil {
 		return Check{
 			Name:    "windows-private-lan",
 			OK:      false,
 			Message: "无法确定 agentd.exe 路径，不能验证 Windows 局域网边界",
+			Fix:     "重新安装 Mimi Remote，然后再次运行 agentd doctor",
+		}
+	}
+	agentPath, err := windowslan.CanonicalFirewallPath(rawPath)
+	if err != nil {
+		return Check{
+			Name:    "windows-private-lan",
+			OK:      false,
+			Message: err.Error(),
 			Fix:     "重新安装 Mimi Remote，然后再次运行 agentd doctor",
 		}
 	}

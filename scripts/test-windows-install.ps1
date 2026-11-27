@@ -80,8 +80,12 @@ foreach ($forbidden in @('ShellExec(', 'UninstallString', 'ModifyPath')) {
     if (($source + $maintenance).Contains($forbidden)) { throw "Unsafe maintenance path: $forbidden" }
 }
 foreach ($expected in @('Uninstallable=no', 'PrivilegesRequired=lowest', '#ifdef SignedMaintenance', 'not IsAdmin',
-    'IsAdmin and WizardSilent', 'SetEnvironmentVariableW', 'MaintenanceDirectory', '-EncodedCommand', 'PostInstallFailed := True')) {
+    'IsAdmin and WizardSilent', 'SetEnvironmentVariableW', 'MaintenanceDirectory', 'VOLUME_NAME_GUID',
+    'PinSiblingAgentImage', 'AgentExecutable', 'DeinitializeSetup', '-EncodedCommand', 'PostInstallFailed := True')) {
     if (-not $maintenance.Contains($expected)) { throw "Maintenance boundary missing: $expected" }
+}
+if ($maintenance.Contains("InstallDirectory + '\agentd.exe'")) {
+    throw 'Maintenance wizard must launch agentd.exe via its pinned volume-GUID path instead of a drive-letter path.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
 foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $HostPath', '--log-file `"$LogPath`"', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds', '$registeredSid -ne $currentSid', '$actions.Count -ne 1', '$actions[0].Arguments -cne $action.Arguments', '$actions[0].WorkingDirectory', '$registered.Principal.LogonType')) {
@@ -177,6 +181,32 @@ if (-not $releaseSource.Contains('-AllowUnsignedRelease')) { throw 'Release work
 if (-not $releaseSource.Contains('must either both be configured or both be absent')) { throw 'Partial Windows signing credentials must fail the release.' }
 if (-not $releaseSource.Contains('-RequireSignature')) { throw 'Release workflow must still enforce Authenticode when signing credentials exist.' }
 if (($releaseSource.Split('-ExpectedVersion $env:RELEASE_TAG').Count - 1) -lt 2) { throw 'Release workflow must verify the installer and its Tailcat helper against the release tag in both signing modes.' }
+if (-not $releaseSource.Contains('./scripts/publish-windows-client.ps1')) { throw 'Release workflow must also publish the version-matched WinUI client.' }
+if (-not $releaseSource.Contains("Parameters.ContainsKey('AllowUnsignedRelease')")) { throw 'Release workflow must feature-detect release-client publishing parameters so retries of older tags remain supported.' }
+$publishClient = Get-Content -LiteralPath (Join-Path $root 'scripts\publish-windows-client.ps1') -Raw
+foreach ($expected in @('-p:MimiReleasePublisherSha256=$publisher', 'signtool verify /pa $clientExe', 'Mimi-Remote-Client-$releaseVersion-win-x64.zip', 'Mimi-Remote-Setup-$releaseVersion', 'Signing mode: $signingMode')) {
+    if (-not $publishClient.Contains($expected)) { throw "WinUI client release publishing is missing required policy: $expected" }
+}
+$winUiProject = Get-Content -LiteralPath (Join-Path $root 'windows\src\MimiRemote.App\MimiRemote.App.csproj') -Raw
+if (-not $winUiProject.Contains('AssemblyMetadata Include="MimiReleasePublisherSha256"')) {
+    throw 'WinUI project must embed MimiReleasePublisherSha256 when supplied by release builds.'
+}
+$winUiNative = Get-Content -LiteralPath (Join-Path $root 'windows\src\MimiRemote.App\WindowsMaintenanceNative.cs') -Raw
+if ($winUiNative.Contains('TryExtractVerifiedSelfPublisherSha256')) {
+    throw 'WinUI maintenance verification must not fall back to reading a self-signer from disk.'
+}
+if (-not $common.Contains('MaintenanceUacCancelledExitCode = 1223')) {
+    throw 'Installer common script must propagate distinct UAC cancellation exit code 1223.'
+}
+if (-not $common.Contains("ExecConsoleHidden(AgentExecutable, 'installer-maintenance '") -or
+    -not $common.Contains('ExecAndCaptureOutput(AgentExecutable, Parameters')) {
+    throw 'Installer common script must invoke agentd.exe through AgentExecutable so maintenance uses its pinned volume-GUID path.'
+}
+$bootstrapFailureBlock = $choices.Substring($choices.IndexOf('if Code <> 0 then begin'))
+$bootstrapFailureBlock = $bootstrapFailureBlock.Substring(0, $bootstrapFailureBlock.IndexOf('Exit;'))
+if ($bootstrapFailureBlock.Contains('MaintenanceUacCancelled := False')) {
+    throw 'Installer bootstrap failure must preserve MaintenanceUacCancelled alongside PostInstallFailed.'
+}
 foreach ($path in $windowsDocs) {
     $docSource = Get-Content -LiteralPath $path -Raw
     if (-not $docSource.Contains('Windows')) {

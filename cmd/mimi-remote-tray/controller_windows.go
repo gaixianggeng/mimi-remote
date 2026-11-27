@@ -86,6 +86,17 @@ type agentController struct {
 	networkLastChecked time.Time
 	stateMu            sync.RWMutex
 	configured         bool
+	rejectionLatch     maintenanceRejectionLatch
+}
+
+func (c *agentController) checkLaunchAllowed() error {
+	if c == nil {
+		return newMaintenanceError(maintenanceFailureImageMissing)
+	}
+	if err := c.rejectionLatch.Error(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *agentController) setConfigured(value bool) {
@@ -113,6 +124,8 @@ type pairingInfo struct {
 
 const networkPolicyRefreshInterval = 2 * time.Minute
 
+var errMissingAgentBinary = errors.New("安装目录中缺少 agentd.exe")
+
 func newAgentController() (*agentController, error) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -121,12 +134,32 @@ func newAgentController() (*agentController, error) {
 	agentPath := filepath.Join(filepath.Dir(executable), "agentd.exe")
 	info, err := os.Stat(agentPath)
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("安装目录中缺少 agentd.exe：%s", agentPath)
+		return nil, fmt.Errorf("%w：%s", errMissingAgentBinary, agentPath)
 	}
 	return &agentController{
 		agentPath:  agentPath,
 		statusGate: make(chan struct{}, 1),
 	}, nil
+}
+
+func (c *agentController) applyVerifiedMaintenanceStatus(status agentStatus) {
+	if c == nil {
+		return
+	}
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if status.Version != "" {
+		c.configured = true
+	}
+	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
+		snapshot := *status.NetworkStatus
+		c.cachedNetwork = &snapshot
+		c.networkLastChecked = time.Now()
+	} else {
+		// Never reuse a pre-maintenance network policy snapshot after Modify.
+		c.cachedNetwork = nil
+		c.networkLastChecked = time.Time{}
+	}
 }
 
 func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agentStatus, error) {
@@ -139,18 +172,29 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	case <-ctx.Done():
 		return agentStatus{}, ctx.Err()
 	}
+	if err := c.checkLaunchAllowed(); err != nil {
+		return agentStatus{}, err
+	}
+
+	c.stateMu.RLock()
+	cachedBefore := c.cachedNetwork
+	lastChecked := c.networkLastChecked
+	c.stateMu.RUnlock()
+	inspectNetwork := cachedBefore == nil ||
+		time.Since(lastChecked) >= networkPolicyRefreshInterval
 
 	// 排队与执行使用独立预算。手动刷新取得执行权后，必须完整覆盖
-	// runtime 的 10 秒探测以及计划任务、配置和网络状态读取。
+	// runtime 的探测、Windows 冷启动 LAN 策略查询（最多 30 秒）以及计划任务与配置读取。
 	timeout := backgroundStatusCommandTimeout
 	if refreshRuntime {
 		timeout = manualStatusCommandTimeout
 	}
+	if inspectNetwork && timeout < networkPolicyStatusCommandTimeout {
+		timeout = networkPolicyStatusCommandTimeout
+	}
 	commandCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	inspectNetwork := c.cachedNetwork == nil ||
-		time.Since(c.networkLastChecked) >= networkPolicyRefreshInterval
 	args := statusArguments(refreshRuntime, inspectNetwork)
 	runner := c.statusRunner
 	if runner == nil {
@@ -160,11 +204,19 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	if err != nil {
 		return agentStatus{}, err
 	}
+	if err := c.checkLaunchAllowed(); err != nil {
+		return agentStatus{}, err
+	}
 	status, err := parseAgentStatus(payload)
 	if err != nil {
 		return agentStatus{}, err
 	}
-	c.setConfigured(true)
+	c.stateMu.Lock()
+	if err := c.checkLaunchAllowed(); err != nil {
+		c.stateMu.Unlock()
+		return agentStatus{}, err
+	}
+	c.configured = true
 	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
 		snapshot := *status.NetworkStatus
 		c.cachedNetwork = &snapshot
@@ -180,6 +232,7 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 		c.cachedNetwork = nil
 		c.networkLastChecked = time.Time{}
 	}
+	c.stateMu.Unlock()
 	return status, nil
 }
 
@@ -293,13 +346,22 @@ func (c *agentController) preflight(
 	onProgress func(onboardingCheck),
 	extraArgs ...string,
 ) (onboardingPreflightReport, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return onboardingPreflightReport{}, err
+	}
 	run := c.runHiddenWithProgress
 	if c.commandRunner != nil {
 		run = func(runCtx context.Context, _ *onboardingProgressAccumulator, _ uint64, _ func(onboardingCheck), args ...string) ([]byte, error) {
+			if err := c.checkLaunchAllowed(); err != nil {
+				return nil, err
+			}
 			return c.commandRunner(runCtx, args...)
 		}
 	}
 	report, err := runTrayPreflight(ctx, "windows", stage, progress, generation, onProgress, run, extraArgs...)
+	if launchErr := c.checkLaunchAllowed(); launchErr != nil {
+		return onboardingPreflightReport{}, launchErr
+	}
 	if err == nil && report.Configured != nil {
 		c.setConfigured(*report.Configured)
 	}
@@ -317,6 +379,9 @@ func (c *agentController) runHiddenWithProgress(
 	onProgress func(onboardingCheck),
 	args ...string,
 ) ([]byte, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -350,6 +415,10 @@ func (c *agentController) runHiddenWithProgress(
 }
 
 func (c *agentController) openLogsTerminal() error {
+	return openManagedLogs()
+}
+
+func openManagedLogs() error {
 	// 不打开 cmd：日志本来就是一串文本，用系统默认程序打开 agentd.log
 	// 既能滚动查看，也不会在用户面前多出一个终端窗口。
 	logPath, err := managedLogPath()
@@ -412,9 +481,10 @@ func trayLogf(format string, args ...any) {
 }
 
 const (
-	statusQueueTimeout             = 25 * time.Second
-	backgroundStatusCommandTimeout = 12 * time.Second
-	manualStatusCommandTimeout     = runtimebudget.ManualCommandTimeout
+	statusQueueTimeout                = 50 * time.Second
+	backgroundStatusCommandTimeout    = 12 * time.Second
+	networkPolicyStatusCommandTimeout = 45 * time.Second
+	manualStatusCommandTimeout        = runtimebudget.ManualCommandTimeout
 	// 启动就绪要覆盖 LAN 策略查询（最多 30 秒）与受管 Codex 初始化（最多 25 秒）；
 	// 20 秒时实测约 22 秒才开始监听，托盘会先报就绪失败（#456）。
 	serviceReadyWait = 60 * time.Second

@@ -9,8 +9,27 @@ public sealed class SetupViewModel : ClientPageViewModel
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly OnboardingWizardStateMachine wizard;
     private string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "code");
+    private string? maintenanceFallbackDownloadUrl;
+    private bool preserveMaintenanceNotice;
 
     public OnboardingWizardStateMachine Wizard => wizard;
+
+    public bool IsPendingWorkspaceConfirmation =>
+        Context.GateState == OnboardingGateState.PendingConfirmation
+        && Context.RunInstallerMaintenance is not null
+        && !Context.Preview;
+
+    public bool IsMissingBroker =>
+        !Context.Preview
+        && (!Context.HasAgent
+            || string.Equals(Context.LastPreflightError?.Code, "embedded_binary_missing", StringComparison.Ordinal)
+            || string.Equals(wizard.PreflightError?.Code, "embedded_binary_missing", StringComparison.Ordinal));
+
+    public bool HasMaintenanceDownloadFallback =>
+        IsMissingBroker
+        || Context.IsMaintenanceIdentityRejected
+        || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl)
+        || wizard.HasMaintenanceFallbackDownload;
 
     public string Root
     {
@@ -34,11 +53,13 @@ public sealed class SetupViewModel : ClientPageViewModel
     public IAsyncRelayCommand<string> RowPrimaryActionCommand { get; }
     public IAsyncRelayCommand<string> RowSecondaryActionCommand { get; }
     public IAsyncRelayCommand<string> ResetRuntimePinCommand { get; }
+    public IAsyncRelayCommand ConfirmWorkspaceViaMaintenanceCommand { get; }
+    public IRelayCommand OpenMaintenanceDownloadCommand { get; }
     public IRelayCommand OpenDiagnosticsCommand { get; }
 
     public SetupViewModel(ClientContext context) : base(context)
     {
-        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context), context.VerifiedCapability)
+        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context, this), context.VerifiedCapability)
         {
             RequestPathAsync = HandlePathPickerAsync,
         };
@@ -131,7 +152,35 @@ public sealed class SetupViewModel : ClientPageViewModel
                 await wizard.ResetRuntimePathToAutoAsync(runtimeId, Lifetime.Token);
             }
         }));
+        ConfirmWorkspaceViaMaintenanceCommand = new AsyncRelayCommand(
+            () => RunAsync(ConfirmWorkspaceViaMaintenanceAsync),
+            () => IsPendingWorkspaceConfirmation);
+        OpenMaintenanceDownloadCommand = new RelayCommand(
+            () =>
+            {
+                var url = maintenanceFallbackDownloadUrl
+                    ?? wizard.MaintenanceFallbackDownloadUrl
+                    ?? (IsMissingBroker || Context.IsMaintenanceIdentityRejected ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
+                if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
+                {
+                    Context.OpenUrl(url);
+                }
+            },
+            () => HasMaintenanceDownloadFallback);
         OpenDiagnosticsCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteDiagnostics));
+        PropertyChanged += (_, args) =>
+        {
+            if (string.Equals(args.PropertyName, nameof(NoticeOpen), StringComparison.Ordinal) && !NoticeOpen)
+            {
+                preserveMaintenanceNotice = false;
+            }
+        };
+    }
+
+    public override void OnNavigatedFrom()
+    {
+        base.OnNavigatedFrom();
+        wizard.InvalidateForNavigation();
     }
 
     protected override void OnActiveChanged()
@@ -139,12 +188,13 @@ public sealed class SetupViewModel : ClientPageViewModel
         if (Active)
         {
             wizard.ReopenIfCompleted();
+            wizard.SetPairingActive(true);
             timer.Start();
         }
         else
         {
             timer.Stop();
-            wizard.InvalidateIssuedPairing();
+            wizard.SetPairingActive(false);
         }
     }
 
@@ -154,6 +204,25 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             return;
         }
+        if (Context.IsMaintenanceIdentityRejected)
+        {
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            preserveMaintenanceNotice = true;
+            Report(MaintenanceRunResult.DescribeFailure(Context.MaintenanceRejectionLatch.FailureKind).Message, error: true);
+            return;
+        }
+        if (!Context.HasAgent)
+        {
+            var missingDiag = OnboardingCopyCatalog.SynthesizeLocal("embedded_binary_missing", "service_daemon");
+            Context.UpdateGateFromPreflight(null, missingDiag);
+            OnPropertyChanged(nameof(IsMissingBroker));
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            preserveMaintenanceNotice = false;
+            Report(missingDiag.Message, error: true);
+            return;
+        }
         await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
         if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
         {
@@ -161,9 +230,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
         if (wizard.PreflightError is { } err)
         {
+            preserveMaintenanceNotice = false;
             Report(err.Message, error: true);
         }
-        else if (wizard.StepError is null)
+        else if (wizard.StepError is null && wizard.PairingError is null && !preserveMaintenanceNotice)
         {
             NoticeOpen = false;
         }
@@ -175,6 +245,7 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             throw new InvalidOperationException("界面预览不会更改代码目录或电脑服务。");
         }
+        preserveMaintenanceNotice = false;
         var selected = Root.Trim();
         if (!Path.IsPathFullyQualified(selected))
         {
@@ -232,13 +303,76 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
     }
 
-    private void OnGateStateChanged(object? sender, OnboardingGateState state) => CompleteWizardCommand.NotifyCanExecuteChanged();
+    private async Task ConfirmWorkspaceViaMaintenanceAsync()
+    {
+        if (!IsPendingWorkspaceConfirmation || Context.RunInstallerMaintenance is null)
+        {
+            return;
+        }
+        preserveMaintenanceNotice = false;
+        SetMaintenanceFallbackUrl(null);
+        var result = await RunPageMaintenanceAsync(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
+        SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        if (!Context.IsMaintenanceIdentityRejected && result.BrokerVerified)
+        {
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                wizard.ApplyVerifiedPreflightReport(verifiedPreflight);
+                Context.UpdateGateFromPreflight(verifiedPreflight);
+                if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
+                {
+                    Root = wizard.SelectedScanRoot;
+                }
+            }
+            else if (result.Succeeded)
+            {
+                // Never fall back to the unverified launcher when verified preflight is absent.
+                SetMaintenanceFallbackUrl(WindowsMaintenanceClient.OfficialDownloadUrl);
+                preserveMaintenanceNotice = true;
+                Report(
+                    MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message
+                    + " 如持续无法确认，请前往桌面端正式下载页获取已签名的安装包："
+                    + WindowsMaintenanceClient.OfficialDownloadUrl,
+                    error: true);
+                return;
+            }
+        }
+        preserveMaintenanceNotice = true;
+        Report(result.Message, error: !result.Succeeded);
+    }
+
+    private void SetMaintenanceFallbackUrl(string? url)
+    {
+        if (SetProperty(ref maintenanceFallbackDownloadUrl, url, nameof(HasMaintenanceDownloadFallback)))
+        {
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private void OnGateStateChanged(object? sender, OnboardingGateState state)
+    {
+        OnPropertyChanged(nameof(IsPendingWorkspaceConfirmation));
+        OnPropertyChanged(nameof(IsMissingBroker));
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+        ConfirmWorkspaceViaMaintenanceCommand.NotifyCanExecuteChanged();
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        CompleteWizardCommand.NotifyCanExecuteChanged();
+    }
 
     private void OnWizardPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
     {
         if (args.PropertyName == nameof(OnboardingWizardStateMachine.CanCompleteWizard))
         {
             CompleteWizardCommand.NotifyCanExecuteChanged();
+        }
+        if (args.PropertyName is nameof(OnboardingWizardStateMachine.HasMaintenanceFallbackDownload)
+            or nameof(OnboardingWizardStateMachine.PreflightError))
+        {
+            OnPropertyChanged(nameof(IsMissingBroker));
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
         }
         if (string.Equals(args.PropertyName, nameof(OnboardingWizardStateMachine.SelectedScanRoot), StringComparison.Ordinal)
             && !string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
@@ -253,6 +387,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         else if (string.Equals(args.PropertyName, nameof(OnboardingWizardStateMachine.PairingError), StringComparison.Ordinal)
             && wizard.PairingError is { } pairErr)
         {
+            if (wizard.LastLanMaintenanceResult is not null)
+            {
+                preserveMaintenanceNotice = true;
+            }
             Report(pairErr.Message, error: true);
         }
     }
@@ -266,7 +404,7 @@ public sealed class SetupViewModel : ClientPageViewModel
         base.Dispose();
     }
 
-    private sealed class ClientContextWizardBackend(ClientContext context) : IOnboardingWizardBackend
+    private sealed class ClientContextWizardBackend(ClientContext context, SetupViewModel owner) : IOnboardingWizardBackend
     {
         private readonly SynchronizationContext? uiContext = SynchronizationContext.Current;
 
@@ -329,7 +467,10 @@ public sealed class SetupViewModel : ClientPageViewModel
                 : throw new InvalidDataException("后台服务尚未确认就绪。");
         }
 
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => context.RunLanFirewallMaintenance;
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance =>
+            context.RunInstallerMaintenance is not null
+                ? ct => owner.RunPageMaintenanceAsync(MaintenancePurpose.LanFirewall, ct)
+                : null;
 
         public bool DirectoryExists(string path) => Directory.Exists(path);
         public void CreateDirectory(string path) => Directory.CreateDirectory(path);
