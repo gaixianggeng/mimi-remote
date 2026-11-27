@@ -1455,10 +1455,19 @@ func TestAgyPreserveThreadPermissionsCapabilityAndPolicyValidation(t *testing.T)
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
+	fakeAgyBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	router := &Router{
 		cfg: config.Config{
 			Projects: []config.ProjectConfig{{ID: "proj-1", Name: "Repo", Path: dir}},
-			Agy:      config.AgyConfig{Enabled: true},
+			Agy: config.AgyConfig{
+				Enabled: true,
+				Env: map[string]string{
+					agybridge.AgyBinaryEnvKey: fakeAgyBin,
+				},
+			},
 		},
 		projects:   registry,
 		agyAdapter: newAgyAdapterSupervisor(),
