@@ -552,7 +552,9 @@ func TestConcurrentExpiredBlobRefreshPreservesPinsAndDuplicateHashEviction(t *te
 	}
 	relB(0)
 
-	// 3) [P2 #3] Nested large output inside a dehydrated parent mcpToolCall must NOT consume extra output reservation!
+	// 3) [P2 #3 + Round 3 New P1 #4] Hierarchical output admission:
+	//    - When parent fits, nested child is skipped (0 extra capacity consumed);
+	//    - When parent exceeds maxItemBytes / capacity, nested child IS admitted so the response stays under cap!
 	nestedPayload := map[string]any{
 		"type": "mcpToolCall",
 		"result": map[string]any{
@@ -562,8 +564,44 @@ func TestConcurrentExpiredBlobRefreshPreservesPinsAndDuplicateHashEviction(t *te
 	}
 	var blobs []preparedBlobInput
 	var reps []stagedMediaReplacement
-	collectStagedOutputBlobs(nestedPayload, 512, 65536, &blobs, &reps)
-	if len(blobs) != 1 {
-		t.Fatalf("dehydrated parent mcpToolCall must skip nested commandExecution output, got %d staged blobs", len(blobs))
+	collectStagedOutputBlobs(nestedPayload, 512, 0, &blobs, &reps)
+	if len(blobs) != 2 || blobs[1].parentIndexPlusOne != 1 {
+		t.Fatalf("expected parent + tagged child output candidate, got len=%d blobs=%+v", len(blobs), blobs)
+	}
+	bigStore := newAppServerHistoryBlobStore(time.Minute, 10, 65536, 65536)
+	resParent := bigStore.reservePreparedBatchGreedy(blobs)
+	if !resParent.admitted[0] || resParent.admitted[1] || resParent.reservedEntries != 1 {
+		t.Fatalf("admitted parent must skip child reservation: admitted=%v reserved=%d", resParent.admitted, resParent.reservedEntries)
+	}
+	resParent.cancel()
+
+	// Store can fit the child (2048 bytes) but NOT the parent JSON (>2048 bytes): child MUST be admitted!
+	tightStore := newAppServerHistoryBlobStore(time.Minute, 10, 2060, 2060)
+	resChild := tightStore.reservePreparedBatchGreedy(blobs)
+	if resChild.admitted[0] || !resChild.admitted[1] || resChild.reservedEntries != 1 {
+		t.Fatalf("rejected parent must allow child dehydration: admitted=%v reserved=%d", resChild.admitted, resChild.reservedEntries)
+	}
+	resChild.cancel()
+
+	// 4) [Round 3 New P2] Bulk unique expiry stays O(1) per deletion with zero hashDupIDs map growth.
+	bulkNow := now
+	bulkStore := newAppServerHistoryBlobStore(time.Minute, 2048, 4<<20, 4096)
+	bulkStore.nowFunc = func() time.Time { return bulkNow }
+	for i := 0; i < 1024; i++ {
+		if _, ok := bulkStore.put("text/plain", []byte(fmt.Sprintf("unique-entry-%04d", i))); !ok {
+			t.Fatalf("bulk put %d failed", i)
+		}
+	}
+	if len(bulkStore.hashDupIDs) != 0 {
+		t.Fatalf("unique entries must not allocate hashDupIDs, got %d", len(bulkStore.hashDupIDs))
+	}
+	bulkNow = bulkNow.Add(2 * time.Minute)
+	bulkStore.mu.Lock()
+	bulkStore.pruneLocked(bulkNow)
+	remEntries := len(bulkStore.entries)
+	remHash := len(bulkStore.idByHash)
+	bulkStore.mu.Unlock()
+	if remEntries != 0 || remHash != 0 {
+		t.Fatalf("bulk prune must clear all expired entries & hash index: entries=%d hash=%d", remEntries, remHash)
 	}
 }

@@ -38,6 +38,7 @@ type appServerHistoryMediaStore struct {
 	mu              sync.Mutex
 	entries         map[string]appServerHistoryMediaEntry
 	idByHash        map[[32]byte]string
+	hashDupIDs      map[[32]byte]map[string]struct{}
 	totalBytes      int64
 	reservedEntries int
 	reservedBytes   int64
@@ -165,7 +166,7 @@ func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (strin
 	}
 	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
-	s.idByHash[hash] = id
+	s.indexHashLocked(hash, id)
 	s.totalBytes += entry.totalBytes()
 	s.enforceLimitsLocked(now)
 	if _, stillPresent := s.entries[id]; !stillPresent {
@@ -338,16 +339,52 @@ func (s *appServerHistoryMediaStore) touchEntryLocked(entry *appServerHistoryMed
 	entry.accessOrder = s.accessSequence
 }
 
+func (s *appServerHistoryMediaStore) indexHashLocked(hash [32]byte, id string) {
+	if hash == ([32]byte{}) || id == "" {
+		return
+	}
+	if s.idByHash == nil {
+		s.idByHash = map[[32]byte]string{}
+	}
+	if prev, exists := s.idByHash[hash]; exists && prev != "" && prev != id {
+		if _, prevAlive := s.entries[prev]; prevAlive {
+			if s.hashDupIDs == nil {
+				s.hashDupIDs = map[[32]byte]map[string]struct{}{}
+			}
+			dups := s.hashDupIDs[hash]
+			if dups == nil {
+				dups = map[string]struct{}{}
+				s.hashDupIDs[hash] = dups
+			}
+			dups[prev] = struct{}{}
+			dups[id] = struct{}{}
+		}
+	} else if dups, hasDups := s.hashDupIDs[hash]; hasDups {
+		dups[id] = struct{}{}
+	}
+	s.idByHash[hash] = id
+}
+
 func (s *appServerHistoryMediaStore) deleteEntryLocked(id string, entry appServerHistoryMediaEntry) {
 	delete(s.entries, id)
-	if s.idByHash != nil && entry.hash != ([32]byte{}) && s.idByHash[entry.hash] == id {
-		delete(s.idByHash, entry.hash)
-		// 并发新条目可能以不同 ID 保存了同 hash 数据：若仍有存活副本，重新回指该副本。
-		for otherID, other := range s.entries {
-			if other.hash == entry.hash {
-				s.idByHash[entry.hash] = otherID
-				break
+	if entry.hash != ([32]byte{}) {
+		if dups, hasDups := s.hashDupIDs[entry.hash]; hasDups {
+			delete(dups, id)
+			if s.idByHash != nil && s.idByHash[entry.hash] == id {
+				delete(s.idByHash, entry.hash)
+				for otherID := range dups {
+					if _, alive := s.entries[otherID]; alive {
+						s.idByHash[entry.hash] = otherID
+						break
+					}
+					delete(dups, otherID)
+				}
 			}
+			if len(dups) <= 1 {
+				delete(s.hashDupIDs, entry.hash)
+			}
+		} else if s.idByHash != nil && s.idByHash[entry.hash] == id {
+			delete(s.idByHash, entry.hash)
 		}
 	}
 	s.totalBytes -= entry.totalBytes()

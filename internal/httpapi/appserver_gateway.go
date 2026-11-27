@@ -357,18 +357,21 @@ type appServerGatewayPolicy struct {
 }
 
 type appServerGatewayPendingThreadRequest struct {
-	pendingSeq          uint64
-	clientSinkGen       uint64
-	method              string
-	cwd                 string
-	scopeID             string
-	responseLimit       int64
-	responseLimitSet    bool
-	globalDiscovery     bool
-	upstreamCursor      string
-	threadID            string
-	managedWorktreePath string
-	createdAt           time.Time
+	pendingSeq             uint64
+	clientSinkGen          uint64
+	method                 string
+	cwd                    string
+	scopeID                string
+	responseLimit          int64
+	responseLimitSet       bool
+	globalDiscovery        bool
+	upstreamCursor         string
+	threadID               string
+	requireReadValidation  bool
+	expectedReadScopeID    string
+	expectedReadCWDMissing bool
+	managedWorktreePath    string
+	createdAt              time.Time
 	// expired 表示已超过网关等待时长，客户端早已放弃。登记保留到响应到达或连接
 	// 关闭：迟到的成功响应据此丢弃，同 id 的新请求也据此拒绝，不能因为登记消失
 	// 就把未裁剪的响应原样放行。

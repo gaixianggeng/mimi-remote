@@ -29,7 +29,7 @@ func normalizeAllowedThreadRestrictionBits(t appServerGatewayAllowedThread) appS
 	if t.readOnlySubagent || t.readOnlyBrowseScope || (t.readOnly && !t.cwdMissing) {
 		t.readOnlyPermanent = true
 	}
-	if !t.cwdMissing && !t.readOnly && t.directInputKnown && !t.canAcceptDirectInput {
+	if !t.cwdMissing && !t.readOnly && !t.pushSeededOnly && t.directInputKnown && !t.canAcceptDirectInput {
 		t.explicitDirectInputDenied = true
 	}
 	t.readOnly = t.readOnlyPermanent || t.cwdMissing
@@ -160,8 +160,9 @@ func mergeSamePageAllowedThread(a, b appServerGatewayAllowedThread) appServerGat
 }
 
 // mergeHistoricalBaseline 合成连接级记录与全局缓存记录（及底板）为单一历史基线：
-// 永久只读来源取 OR；explicitDirectInputDenied 按 explicitDirectInputVersion 较高者胜出（同版本保守 OR）。
-func mergeHistoricalBaseline(connOld appServerGatewayAllowedThread, hasConn bool, globalOld appServerGatewayAllowedThread, hasGlobal bool) (appServerGatewayAllowedThread, bool) {
+// 永久只读来源取 OR；explicitDirectInputDenied 按 explicitDirectInputVersion 较高者胜出（同版本保守 OR）；
+// 当全局基线仅来自限制底板（!hasLiveGlobal）时，绝不清除连接级的 pushSeededOnly 门禁。
+func mergeHistoricalBaseline(connOld appServerGatewayAllowedThread, hasConn bool, globalOld appServerGatewayAllowedThread, hasGlobal bool, hasLiveGlobal bool) (appServerGatewayAllowedThread, bool) {
 	if !hasConn && !hasGlobal {
 		return appServerGatewayAllowedThread{}, false
 	}
@@ -192,7 +193,11 @@ func mergeHistoricalBaseline(connOld appServerGatewayAllowedThread, hasConn bool
 	base.readOnlyBrowseScope = a.readOnlyBrowseScope || b.readOnlyBrowseScope
 	base.readOnlyPermanent = a.readOnlyPermanent || b.readOnlyPermanent || base.readOnlySubagent || base.readOnlyBrowseScope
 	base.readOnly = base.readOnlyPermanent || base.cwdMissing
-	base.pushSeededOnly = a.pushSeededOnly && b.pushSeededOnly
+	if hasLiveGlobal {
+		base.pushSeededOnly = a.pushSeededOnly && b.pushSeededOnly
+	} else {
+		base.pushSeededOnly = a.pushSeededOnly
+	}
 	base.autoTitleEligible = a.autoTitleEligible
 
 	// 显式禁写按单调版本仲裁：较新版本胜出，防止连接 A 的旧 deny v1 覆盖连接 B 的新 allow v2，
@@ -278,13 +283,16 @@ func mergeCrossPageAllowedThread(
 		pageMerged.explicitDirectInputDenied = true
 	}
 
-	if pageMerged.readOnly || pageMerged.explicitDirectInputDenied || pageMerged.pushSeededOnly {
+	// pushSeededOnly 仅在响应线协议上输出合成 canAcceptDirectInput=false（见 applyFinalThreadPermissions），
+	// 绝不将合成 false 写入缓存所有权证据，否则 Codex 等省略 canAcceptDirectInput 的 thread/read
+	// 解除 pushSeededOnly 后仍会误判为 explicitDirectInputDenied 而永久禁写。
+	if pageMerged.readOnly || pageMerged.explicitDirectInputDenied {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = false
 	} else if newerConcurrentEvidence {
 		pageMerged.directInputKnown = historical.directInputKnown
 		pageMerged.canAcceptDirectInput = historical.canAcceptDirectInput
-	} else if pageMerged.rawDirectInput == rawDirectInputAllow {
+	} else if pageMerged.rawDirectInput == rawDirectInputAllow && !pageMerged.pushSeededOnly {
 		pageMerged.directInputKnown = true
 		pageMerged.canAcceptDirectInput = true
 	} else if !pathRestored && !pageMerged.directInputKnown && historical.directInputKnown {
@@ -362,11 +370,16 @@ func mergeGatewayAllowedThreadWithVersion(
 			return incoming
 		}
 		incoming.pushSeededOnly = true
-		// 继承底板中的显式禁写与版本，但不凭底板解锁写权限。
+		// 继承底板中的显式禁写与版本，但不凭底板解锁写权限，也不将 pushSeededOnly 合成伪造成 explicitDirectInputDenied。
 		incoming.explicitDirectInputDenied = incoming.explicitDirectInputDenied || existing.explicitDirectInputDenied
 		incoming.explicitDirectInputVersion = existing.explicitDirectInputVersion
-		incoming.directInputKnown = true
-		incoming.canAcceptDirectInput = false
+		if incoming.readOnly || incoming.explicitDirectInputDenied {
+			incoming.directInputKnown = true
+			incoming.canAcceptDirectInput = false
+		} else {
+			incoming.directInputKnown = false
+			incoming.canAcceptDirectInput = false
+		}
 		incoming.rawDirectInput = rawDirectInputUnknown
 		incoming.clearPushSeeded = false
 		return incoming
@@ -453,7 +466,7 @@ func applyFloorToAllowedThread(thread appServerGatewayAllowedThread, hasThread b
 	if !hasThread {
 		return floorEntry, true
 	}
-	merged, _ := mergeHistoricalBaseline(thread, true, floorEntry, true)
+	merged, _ := mergeHistoricalBaseline(thread, true, floorEntry, true, false)
 	merged.pushSeededOnly = thread.pushSeededOnly
 	merged.cwd = thread.cwd
 	merged.scopeID = thread.scopeID
@@ -615,7 +628,7 @@ func (p *appServerGatewayPolicy) observeThreadStatusDirectInputNotification(fram
 	if !hasConn && !hasMain {
 		return
 	}
-	historical, ok := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal)
+	historical, ok := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal, hasMain)
 	if !ok || historical.pushSeededOnly {
 		return
 	}

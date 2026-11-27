@@ -249,7 +249,7 @@ func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewa
 	if !hasAnyGlobal {
 		return normalizeAllowedThreadRestrictionBits(connThread), true
 	}
-	merged, ok := mergeHistoricalBaseline(connThread, hasConn, globalThread, hasAnyGlobal)
+	merged, ok := mergeHistoricalBaseline(connThread, hasConn, globalThread, hasAnyGlobal, hasMain)
 	if !ok {
 		return appServerGatewayAllowedThread{}, false
 	}
@@ -531,6 +531,7 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 		var claimVer uint64
 		if p.router != nil {
 			p.router.gatewayThreadsMu.Lock()
+			p.router.nextGatewayThreadDirectInputVersion++
 			claimVer = p.router.nextGatewayThreadDirectInputVersion
 			p.router.gatewayThreadsMu.Unlock()
 		}
@@ -881,13 +882,22 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 	pending appServerGatewayPendingThreadRequest,
 ) error {
 	allowed, ok := p.allowedThread(pending.threadID)
-	if !ok || (!allowed.readOnly && !allowed.pushSeededOnly) {
+	needValidation := pending.requireReadValidation || (ok && (allowed.readOnly || allowed.pushSeededOnly))
+	if !needValidation {
 		return nil
+	}
+	expectedScopeID := strings.TrimSpace(pending.expectedReadScopeID)
+	allowMissingFallback := pending.expectedReadCWDMissing
+	if ok {
+		if expectedScopeID == "" {
+			expectedScopeID = strings.TrimSpace(allowed.scopeID)
+		}
+		allowMissingFallback = allowMissingFallback || allowed.cwdMissing
 	}
 
 	// receiverThreadIds 只提供关联线索，不能证明子 Thread 自身仍位于父会话作用域。
-	// 对只读 Thread 的首次/后续读取都重新核对响应中的真实 cwd；缺失或跨作用域时
-	// fail-closed，避免先借父 cwd 获得临时授权，再读取未授权目录中的会话正文。
+	// 对只读或推送补种 Thread 的读取都重新核对响应中的真实身份与 cwd（即使缓存条目在读期间被淘汰）；
+	// 缺失或跨作用域时 fail-closed，避免绕过推送只读门禁或读取未授权目录中的会话正文。
 	var result struct {
 		Thread appServerGatewayThreadWire `json:"thread"`
 	}
@@ -905,10 +915,10 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 		return fmt.Errorf("thread/read 返回的只读子会话缺少可验证的 cwd")
 	}
 	scope, ok := p.router.gatewayScopeForPath(cwd)
-	if !ok && allowed.cwdMissing {
+	if !ok && allowMissingFallback {
 		scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
 	}
-	if !ok || scope.id != allowed.scopeID {
+	if !ok || expectedScopeID == "" || scope.id != expectedScopeID {
 		return fmt.Errorf("thread/read 返回的只读子会话不在授权作用域")
 	}
 	if !scope.missing {
@@ -1822,7 +1832,7 @@ func (p *appServerGatewayPolicy) commitAllowedThreadsLocked(threads []appServerG
 		key := gatewayThreadCacheKey(incoming.runtimeID, incoming.id)
 		connOld, hasConn := p.allowedThreads[incoming.id]
 		globalOld, hasMain, hasAnyGlobal := p.router.effectiveGatewayThreadLocked(key, now)
-		historical, hasHist := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal)
+		historical, hasHist := mergeHistoricalBaseline(connOld, hasConn, globalOld, hasAnyGlobal, hasMain)
 		hasLive := (hasConn && !connOld.pushSeededOnly) || (hasMain && !globalOld.pushSeededOnly)
 		merged := mergeGatewayAllowedThreadWithVersion(historical, hasHist, hasLive, incoming, allocVersion)
 		merged.lastSeen = now

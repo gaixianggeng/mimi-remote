@@ -610,12 +610,30 @@ func (r *Router) managedWorktreeHasRunningSessionForCheckout(worktree managedWor
 	// 生产主链路是 app-server gateway；它没有独立的运行态 REST 索引，因此
 	// 对仍在 24h 授权缓存中的同 scope thread 做保守阻止，宁可多保留一天，
 	// 也不在活跃 WebSocket/turn 期间移除 cwd。
+	// 严禁在持有 gatewayThreadsMu 时执行 canonicalPathBestEffort 磁盘 EvalSymlinks，
+	// 避免慢文件系统阻塞 Stage B（其持 managedWorktreeCommitMu 等 gatewayThreadsMu）。
 	now := time.Now()
 	r.gatewayThreadsMu.Lock()
 	r.pruneGatewayThreadsLocked(now)
-	defer r.gatewayThreadsMu.Unlock()
+	var candidateCWDs []string
+	seenCWDs := map[string]struct{}{}
 	for _, thread := range r.gatewayThreads {
-		if thread.scopeID == workspaceID || realPathWithin(checkoutPath, canonicalPathBestEffort(thread.cwd)) {
+		if thread.scopeID == workspaceID {
+			r.gatewayThreadsMu.Unlock()
+			return true
+		}
+		rawCWD := strings.TrimSpace(thread.cwd)
+		if rawCWD != "" {
+			if _, seen := seenCWDs[rawCWD]; !seen {
+				seenCWDs[rawCWD] = struct{}{}
+				candidateCWDs = append(candidateCWDs, rawCWD)
+			}
+		}
+	}
+	r.gatewayThreadsMu.Unlock()
+
+	for _, rawCWD := range candidateCWDs {
+		if realPathWithin(checkoutPath, canonicalPathBestEffort(rawCWD)) {
 			return true
 		}
 	}

@@ -77,3 +77,44 @@ func TestRegistryInMemoryLookupsAvoidDiskAndCacheMutation(t *testing.T) {
 		t.Fatalf("Get control check failed: ok=%v missing=%v calls=%d", ok, live.Missing, refreshCalls)
 	}
 }
+
+func TestFindByPathVerifyingMatchSkipsUnrelatedProjects(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "alpha")
+	dirB := filepath.Join(root, "beta")
+	if err := os.MkdirAll(dirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry([]config.ProjectConfig{
+		{ID: "alpha", Name: "Alpha", Path: dirA},
+		{ID: "beta", Name: "Beta", Path: dirB},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probed := map[string]int{}
+	prevHook := onRefreshProjectAvailabilityForTest
+	onRefreshProjectAvailabilityForTest = func(p Project) {
+		probed[p.ID]++
+	}
+	t.Cleanup(func() { onRefreshProjectAvailabilityForTest = prevHook })
+
+	matched, ok := reg.FindByPathVerifyingMatch(dirA)
+	if !ok || matched.ID != "alpha" {
+		t.Fatalf("expected alpha match, got ok=%v %+v", ok, matched)
+	}
+	if probed["alpha"] != 1 || probed["beta"] != 0 {
+		t.Fatalf("FindByPathVerifyingMatch must probe ONLY matched project alpha, got %v", probed)
+	}
+	// Outside path must probe zero projects.
+	if _, ok := reg.FindByPathVerifyingMatch(filepath.Join(root, "outside")); ok {
+		t.Fatal("outside path must not match")
+	}
+	if probed["beta"] != 0 {
+		t.Fatalf("outside path must not probe unrelated projects, got %v", probed)
+	}
+}

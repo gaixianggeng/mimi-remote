@@ -232,7 +232,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 是只读子会话，不能接管", method)
 		}
 		if thread.pushSeededOnly {
-			return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先刷新会话列表或读取会话后再接管", method)
+			return fmt.Errorf("%s.threadId 当前仅由推送定位恢复只读访问，请先调用 thread/read 读取会话后再接管", method)
 		}
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
@@ -279,7 +279,11 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		if method == "thread/read" {
 			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
-				method: method, threadID: threadID,
+				method:                 method,
+				threadID:               threadID,
+				requireReadValidation:  thread.readOnly || thread.pushSeededOnly,
+				expectedReadScopeID:    thread.scopeID,
+				expectedReadCWDMissing: thread.cwdMissing,
 			}); err != nil {
 				return err
 			}

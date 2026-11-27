@@ -155,6 +155,7 @@ func (p *appServerGatewayPolicy) claimUpstreamResponse(payload []byte, frame *ap
 		var claimVer uint64
 		if p.router != nil {
 			p.router.gatewayThreadsMu.Lock()
+			p.router.nextGatewayThreadDirectInputVersion++
 			claimVer = p.router.nextGatewayThreadDirectInputVersion
 			p.router.gatewayThreadsMu.Unlock()
 		}
@@ -359,6 +360,7 @@ type threadListStageACandidates struct {
 	anchorAncestorObjIDs   map[string]struct{}
 	anchorUnderManagedRoot bool
 	anchorInvalidated      bool
+	usedProjectRoots       map[string]projects.Project
 }
 
 // gatewayReadOnlyScopeForThreadListStageA 专供 thread/list 阶段 A 使用的 100% 纯只读作用域解析器：
@@ -776,6 +778,14 @@ func (p *appServerGatewayPolicy) prepareGlobalThreadListStageA(
 	}
 
 	stageA.candidates = candidates
+	if len(candidates) > 0 {
+		stageA.usedProjectRoots = map[string]projects.Project{}
+		for _, c := range candidates {
+			if c.hasStageAResolvedProject && !c.syntheticAgyMissingBrowseProj && strings.TrimSpace(c.resolvedProjectID) != "" {
+				stageA.usedProjectRoots[c.resolvedProjectID] = c.resolvedProject
+			}
+		}
+	}
 	stageA.writerHolders = p.probeWriterHolders(notLoadedIDs)
 	return stageA, nil
 }
@@ -904,8 +914,51 @@ func (p *appServerGatewayPolicy) prepareScopedThreadListStageA(
 	}
 
 	stageA.candidates = candidates
+	if len(candidates) > 0 {
+		stageA.usedProjectRoots = map[string]projects.Project{}
+		for _, c := range candidates {
+			if c.hasStageAResolvedProject && !c.syntheticAgyMissingBrowseProj && strings.TrimSpace(c.resolvedProjectID) != "" {
+				stageA.usedProjectRoots[c.resolvedProjectID] = c.resolvedProject
+			}
+		}
+	}
 	stageA.writerHolders = p.probeWriterHolders(notLoadedIDs)
 	return stageA, nil
+}
+
+// projectRootsDriftedOutsideLock 仅在提交锁外复核本页阶段 A 实际使用过的项目根目录，
+// 防止扫描同页期间配置符号链接改指后仍将旧目标目录写入新鲜授权，同时避免探测无关项目挂载。
+func (p *appServerGatewayPolicy) projectRootsDriftedOutsideLock(used map[string]projects.Project) bool {
+	if p == nil || p.router == nil || p.router.projects == nil || len(used) == 0 {
+		return false
+	}
+	for id, snap := range used {
+		live, ok := p.router.projects.Get(id)
+		if !ok {
+			return true
+		}
+		if live.Missing != snap.Missing || filepath.Clean(live.RealPath) != filepath.Clean(snap.RealPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectRootsDriftedInMemoryLocked 100% 纯内存复核阶段 A 使用过的项目根快照是否与最新已刷新索引一致。
+func (p *appServerGatewayPolicy) projectRootsDriftedInMemoryLocked(used map[string]projects.Project) bool {
+	if p == nil || p.router == nil || p.router.projects == nil || len(used) == 0 {
+		return false
+	}
+	for id, snap := range used {
+		live, ok := p.router.projects.GetCached(id)
+		if !ok {
+			return true
+		}
+		if live.Missing != snap.Missing || filepath.Clean(live.RealPath) != filepath.Clean(snap.RealPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // processPendingThreadListResponse 驱动完整的两阶段 thread/list 事务（阶段 A 只读 + 阶段 B 持锁原子提交）。
@@ -923,18 +976,26 @@ func (p *appServerGatewayPolicy) processPendingThreadListResponse(
 		return p.finalizeThreadListErrorStageB(binding, binding.envelopeMalformed)
 	}
 
-	// 最多 2 次因并发删盘（lifecycleEpoch 变化）触发的锁外重取证（attempt=0,1,2）。
+	// 最多 2 次因并发删盘（lifecycleEpoch 变化）或已用项目根符号链接改指触发的锁外重取证（attempt=0,1,2）。
+	disallowMissingFallback := false
 	for stageAAttempt := 0; stageAAttempt <= 2; stageAAttempt++ {
-		stageA, stageAErr := p.prepareThreadListStageA(payload, frame, binding, stageAAttempt, stageAAttempt > 0)
+		stageA, stageAErr := p.prepareThreadListStageA(payload, frame, binding, stageAAttempt, disallowMissingFallback)
 		if stageAErr != nil {
 			return p.finalizeThreadListErrorStageB(binding, stageAErr)
+		}
+		if p.projectRootsDriftedOutsideLock(stageA.usedProjectRoots) {
+			if stageAAttempt == 2 {
+				return p.abortThreadListSilently(binding)
+			}
+			continue
 		}
 
 		decision, needStageAReprobe := p.finalizeThreadListSuccessStageB(binding, stageA, stageAAttempt)
 		if !needStageAReprobe {
 			return decision
 		}
-		// 连续 2 次锁外重取证后仍遇并发删盘风暴 → fail-closed 静默丢弃（零授权、零游标、零预算）。
+		disallowMissingFallback = true
+		// 连续 2 次锁外重取证后仍遇并发删盘/改指风暴 → fail-closed 静默丢弃（零授权、零游标、零预算）。
 		if stageAAttempt == 2 {
 			return p.abortThreadListSilently(binding)
 		}
@@ -1200,7 +1261,17 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 		}
 		p.mu.Lock()
 
-		// 在 commit 锁下复验 worktree 生命周期是否变化；若在暂存期间发生删除/撤权/deleting，取消暂存并触发阶段 A 重探。
+		// 在 commit 锁下复验 worktree 生命周期与已用项目根快照是否变化；若在暂存期间发生删除/撤权/deleting/改指，
+		// 取消暂存并触发阶段 A 重探。
+		if p.projectRootsDriftedInMemoryLocked(stageA.usedProjectRoots) {
+			p.mu.Unlock()
+			if p.router != nil {
+				p.router.managedWorktreeCommitMu.Unlock()
+			}
+			mediaRes.cancel()
+			outputRes.cancel()
+			return upstreamFrameDecision{}, true
+		}
 		if p.router != nil && p.router.managedWorktreeLifecycleEpoch.Load() != stageA.worktreeLifecycleEpoch {
 			reverifiedRows, _, commitNeedReprobe, _ := verifyStageBCandidates()
 			if commitNeedReprobe || len(reverifiedRows) != len(verifiedRows) {
@@ -1256,23 +1327,27 @@ func (p *appServerGatewayPolicy) finalizeThreadListSuccessStageB(
 				p.onStageBAfterFinalLockBeforeWrite()
 			}
 
-			allocVer := func() uint64 {
+			commitVer := binding.claimDirectInputVersion
+			useClaimVer := func() uint64 {
+				if commitVer != 0 {
+					return commitVer
+				}
 				p.router.nextGatewayThreadDirectInputVersion++
 				return p.router.nextGatewayThreadDirectInputVersion
 			}
 			for id, pageMerged := range pageMergedByID {
 				var merged appServerGatewayAllowedThread
 				if base, hasBase := historicalBaseByID[id]; hasBase {
-					merged = mergeCrossPageAllowedThread(base, pageMerged, binding.claimDirectInputVersion, allocVer)
+					merged = mergeCrossPageAllowedThread(base, pageMerged, binding.claimDirectInputVersion, useClaimVer)
 				} else {
 					merged = normalizeAllowedThreadRestrictionBits(pageMerged)
 					merged.pushSeededOnly = false
 					if merged.explicitDirectInputDenied || pageMerged.rawDirectInput == rawDirectInputDeny {
 						merged.explicitDirectInputDenied = true
-						merged.explicitDirectInputVersion = allocVer()
+						merged.explicitDirectInputVersion = useClaimVer()
 					} else if pageMerged.rawDirectInput == rawDirectInputAllow && !merged.readOnly {
 						merged.explicitDirectInputDenied = false
-						merged.explicitDirectInputVersion = allocVer()
+						merged.explicitDirectInputVersion = useClaimVer()
 					}
 					merged.rawDirectInput = rawDirectInputUnknown
 				}
@@ -1450,8 +1525,8 @@ func (p *appServerGatewayPolicy) snapshotHistoricalBaselinesLocked(
 func (p *appServerGatewayPolicy) readSingleHistoricalBaselineLocked(id string, runtimeID string, now time.Time) (appServerGatewayAllowedThread, bool) {
 	connOld, hasConn := p.allowedThreads[id]
 	key := gatewayThreadCacheKey(runtimeID, id)
-	globalOld, _, hasGlobal := p.router.effectiveGatewayThreadLocked(key, now)
-	return mergeHistoricalBaseline(connOld, hasConn, globalOld, hasGlobal)
+	globalOld, hasLiveGlobal, hasGlobal := p.router.effectiveGatewayThreadLocked(key, now)
+	return mergeHistoricalBaseline(connOld, hasConn, globalOld, hasGlobal, hasLiveGlobal)
 }
 
 // reverifyCandidateScopeInMemoryLocked 要求调用方已持有 managedWorktreeCleanupMu。
@@ -1502,12 +1577,14 @@ func (p *appServerGatewayPolicy) reverifyCandidateScopeInMemoryLocked(
 		return gatewayScope{}, projects.Project{}, false
 	}
 
-	// 2) 若候选原本在项目作用域内：优先信任阶段 A 刷新过的项目匹配（纯内存 GetCached 确认项目仍登记），
-	//    避免配置项目符号链接改指后被启动期旧快照覆盖。
+	// 2) 若候选原本在项目作用域内：优先核验阶段 A 刷新过的项目匹配与最新内存索引仍一致，
+	//    避免配置项目符号链接改指后仍将旧目标目录放行或被启动期旧快照覆盖。
 	if !cand.scope.browse {
 		if cand.hasStageAResolvedProject && cand.resolvedProjectID != "" {
-			if _, stillRegistered := p.router.projects.GetCached(cand.resolvedProjectID); stillRegistered {
-				return gatewayScope{id: cand.resolvedProject.ID, realPath: cand.scope.realPath, project: cand.resolvedProject, missing: cand.scope.missing}, cand.resolvedProject, true
+			if liveProj, stillRegistered := p.router.projects.GetCached(cand.resolvedProjectID); stillRegistered &&
+				liveProj.Missing == cand.resolvedProject.Missing &&
+				filepath.Clean(liveProj.RealPath) == filepath.Clean(cand.resolvedProject.RealPath) {
+				return gatewayScope{id: liveProj.ID, realPath: cand.scope.realPath, project: liveProj, missing: cand.scope.missing}, liveProj, true
 			}
 		}
 		if project, found := p.router.projects.FindByCanonicalPathInMemory(cand.scope.realPath); found {

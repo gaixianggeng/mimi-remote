@@ -12,8 +12,9 @@ import (
 var appServerHistoryMediaReadGrace = 5 * time.Second
 
 type preparedBlobInput struct {
-	contentType string
-	data        []byte
+	contentType        string
+	data               []byte
+	parentIndexPlusOne int
 }
 
 type preparedBlobReservation struct {
@@ -205,6 +206,16 @@ func (s *appServerHistoryMediaStore) reservePreparedBatchGreedy(blobs []prepared
 	usedIDs := map[string]struct{}{}
 
 	for i, blob := range blobs {
+		ancestorAdmitted := false
+		for p := blob.parentIndexPlusOne; p > 0; p = blobs[p-1].parentIndexPlusOne {
+			if admitted[p-1] {
+				ancestorAdmitted = true
+				break
+			}
+		}
+		if ancestorAdmitted {
+			continue
+		}
 		if len(blob.data) == 0 || (s.maxItemBytes > 0 && int64(len(blob.data)) > s.maxItemBytes) {
 			continue
 		}
@@ -392,7 +403,7 @@ func (r *preparedBlobReservation) commit() func(grace time.Duration) {
 					existing.activeWritePins++
 					s.touchEntryLocked(&existing, now)
 					s.entries[item.id] = existing
-					s.idByHash[item.hash] = item.id
+					s.indexHashLocked(item.hash, item.id)
 					pinnedIDs = append(pinnedIDs, item.id)
 					continue
 				}
@@ -409,7 +420,7 @@ func (r *preparedBlobReservation) commit() func(grace time.Duration) {
 			}
 			s.touchEntryLocked(&entry, now)
 			s.entries[item.id] = entry
-			s.idByHash[item.hash] = item.id
+			s.indexHashLocked(item.hash, item.id)
 			s.totalBytes += entry.totalBytes()
 			pinnedIDs = append(pinnedIDs, item.id)
 		}
@@ -505,7 +516,7 @@ func (r *Router) stageRedactAndDehydrateThreadListPayload(
 			if dec.Decode(&root) == nil {
 				var blobs []preparedBlobInput
 				var reps []stagedMediaReplacement
-				collectStagedOutputBlobs(root, minimumItemBytes, r.historyOutput.maxItemBytes, &blobs, &reps)
+				collectStagedOutputBlobs(root, minimumItemBytes, 0, &blobs, &reps)
 				if len(blobs) > 0 {
 					res := r.historyOutput.reservePreparedBatchGreedy(blobs)
 					changed := false
@@ -612,10 +623,11 @@ func collectStagedMediaBlobs(value any, blobs *[]preparedBlobInput, reps *[]stag
 	}
 }
 
-func collectStagedOutputBlobs(value any, minimumItemBytes int, maxItemBytes int64, blobs *[]preparedBlobInput, reps *[]stagedMediaReplacement) {
+func collectStagedOutputBlobs(value any, minimumItemBytes int, parentIndexPlusOne int, blobs *[]preparedBlobInput, reps *[]stagedMediaReplacement) {
 	switch typed := value.(type) {
 	case map[string]any:
 		replacedKey := ""
+		childParentIndexPlusOne := parentIndexPlusOne
 		if _, alreadyRedacted := typed["historyOutputRef"]; !alreadyRedacted {
 			typeName, _ := typed["type"].(string)
 			typeName = strings.TrimSpace(typeName)
@@ -659,10 +671,15 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, maxItemBytes int6
 					replace = func() { obj["changes"] = compact }
 				}
 			}
-			if len(data) >= minimumItemBytes && replace != nil && (maxItemBytes <= 0 || int64(len(data)) <= maxItemBytes) {
+			if len(data) >= minimumItemBytes && replace != nil {
 				obj, ct, p, n, fn := typed, contentType, preview, len(data), replace
 				replacedKey = fieldKey
-				*blobs = append(*blobs, preparedBlobInput{contentType: ct, data: data})
+				*blobs = append(*blobs, preparedBlobInput{
+					contentType:        ct,
+					data:               data,
+					parentIndexPlusOne: parentIndexPlusOne,
+				})
+				childParentIndexPlusOne = len(*blobs)
 				*reps = append(*reps, stagedMediaReplacement{apply: func(id string) {
 					fn()
 					obj["historyOutputRef"] = appServerHistoryOutputURLPrefix + id
@@ -674,15 +691,17 @@ func collectStagedOutputBlobs(value any, minimumItemBytes int, maxItemBytes int6
 			}
 		}
 		for key, child := range typed {
+			nextParent := parentIndexPlusOne
 			if replacedKey != "" && key == replacedKey {
-				// 父节点已覆盖并替换该子树：跳过子树内嵌输出，避免占用无关预留容量。
-				continue
+				// 将被父节点覆盖的子树标记为该父节点的后代：
+				// 仅在父节点准入成功后跳过后代预留；若父节点因容量/单条上限被拒，后代仍可独立脱水。
+				nextParent = childParentIndexPlusOne
 			}
-			collectStagedOutputBlobs(child, minimumItemBytes, maxItemBytes, blobs, reps)
+			collectStagedOutputBlobs(child, minimumItemBytes, nextParent, blobs, reps)
 		}
 	case []any:
 		for _, child := range typed {
-			collectStagedOutputBlobs(child, minimumItemBytes, maxItemBytes, blobs, reps)
+			collectStagedOutputBlobs(child, minimumItemBytes, parentIndexPlusOne, blobs, reps)
 		}
 	}
 }

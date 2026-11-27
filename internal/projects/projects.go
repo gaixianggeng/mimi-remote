@@ -27,6 +27,7 @@ type Project struct {
 }
 
 type Registry struct {
+	mu             sync.RWMutex
 	projects       map[string]Project
 	list           []Project
 	pathCandidates []projectPathCandidate
@@ -183,19 +184,87 @@ func refreshProjectAvailability(project Project) Project {
 }
 
 func (r *Registry) List() []Project {
-	out := make([]Project, len(r.list))
-	for i, project := range r.list {
+	base := r.ListCached()
+	out := make([]Project, len(base))
+	for i, project := range base {
 		out[i] = refreshProjectAvailability(project)
 	}
+	r.applyRefreshedSnapshot(out)
 	return out
 }
 
 func (r *Registry) Get(id string) (Project, bool) {
-	project, ok := r.projects[id]
+	project, ok := r.GetCached(id)
 	if !ok {
 		return Project{}, false
 	}
-	return refreshProjectAvailability(project), true
+	refreshed := refreshProjectAvailability(project)
+	r.applyRefreshedProject(refreshed)
+	return refreshed, true
+}
+
+func (r *Registry) applyRefreshedSnapshot(updated []Project) {
+	if r == nil || len(updated) == 0 {
+		return
+	}
+	changed := false
+	r.mu.Lock()
+	for _, next := range updated {
+		prev, ok := r.projects[next.ID]
+		if !ok {
+			continue
+		}
+		if prev.RealPath != next.RealPath || prev.Missing != next.Missing {
+			changed = true
+		}
+		r.projects[next.ID] = next
+	}
+	for i, prev := range r.list {
+		if next, ok := r.projects[prev.ID]; ok {
+			r.list[i] = next
+		}
+	}
+	if changed {
+		r.pathCandidates = buildProjectPathCandidates(r.list)
+	}
+	r.mu.Unlock()
+	if changed {
+		r.clearPathMatchCache()
+	}
+}
+
+func (r *Registry) applyRefreshedProject(next Project) {
+	if r == nil || next.ID == "" {
+		return
+	}
+	changed := false
+	r.mu.Lock()
+	if prev, ok := r.projects[next.ID]; ok {
+		if prev.RealPath != next.RealPath || prev.Missing != next.Missing {
+			changed = true
+		}
+		r.projects[next.ID] = next
+		for i := range r.list {
+			if r.list[i].ID == next.ID {
+				r.list[i] = next
+				break
+			}
+		}
+		if changed {
+			r.pathCandidates = buildProjectPathCandidates(r.list)
+		}
+	}
+	r.mu.Unlock()
+	if changed {
+		r.clearPathMatchCache()
+	}
+}
+
+func (r *Registry) clearPathMatchCache() {
+	r.cacheMu.Lock()
+	clear(r.pathMatchCache)
+	r.pathMatchOrder = r.pathMatchOrder[:0]
+	r.cacheMu.Unlock()
 }
 
 // GetCached 纯内存按 ID 读取已登记项目，不触发 refreshProjectAvailability、
@@ -204,7 +273,9 @@ func (r *Registry) GetCached(id string) (Project, bool) {
 	if r == nil {
 		return Project{}, false
 	}
+	r.mu.RLock()
 	project, ok := r.projects[id]
+	r.mu.RUnlock()
 	return project, ok
 }
 
@@ -213,8 +284,10 @@ func (r *Registry) ListCached() []Project {
 	if r == nil {
 		return nil
 	}
+	r.mu.RLock()
 	out := make([]Project, len(r.list))
 	copy(out, r.list)
+	r.mu.RUnlock()
 	return out
 }
 
@@ -280,9 +353,9 @@ func MatchCanonicalPathInList(list []Project, canonicalPath string) (Project, bo
 	return best, true
 }
 
-// FindByPathRefreshed 解析目标路径并在刷新已配置项目符号链接后的快照中匹配，
-// 确保配置项目符号链接在运行期改指后，普通请求门禁与全局列表归属保持一致。
-func (r *Registry) FindByPathRefreshed(path string) (Project, bool) {
+// FindByPathVerifyingMatch 使用已刷新规范索引匹配路径，并在命中时仅复核被命中的单个项目，
+// 避免在常规请求路径同步探测其他无关项目（防止失效挂载阻塞健康工作区，同时保持与列表改指一致）。
+func (r *Registry) FindByPathVerifyingMatch(path string) (Project, bool) {
 	if r == nil {
 		return Project{}, false
 	}
@@ -299,13 +372,25 @@ func (r *Registry) FindByPathRefreshed(path string) (Project, bool) {
 		realPath = absPath
 	}
 	cleanReal := filepath.Clean(realPath)
-	refreshed := r.List()
-	if project, found := MatchCanonicalPathInList(refreshed, cleanReal); found {
+	cleanAbs := filepath.Clean(absPath)
+
+	matched, found := r.findByCleanPath(cleanReal)
+	if !found && cleanAbs != cleanReal {
+		matched, found = r.findByCleanPath(cleanAbs)
+	}
+	if !found {
+		return Project{}, false
+	}
+	live := refreshProjectAvailability(matched)
+	r.applyRefreshedProject(live)
+	if live.Missing {
+		return Project{}, false
+	}
+	if project, ok := MatchCanonicalPathInList([]Project{live}, cleanReal); ok {
 		return project, true
 	}
-	cleanAbs := filepath.Clean(absPath)
 	if cleanAbs != cleanReal {
-		if project, found := MatchCanonicalPathInList(refreshed, cleanAbs); found {
+		if project, ok := MatchCanonicalPathInList([]Project{live}, cleanAbs); ok {
 			return project, true
 		}
 	}
@@ -382,7 +467,10 @@ func pathForProjectMatch(path string) (string, bool) {
 }
 
 func (r *Registry) findByCleanPath(cleanPath string) (Project, bool) {
-	for _, candidate := range r.pathCandidates {
+	r.mu.RLock()
+	candidates := r.pathCandidates
+	r.mu.RUnlock()
+	for _, candidate := range candidates {
 		rel, err := filepath.Rel(candidate.path, cleanPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			continue
@@ -453,6 +541,9 @@ func buildProjectPathCandidates(projects []Project) []projectPathCandidate {
 }
 
 func appendProjectPathCandidate(candidates []projectPathCandidate, project Project, path string) []projectPathCandidate {
+	if normalized, ok := pathForProjectMatch(path); ok {
+		path = normalized
+	}
 	clean := filepath.Clean(path)
 	return append(candidates, projectPathCandidate{
 		project: project,

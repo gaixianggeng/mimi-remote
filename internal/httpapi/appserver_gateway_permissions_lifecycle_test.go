@@ -936,3 +936,177 @@ func TestRound2RegressionsStaleListRetryPushSeedGuardsWindowsSpellingAndAutoTitl
 		}
 	}
 }
+
+func TestRound3RegressionsOverlappingListsPushSeedCodexRecoveryAndSymlinkDrift(t *testing.T) {
+	projectDir := t.TempDir()
+	otherDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "demo", Name: "Demo", Path: projectDir},
+		{ID: "other", Name: "Other", Path: otherDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) [P1-1] Two overlapping lists: List 1 (writable) claimed FIRST commits FIRST;
+	//    List 2 (denial) claimed SECOND commits SECOND -> List 2's newer denial MUST win!
+	router1 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policy1A := newAppServerGatewayPolicy(router1, "claude")
+	policy1B := newAppServerGatewayPolicy(router1, "claude")
+	idA := json.RawMessage(`501`)
+	idB := json.RawMessage(`502`)
+	_ = policy1A.rememberPendingThreadRequest(&idA, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	_ = policy1B.rememberPendingThreadRequest(&idB, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	respAllow := []byte(fmt.Sprintf(`{"id":501,"result":{"data":[{"id":"t-overlap","cwd":%q,"canAcceptDirectInput":true}],"nextCursor":null}}`, projectDir))
+	respDeny := []byte(fmt.Sprintf(`{"id":502,"result":{"data":[{"id":"t-overlap","cwd":%q,"canAcceptDirectInput":false}],"nextCursor":null}}`, projectDir))
+	var frameA, frameB appServerGatewayFrame
+	_ = json.Unmarshal(respAllow, &frameA)
+	_ = json.Unmarshal(respDeny, &frameB)
+	claimA := policy1A.claimUpstreamResponse(respAllow, &frameA)
+	claimB := policy1B.claimUpstreamResponse(respDeny, &frameB)
+	if claimA.threadListBinding == nil || claimB.threadListBinding == nil || claimB.threadListBinding.claimDirectInputVersion <= claimA.threadListBinding.claimDirectInputVersion {
+		t.Fatalf("overlapping claims must allocate strictly increasing versions: A=%+v B=%+v", claimA.threadListBinding, claimB.threadListBinding)
+	}
+	decA := policy1A.processPendingThreadListResponse(respAllow, frameA, *claimA.threadListBinding)
+	if !decA.forward || decA.policyErr != nil {
+		t.Fatalf("list A failed: %+v", decA)
+	}
+	decB := policy1B.processPendingThreadListResponse(respDeny, frameB, *claimB.threadListBinding)
+	if !decB.forward || decB.policyErr != nil {
+		t.Fatalf("list B failed: %+v", decB)
+	}
+	if st, ok := policy1B.allowedThread("t-overlap"); !ok || !st.explicitDirectInputDenied || st.canAcceptDirectInput {
+		t.Fatalf("later denial list B must win over earlier writable list A: ok=%v %+v", ok, st)
+	}
+
+	// 2) [P1-2 + P1-4 + New P1 #1] Codex push-seeded thread:
+	//    - Even after main cache eviction leaves a surviving floor, listing keeps pushSeededOnly=true;
+	//    - Takeover error directs to thread/read;
+	//    - Listing emits synthetic canAcceptDirectInput=false ONLY on wire (NOT cached as explicitDirectInputDenied);
+	//    - Subsequent valid Codex thread/read (omitting canAcceptDirectInput) clears pushSeededOnly and enables turn/start!
+	router2 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policy2 := newAppServerGatewayPolicy(router2, "codex")
+	router2.allowGatewayThread(appServerGatewayAllowedThread{
+		id: "t-codex-seed", runtimeID: "codex", cwd: projectDir, scopeID: "demo",
+		directInputKnown: true, canAcceptDirectInput: true, rawDirectInput: rawDirectInputAllow,
+	})
+	// Evict main entry leaving restriction floor, then restore push seed into both router & policy2.
+	router2.gatewayThreadsMu.Lock()
+	delete(router2.gatewayThreads, gatewayThreadCacheKey("codex", "t-codex-seed"))
+	router2.gatewayThreadsMu.Unlock()
+	router2.restoreGatewayThreadAuthorization(pushbridge.LocateRecord{
+		Runtime: "codex", ThreadID: "t-codex-seed", CWD: projectDir,
+	})
+	// Seed connection-local entry via allowedThread read + check takeover error.
+	if st, ok := policy2.allowedThread("t-codex-seed"); !ok || !st.pushSeededOnly {
+		t.Fatalf("expected pushSeededOnly after push restore: ok=%v %+v", ok, st)
+	}
+	policy2.mu.Lock()
+	policy2.allowedThreads["t-codex-seed"] = appServerGatewayAllowedThread{
+		id: "t-codex-seed", runtimeID: "codex", cwd: projectDir, scopeID: "demo", pushSeededOnly: true,
+	}
+	policy2.mu.Unlock()
+	// Evict main push entry again so global baseline is floor-only while connection holds pushSeededOnly!
+	router2.gatewayThreadsMu.Lock()
+	delete(router2.gatewayThreads, gatewayThreadCacheKey("codex", "t-codex-seed"))
+	router2.gatewayThreadsMu.Unlock()
+
+	idCodexList := json.RawMessage(`504`)
+	_ = policy2.rememberPendingThreadRequest(&idCodexList, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	codexListOut, codexListFwd, codexListErr := policy2.observeUpstreamFrame(websocket.TextMessage, []byte(fmt.Sprintf(`{"id":504,"result":{"data":[{"id":"t-codex-seed","cwd":%q}],"nextCursor":null}}`, projectDir)))
+	if !codexListFwd || codexListErr != nil || !bytes.Contains(codexListOut, []byte(`"canAcceptDirectInput":false`)) {
+		t.Fatalf("codex list must emit synthetic canAcceptDirectInput=false while pushSeededOnly: fwd=%v err=%+v out=%s", codexListFwd, codexListErr, codexListOut)
+	}
+	if st, ok := policy2.allowedThread("t-codex-seed"); !ok || !st.pushSeededOnly || st.explicitDirectInputDenied {
+		t.Fatalf("floor-only baseline must keep pushSeededOnly and NOT cache synthetic explicitDirectInputDenied: ok=%v %+v", ok, st)
+	}
+	// Standard Codex thread/read omits canAcceptDirectInput -> must clear pushSeededOnly and allow turn/start!
+	readReq := []byte(`{"id":505,"method":"thread/read","params":{"threadId":"t-codex-seed"}}`)
+	if _, pErr := policy2.validateClientFrame(websocket.TextMessage, readReq); pErr != nil {
+		t.Fatalf("thread/read request rejected: %+v", pErr)
+	}
+	readResp := []byte(fmt.Sprintf(`{"id":505,"result":{"thread":{"id":"t-codex-seed","cwd":%q}}}`, projectDir))
+	if _, fwd, pErr := policy2.observeUpstreamFrame(websocket.TextMessage, readResp); !fwd || pErr != nil {
+		t.Fatalf("codex thread/read failed: fwd=%v err=%+v", fwd, pErr)
+	}
+	turnReq := []byte(fmt.Sprintf(`{"id":506,"method":"turn/start","params":{"threadId":"t-codex-seed","cwd":%q,"input":[{"type":"text","text":"hello"}]}}`, projectDir))
+	if _, pErr := policy2.validateClientFrame(websocket.TextMessage, turnReq); pErr != nil {
+		t.Fatalf("codex turn/start after valid thread/read must succeed: %+v", pErr)
+	}
+
+	// 3) [P1-3 + P1-4] Push-seeded Claude thread:
+	//    - thread/takeover rejection directs to thread/read;
+	//    - Cache evicted while thread/read is in flight -> forged cross-scope read STILL rejected!
+	router3 := &Router{projects: registry, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	router3.restoreGatewayThreadAuthorization(pushbridge.LocateRecord{Runtime: "claude", ThreadID: "t-evict-read", CWD: projectDir})
+	policy3 := newAppServerGatewayPolicy(router3, "claude")
+	takeoverReq := []byte(fmt.Sprintf(`{"id":503,"method":"thread/takeover","params":{"threadId":"t-evict-read","cwd":%q}}`, projectDir))
+	if _, pErr := policy3.validateClientFrame(websocket.TextMessage, takeoverReq); pErr == nil || !bytes.Contains([]byte(pErr.message), []byte("thread/read")) {
+		t.Fatalf("pushSeededOnly takeover rejection must direct to thread/read: %+v", pErr)
+	}
+	evictReadReq := []byte(`{"id":507,"method":"thread/read","params":{"threadId":"t-evict-read"}}`)
+	if _, pErr := policy3.validateClientFrame(websocket.TextMessage, evictReadReq); pErr != nil {
+		t.Fatalf("thread/read request failed: %+v", pErr)
+	}
+	// Evict BOTH router cache and conn cache while read is in flight.
+	router3.gatewayThreadsMu.Lock()
+	delete(router3.gatewayThreads, gatewayThreadCacheKey("claude", "t-evict-read"))
+	router3.gatewayThreadsMu.Unlock()
+	policy3.mu.Lock()
+	delete(policy3.allowedThreads, "t-evict-read")
+	policy3.mu.Unlock()
+	forgedReadResp := []byte(fmt.Sprintf(`{"id":507,"result":{"thread":{"id":"t-evict-read","cwd":%q,"canAcceptDirectInput":true}}}`, otherDir))
+	if _, fwd, pErr := policy3.observeUpstreamFrame(websocket.TextMessage, forgedReadResp); fwd || pErr == nil {
+		t.Fatalf("forged cross-scope thread/read after cache eviction must still be rejected: fwd=%v err=%+v", fwd, pErr)
+	}
+
+	// 4) [P1-5 + New P1 #2] Mid-page symlink retarget must NOT authorize former target repoV1,
+	//    and writableRoots / mentions (projectForGatewayPath) follow repoV2 and reject repoV1!
+	symBase := t.TempDir()
+	repoV1 := filepath.Join(symBase, "repo-v1")
+	repoV2 := filepath.Join(symBase, "repo-v2")
+	if err := os.MkdirAll(repoV1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repoV2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(symBase, "active-link")
+	if err := os.Symlink(repoV1, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	regSym, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "sym", Name: "Sym", Path: linkPath},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routerSym := &Router{projects: regSym, gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	policySym := newAppServerGatewayPolicy(routerSym, "codex")
+	var retargeted atomic.Bool
+	policySym.onStageAAfterPathProbe = func(int) {
+		if retargeted.CompareAndSwap(false, true) {
+			_ = os.Remove(linkPath)
+			_ = os.Symlink(repoV2, linkPath)
+		}
+	}
+	idSym := json.RawMessage(`508`)
+	_ = policySym.rememberPendingThreadRequest(&idSym, appServerGatewayPendingThreadRequest{method: "thread/list", globalDiscovery: true})
+	symResp := []byte(fmt.Sprintf(`{"id":508,"result":{"data":[{"id":"t-old-v1","cwd":%q},{"id":"t-new-v2","cwd":%q}],"nextCursor":null}}`, repoV1, repoV2))
+	symOut, symFwd, symErr := policySym.observeUpstreamFrame(websocket.TextMessage, symResp)
+	if !symFwd || symErr != nil {
+		t.Fatalf("mid-page symlink retarget list failed: fwd=%v err=%+v", symFwd, symErr)
+	}
+	if bytes.Contains(symOut, []byte(`"t-old-v1"`)) || !bytes.Contains(symOut, []byte(`"t-new-v2"`)) {
+		t.Fatalf("mid-page symlink retarget must drop old repoV1 and attribute new repoV2: %s", symOut)
+	}
+	if _, ok := policySym.allowedThread("t-old-v1"); ok {
+		t.Fatal("former symlink target t-old-v1 must NOT be authorized")
+	}
+	if _, ok := routerSym.projectForGatewayPath(repoV2); !ok {
+		t.Fatal("projectForGatewayPath (writableRoots/mentions) must accept retargeted repoV2")
+	}
+	if _, ok := routerSym.projectForGatewayPath(repoV1); ok {
+		t.Fatal("projectForGatewayPath (writableRoots/mentions) must reject former target repoV1")
+	}
+}

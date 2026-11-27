@@ -559,7 +559,7 @@ func (r *Router) projectForGatewayPathWithRealPath(raw string) (projects.Project
 	if err != nil {
 		return projects.Project{}, "", false
 	}
-	project, ok := r.projects.FindByPath(realPath)
+	project, ok := r.projects.FindByPathVerifyingMatch(realPath)
 	return project, realPath, ok
 }
 
@@ -583,7 +583,7 @@ func (r *Router) gatewayScopeForPathWithPendingUse(raw string, acquirePendingUse
 	if err != nil {
 		return gatewayScope{}, "", false
 	}
-	if project, ok := r.projects.FindByPathRefreshed(realPath); ok {
+	if project, ok := r.projects.FindByPathVerifyingMatch(realPath); ok {
 		return gatewayScope{id: project.ID, realPath: realPath, project: project}, "", true
 	}
 
