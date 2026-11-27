@@ -121,6 +121,7 @@ struct QueuedTurnManagerSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     let turns: [QueuedTurnEntry]
+    var showsGuideCurrentTurn: Bool = true
     let canGuideCurrentTurn: Bool
     let onUpdate: (QueuedTurnEntry, CodexAppServerTurnPayload) -> Void
     let onDelete: (QueuedTurnEntry) -> Void
@@ -157,7 +158,7 @@ struct QueuedTurnManagerSheet: View {
                                             editingTurn = QueuedTurnEditorDraft(turn: turn)
                                         }
                                         .disabled(turn.dispatchState == .dispatching)
-                                        if turn.intent.canGuideCurrentTurn {
+                                        if showsGuideCurrentTurn && turn.intent.canGuideCurrentTurn {
                                             Button(L10n.text("ui.direct_current_reply_now"), systemImage: "text.bubble") {
                                                 onGuideNow(turn)
                                             }

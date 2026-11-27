@@ -13,6 +13,78 @@ extension SessionStore {
         )
     }
 
+    func supportsTurnSteer(runtimeProvider: String?) -> Bool {
+        RuntimeFeatureSupport.supportsTurnSteer(for: runtimeProvider ?? "codex", declaredBy: turnSteerRuntimeProviders)
+    }
+
+    /// 探测各 Runtime 通道的可用性与目标/权限继承/引导能力声明（#791 / #1172 / #1177）。
+    func refreshRuntimeChannelCapabilities(
+        using client: any SessionStoreAPIClient,
+        hostScope: HostScope
+    ) async -> Bool {
+        var available: Set<String> = []
+        var unprobed: Set<String> = []
+        var goals: Set<String> = []
+        var unprobedGoals: Set<String> = []
+        var preservePerm: Set<String> = []
+        var unprobedPreservePerm: Set<String> = []
+        var steer: Set<String> = []
+        var unprobedSteer: Set<String> = []
+        for provider in RuntimeFeatureSupport.runtimeProviders {
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
+            do {
+                if try await client.runtimeChannelAvailable(runtimeProvider: provider) {
+                    guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
+                    available.insert(provider)
+                    do {
+                        if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) { goals.insert(provider) }
+                    } catch { unprobedGoals.insert(provider) }
+                    do {
+                        if try await client.runtimeSupportsPreserveThreadPermissions(runtimeProvider: provider) {
+                            preservePerm.insert(provider)
+                        }
+                    } catch { unprobedPreservePerm.insert(provider) }
+                    do {
+                        if try await client.runtimeSupportsTurnSteer(runtimeProvider: provider) { steer.insert(provider) }
+                    } catch { unprobedSteer.insert(provider) }
+                }
+            } catch {
+                unprobed.insert(provider)
+            }
+        }
+        guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
+        available.formUnion(availableRuntimeProviders.intersection(unprobed))
+        goals.formUnion(threadGoalRuntimeProviders.intersection(unprobed.union(unprobedGoals)))
+        preservePerm.formUnion(preserveThreadPermissionRuntimeProviders.intersection(unprobed.union(unprobedPreservePerm)))
+        steer.formUnion(turnSteerRuntimeProviders.intersection(unprobed.union(unprobedSteer)))
+        let diagnostics = await client.runtimeChannelDiagnostics()
+        guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
+        availableRuntimeProviders = available
+        runtimeChannelDiagnosticsByProvider = diagnostics
+        threadGoalRuntimeProviders = goals
+        preserveThreadPermissionRuntimeProviders = preservePerm
+        turnSteerRuntimeProviders = steer
+        return true
+    }
+
+    func refreshSingleRuntimeCapabilities(
+        provider: String,
+        hostScope: HostScope
+    ) async {
+        if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
+           appStore.activeHostScope == hostScope {
+            threadGoalRuntimeProviders.insert(provider)
+        }
+        if let supportsPreserve = try? await clientFactory().runtimeSupportsPreserveThreadPermissions(runtimeProvider: provider),
+           appStore.activeHostScope == hostScope {
+            if supportsPreserve { preserveThreadPermissionRuntimeProviders.insert(provider) } else { preserveThreadPermissionRuntimeProviders.remove(provider) }
+        }
+        if let supportsSteer = try? await clientFactory().runtimeSupportsTurnSteer(runtimeProvider: provider),
+           appStore.activeHostScope == hostScope {
+            if supportsSteer { turnSteerRuntimeProviders.insert(provider) } else { turnSteerRuntimeProviders.remove(provider) }
+        }
+    }
+
     func refreshSelectedThreadGoal() async {
         guard let sessionID = selectedSessionID else {
             return

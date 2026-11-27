@@ -41759,6 +41759,23 @@
         }
       }
     },
+    "ui.the_current_running_channel_does_not_support_steer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current running channel does not support steering the current reply"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前运行通道不支持引导当前回复"
+          }
+        }
+      }
+    },
     "ui.the_current_session_has_been_refreshed": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

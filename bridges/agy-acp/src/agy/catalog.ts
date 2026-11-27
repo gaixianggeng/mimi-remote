@@ -26,6 +26,7 @@ import {
   resolveTranscriptPath,
   snapshotTranscriptState,
   snapshotTranscriptStateDetailed,
+  type OwnTurnTranscriptWatermark,
   type TranscriptActivityInfo,
   type TranscriptSnapshotResult,
   type TranscriptTurnSnapshot,
@@ -113,7 +114,7 @@ export interface AgySessionBackend {
   inspectExternalActivity?(
     sessionId: string,
     origin: AgySessionOrigin,
-    options?: { bypassProcessCache?: boolean },
+    options?: { bypassProcessCache?: boolean; ownSettledWatermark?: OwnTurnTranscriptWatermark },
   ): Promise<TranscriptActivityInfo | undefined>;
   snapshotTranscriptState?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptTurnSnapshot | undefined>;
   snapshotTranscriptStateDetailed?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptSnapshotResult>;
@@ -401,13 +402,18 @@ export function createAcpSessionBackend(
       };
     },
 
-    inspectExternalActivity(sessionId: string, origin: AgySessionOrigin, options?: { bypassProcessCache?: boolean }) {
+    inspectExternalActivity(
+      sessionId: string,
+      origin: AgySessionOrigin,
+      options?: { bypassProcessCache?: boolean; ownSettledWatermark?: OwnTurnTranscriptWatermark },
+    ) {
       const ownPids = new Set<number>();
       if (cliSharedAcp.pid) ownPids.add(cliSharedAcp.pid);
       if (otherSharedAcp.pid) ownPids.add(otherSharedAcp.pid);
       return inspectTranscriptActivity(sessionId, origin, env(), {
         ownPids,
         ...(options?.bypassProcessCache ? { bypassProcessCache: true } : {}),
+        ...(options?.ownSettledWatermark ? { ownSettledWatermark: options.ownSettledWatermark } : {}),
       });
     },
 
@@ -456,15 +462,21 @@ export class AgyCatalog {
     options?: { bypassProcessCache?: boolean },
   ): Promise<TranscriptActivityInfo | undefined> {
     if (!this.deps.backend.inspectExternalActivity) return undefined;
+    await this.deps.overlay.load();
+    const ownSettledWatermark = this.deps.overlay.getOwnTurnWatermark(sessionId);
+    const mergedOptions = {
+      ...(options?.bypassProcessCache ? { bypassProcessCache: true } : {}),
+      ...(ownSettledWatermark ? { ownSettledWatermark } : {}),
+    };
     const origin = await this.deps.backend.resolveSessionOrigin(sessionId);
     if (!origin) {
       // 写路径新鲜复核时，即使会话尚无 .db/transcript 落盘，仍按默认 cli 路径执行实时进程持有检测（C11 round5）。
       if (options?.bypassProcessCache) {
-        return this.deps.backend.inspectExternalActivity(sessionId, "cli", options);
+        return this.deps.backend.inspectExternalActivity(sessionId, "cli", mergedOptions);
       }
       return undefined;
     }
-    return this.deps.backend.inspectExternalActivity(sessionId, origin, options);
+    return this.deps.backend.inspectExternalActivity(sessionId, origin, mergedOptions);
   }
 
   async transcriptState(sessionId: string): Promise<TranscriptTurnSnapshot | undefined> {

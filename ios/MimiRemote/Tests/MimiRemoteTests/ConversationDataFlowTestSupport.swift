@@ -565,6 +565,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var runtimeThreadGoalSupport: [String: Bool] = ["codex": true]
     /// 各 Runtime 通道是否声明 preserve_thread_permissions；默认与新版 agentd 一致（#1177）。
     var runtimePreserveThreadPermissionSupport: [String: Bool] = ["codex": true, "agy": true]
+    /// 各 Runtime 通道是否声明 turn/steer；默认与真实 agentd 一致，Codex 与 Claude 声明（#1172）。
+    var runtimeTurnSteerSupport: [String: Bool] = ["codex": true, "claude": true]
     /// 探测抛错（不是返回 false）的 Runtime，模拟回前台换代窗口里没探成。
     var runtimeChannelErrors: Set<String> = []
     /// 按 Runtime 定向查询的目录；未设置的 Runtime 沿用聚合目录。
@@ -875,6 +877,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func runtimeSupportsPreserveThreadPermissions(runtimeProvider: String) async throws -> Bool {
         runtimePreserveThreadPermissionSupport[runtimeProvider] ?? false
+    }
+
+    func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool {
+        runtimeTurnSteerSupport[runtimeProvider] ?? false
     }
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
