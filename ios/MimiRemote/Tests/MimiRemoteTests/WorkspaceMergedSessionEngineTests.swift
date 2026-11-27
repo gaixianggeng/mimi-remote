@@ -146,7 +146,8 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
         XCTAssertNotNil(degradedProjection.partialNotice)
         XCTAssertEqual(degradedProjection.partialNotice?.degradedRuntimes, [.agy])
 
-        // Missing listMeta on Agy must be classified as unverifiedHealth (not trusted completeExhausted).
+        // Missing listMeta on Agy must be classified as unverifiedHealth (not trusted completeExhausted),
+        // without nagging legacy-server users with a permanent "partial results" banner.
         var unverifiedEngine = WorkspaceMergedSessionEngine(
             hostScope: hostScope,
             enabledRuntimes: [.agy]
@@ -160,6 +161,33 @@ final class WorkspaceMergedSessionEngineTests: XCTestCase {
         XCTAssertEqual(unverifiedProjection.completeness, .partial)
         XCTAssertEqual(unverifiedProjection.strictCommittedCount, 0)
         XCTAssertEqual(unverifiedProjection.visibleSessions.map(\.id), ["a1"])
+        XCTAssertNil(unverifiedProjection.partialNotice)
+
+        // Host-disabled runtimes (e.g., Claude turned off on Mac) must be excluded cleanly without banner.
+        var hostDisabledEngine = WorkspaceMergedSessionEngine(
+            hostScope: hostScope,
+            enabledRuntimes: [.codex, .claude, .agy]
+        )
+        hostDisabledEngine.resetForRefresh(availableRuntimeProviders: ["codex", "agy"])
+        hostDisabledEngine.ingestPage(
+            runtime: .codex,
+            page: makePage(runtime: "codex", items: [("x1", 1_700_000_006_000, nil, nil)], hasMore: false),
+            isRefresh: true
+        )
+        hostDisabledEngine.ingestPage(
+            runtime: .agy,
+            page: makePage(
+                runtime: "agy",
+                items: [("a1", 1_700_000_005_000, nil, nil)],
+                hasMore: false,
+                listMeta: SessionListMeta(complete: true)
+            ),
+            isRefresh: true
+        )
+        let hostDisabledProjection = hostDisabledEngine.projection(targetVisibleCount: 20)
+        XCTAssertEqual(hostDisabledProjection.completeness, .completeExhausted)
+        XCTAssertNil(hostDisabledProjection.partialNotice)
+        XCTAssertEqual(hostDisabledProjection.visibleSessions.map(\.id), ["x1", "a1"])
 
         // All unavailable must produce .allUnavailable (never .completeExhausted).
         var unavailableEngine = WorkspaceMergedSessionEngine(

@@ -36,7 +36,11 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
 
     func hasLoadedFirstPage(for key: WorkspaceMergedPresentationKey) -> Bool {
         guard let slot = slots[key] else { return false }
-        return slot.engine.streams.values.contains { $0.hasLoadedAnyPage || $0.status.isUnavailableOrFailed }
+        let active = slot.engine.streams.values.filter { !$0.status.isHostDisabled }
+        if active.isEmpty {
+            return !slot.engine.streams.isEmpty
+        }
+        return active.contains { $0.hasLoadedAnyPage || $0.status.isUnavailableOrFailed }
     }
 
     func loadState(for key: WorkspaceMergedPresentationKey) -> WorkspaceSessionLoadState {
@@ -44,8 +48,10 @@ final class WorkspaceMergedSessionCoordinator: ObservableObject {
         if slot.isLoading {
             return .loading
         }
+        let active = slot.engine.streams.values.filter { !$0.status.isHostDisabled }
         if let errorMessage = slot.errorMessage,
-           slot.engine.streams.values.allSatisfy({ $0.status.isUnavailableOrFailed }) {
+           !active.isEmpty,
+           active.allSatisfy({ $0.status.isUnavailableOrFailed }) {
             return .failed(errorMessage)
         }
         return hasLoadedFirstPage(for: key) ? .loaded : .idle

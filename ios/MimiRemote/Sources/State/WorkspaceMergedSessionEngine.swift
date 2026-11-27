@@ -28,6 +28,8 @@ struct WorkspaceMergedSessionEngine: Equatable {
         case loading
         case ready
         case exhausted
+        /// 主机侧未启用/未安装的运行时（正常配置差异，不触发错误或降级告警横幅）。
+        case hostDisabled
         case unavailable(String?)
         case failed(String)
 
@@ -38,6 +40,10 @@ struct WorkspaceMergedSessionEngine: Equatable {
             default:
                 return false
             }
+        }
+
+        var isHostDisabled: Bool {
+            self == .hostDisabled
         }
     }
 
@@ -73,7 +79,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
                 return true
             case .ready:
                 return hasMore
-            case .loading, .exhausted, .unavailable, .failed:
+            case .loading, .exhausted, .hostDisabled, .unavailable, .failed:
                 return false
             }
         }
@@ -129,7 +135,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
             var state = StreamState(runtime: runtime)
             if !availableRuntimeProviders.isEmpty,
                !availableRuntimeProviders.contains(runtime.runtimeProvider) {
-                state.status = .unavailable(nil)
+                state.status = .hostDisabled
                 state.hasMore = false
             }
             streams[runtime] = state
@@ -173,7 +179,16 @@ struct WorkspaceMergedSessionEngine: Equatable {
             isPureGitRetry = false
         }
 
-        if !pageIntegrity.isTrusted && !isPureGitRetry {
+        // 仅显式降级或未确认的 Controlled Global 推进语义记为黏性降级；
+        // 旧版服务端缺少 listMeta（.unverifiedHealth）仍限制严格水位，但不误报成“返回了部分结果”。
+        let isExplicitDegradation: Bool
+        switch pageIntegrity {
+        case .degraded, .unverifiedGlobalDisposition:
+            isExplicitDegradation = true
+        case .trusted, .unverifiedHealth:
+            isExplicitDegradation = false
+        }
+        if isExplicitDegradation && !isPureGitRetry {
             stream.everDegradedInChain = true
         }
         stream.integrity = pageIntegrity
@@ -344,10 +359,27 @@ struct WorkspaceMergedSessionEngine: Equatable {
         budgetExhausted: Bool = false
     ) -> WorkspaceMergedProjection {
         let clampedTarget = max(1, targetVisibleCount)
-        let activeStreams = enabledRuntimes.compactMap { streams[$0] }
+        let configuredStreams = enabledRuntimes.compactMap { streams[$0] }
+        let activeStreams = configuredStreams.filter { !$0.status.isHostDisabled }
+
+        // 若所有已启用运行时在当前主机均未启用/不可用，展示明确的全不可用诊断。
+        if activeStreams.isEmpty {
+            return WorkspaceMergedProjection(
+                visibleSessions: [],
+                totalLoadedListableCount: 0,
+                strictCommittedCount: 0,
+                completeness: .allUnavailable,
+                canLoadMore: false,
+                hasInitialContent: true,
+                partialNotice: WorkspaceMergedPartialNotice(
+                    unavailableRuntimes: configuredStreams.map(\.runtime),
+                    degradedRuntimes: []
+                )
+            )
+        }
+
         let anyLoaded = activeStreams.contains(where: \.hasLoadedAnyPage)
-        let allUnavailableOrFailed = !activeStreams.isEmpty
-            && activeStreams.allSatisfy { $0.status.isUnavailableOrFailed }
+        let allUnavailableOrFailed = activeStreams.allSatisfy { $0.status.isUnavailableOrFailed }
 
         // 尚未收到任何远端页且非全不可用：返回 `.cachedPreview` 瞬时投影本地 Store 缓存。
         if !anyLoaded && !allUnavailableOrFailed {
@@ -495,8 +527,15 @@ struct WorkspaceMergedSessionEngine: Equatable {
             .filter { $0.status.isUnavailableOrFailed }
             .map(\.runtime)
         let degradedRuntimes = activeStreams
-            .filter { !$0.status.isUnavailableOrFailed && $0.hasLoadedAnyPage && !$0.isHealthyForStrictPrefix }
+            .filter {
+                !$0.status.isUnavailableOrFailed
+                    && $0.hasLoadedAnyPage
+                    && ($0.everDegradedInChain || $0.orderViolated)
+            }
             .map(\.runtime)
+        let unverifiedStreamsPresent = activeStreams.contains {
+            !$0.status.isUnavailableOrFailed && $0.hasLoadedAnyPage && !$0.isHealthyForStrictPrefix
+        }
         let partialNotice: WorkspaceMergedPartialNotice? = (unavailableRuntimes.isEmpty && degradedRuntimes.isEmpty)
             ? nil
             : WorkspaceMergedPartialNotice(
@@ -510,6 +549,7 @@ struct WorkspaceMergedSessionEngine: Equatable {
         }
         let hasPartialFactor = !unavailableRuntimes.isEmpty
             || !degradedRuntimes.isEmpty
+            || unverifiedStreamsPresent
             || budgetExhausted
 
         let completeness: WorkspaceMergedCompleteness

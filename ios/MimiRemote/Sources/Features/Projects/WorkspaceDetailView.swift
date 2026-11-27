@@ -173,31 +173,26 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
                 .accessibilityIdentifier("workspace.mergedAllUnavailable")
-            } else if browseScope.isAll, recentSessions.isEmpty, mergedCompleteness != .completeExhausted {
-                // M10 空态铁律：只有全部运行时完整耗尽时才能展示「暂无会话」；
-                // 缓存预览态保持占位，部分不可用/降级时展示明确诊断与重试入口。
-                if mergedCompleteness == .cachedPreview {
-                    recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
-                } else {
-                    ContentUnavailableView {
-                        Label(
-                            L10n.text("ui.workspace_merged_partial_empty_title"),
-                            systemImage: "exclamationmark.triangle"
-                        )
-                    } description: {
-                        Text(
-                            mergedPartialNotice?.localizedMessage
-                                ?? ( {
-                                    if case .failed(let message) = sessionLoadState { return message }
-                                    return L10n.text("ui.workspace_merged_partial_degraded_title")
-                                }() )
-                        )
-                    } actions: {
-                        Button(L10n.text("ui.reload"), action: onRefreshSessions)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 150)
-                    .accessibilityIdentifier("workspace.mergedPartialEmpty")
+            } else if browseScope.isAll, recentSessions.isEmpty, mergedCompleteness == .cachedPreview {
+                recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
+            } else if browseScope.isAll,
+                      recentSessions.isEmpty,
+                      mergedCompleteness != .completeExhausted,
+                      let mergedPartialNotice,
+                      !mergedPartialNotice.isEmpty {
+                // M10 空态铁律：存在真实不可用或降级通道时绝不误显「暂无会话」，展示明确诊断与重试入口。
+                ContentUnavailableView {
+                    Label(
+                        L10n.text("ui.workspace_merged_partial_empty_title"),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                } description: {
+                    Text(mergedPartialNotice.localizedMessage)
+                } actions: {
+                    Button(L10n.text("ui.reload"), action: onRefreshSessions)
                 }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .accessibilityIdentifier("workspace.mergedPartialEmpty")
             } else if !browseScope.isAll, recentSessions.isEmpty, let runtimeDiagnostic {
                 ContentUnavailableView {
                     Label(runtimeDiagnostic.localizedTitle, systemImage: "exclamationmark.triangle")
