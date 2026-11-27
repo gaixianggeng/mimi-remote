@@ -436,6 +436,7 @@ export class ThreadRuntime {
     } finally {
       const isCurrentTurn = this.currentTurn === turn;
       const hadConflict = isCurrentTurn && Boolean(this.externalWriteConflict);
+      const savedBaseline = isCurrentTurn ? this.externalWriteBaseline : undefined;
       const completedAtMs = Date.now();
       const attemptStatus: "completed" | "failed" | "interrupted" =
         finishedTurn?.status === "failed"
@@ -493,9 +494,16 @@ export class ThreadRuntime {
           nativeUserStepIndex = idx;
         }
       }
+      const finalExternalWriteConflict =
+        hadConflict
+        || (
+          savedBaseline !== undefined
+          && afterSnapshot !== undefined
+          && detectExternalConcurrentWrite(savedBaseline, afterSnapshot).detected
+        );
       let settledWatermark: OwnTurnTranscriptWatermark | null | undefined;
       if (this.turnGeneration === turnGeneration) {
-        if (hadConflict || afterInspection.kind === "error") {
+        if (finalExternalWriteConflict || afterInspection.kind === "error") {
           settledWatermark = null;
         } else if (afterSnapshot !== undefined) {
           const lastUserStepIndex = afterSnapshot.userInputStepIndices?.length
@@ -551,7 +559,7 @@ export class ThreadRuntime {
       if (this.turnGeneration !== turnGeneration) {
         return;
       }
-      const ext = hadConflict
+      const ext = finalExternalWriteConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
         : undefined;
       if (this.turnGeneration !== turnGeneration) {

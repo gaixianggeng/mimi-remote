@@ -552,4 +552,93 @@ describe("gh-1175: own-turn settlement watermark prevents false desktop-running 
       await harness.close();
     }
   });
+
+  test("e2e: external USER_INPUT written between last conflict poll and final afterInspection is NOT absorbed into own watermark", async () => {
+    const sessionId = "gh1175-late-external-race";
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`), "db");
+    await writeTranscript(sessionId, [
+      { step_index: 0, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+      { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", content: "base ok" },
+    ]);
+
+    let resolvePromptStarted: (() => void) | undefined;
+    const promptStarted = new Promise<void>((resolve) => {
+      resolvePromptStarted = resolve;
+    });
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "GH1175 Late External Race",
+          updatedAt: new Date().toISOString(),
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+      onPrompt: async ({ signal }) => {
+        await writeTranscript(sessionId, [
+          { step_index: 0, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+          { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", content: "base ok" },
+          { step_index: 2, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nphone task\n</USER_REQUEST>" },
+        ]);
+        resolvePromptStarted?.();
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) return resolve();
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        // Simulate Desktop appending a brand-new USER_INPUT right as cancel settles, AFTER the last poll (poll disabled via huge interval).
+        await writeTranscript(sessionId, [
+          { step_index: 0, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+          { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", content: "base ok" },
+          { step_index: 2, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nphone task\n</USER_REQUEST>" },
+          { step_index: 3, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\ndesktop prompt right at cancel\n</USER_REQUEST>" },
+        ]);
+        return { stopReason: "cancelled" };
+      },
+    });
+
+    const harness = await createHarness(world, { externalWritePollMs: 60_000 });
+    try {
+      const started = await harness.rpc<{ turn: { id: string } }>("turn/start", {
+        threadId: sessionId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "phone task" }],
+      });
+      await promptStarted;
+      await harness.rpc("turn/interrupt", { threadId: sessionId, turnId: started.turn.id });
+
+      // Wait for runPrompt finally to finish and emit desktop-owned status.
+      for (let i = 0; i < 150; i += 1) {
+        const ownedNotice = harness.notifications.find(
+          (n) =>
+            n.method === "thread/status/changed"
+            && (n.params as { canAcceptDirectInput?: boolean; claudeOwner?: { status?: string } })?.canAcceptDirectInput === false
+            && (n.params as { claudeOwner?: { status?: string } })?.claudeOwner?.status === "busy",
+        );
+        if (ownedNotice) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      const readRes = await harness.rpc<{ thread: { canAcceptDirectInput: boolean; claudeOwner?: { status?: string } } }>(
+        "thread/read",
+        { threadId: sessionId },
+      );
+      expect(readRes.thread.canAcceptDirectInput).toBe(false);
+      expect(readRes.thread.claudeOwner?.status).toBe("busy");
+
+      await expect(
+        harness.rpc("turn/start", {
+          threadId: sessionId,
+          cwd: workspaceDir,
+          input: [{ type: "text", text: "should be blocked" }],
+        }),
+      ).rejects.toThrow("Another Antigravity process");
+    } finally {
+      await harness.close();
+    }
+  });
 });
