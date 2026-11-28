@@ -213,8 +213,11 @@ run_quick "$worktree_a" "$TEMP_DIR/stale-busy.log"
 assert_equal "75" "$quick_status" "证据失效且设备忙时必须阻塞，而不是通过"
 assert_contains "$(cat "$TEMP_DIR/stale-busy.log")" "构建证据不可复用：自上次成功构建后已变化" \
   "回退构建时必须说明证据失效原因"
-assert_contains "$(cat "$TEMP_DIR/stale-busy.log")" "Task other-worktree-task，已占用 2m" \
-  "设备忙时必须说明占用者和占用时长"
+assert_contains "$(cat "$TEMP_DIR/stale-busy.log")" "Task other-worktree-task，已占用" \
+  "设备忙时必须说明占用者"
+# 时长格式是 2m05s。租约回拨 125 秒后再跑 quick，慢机器会跨过 3 分钟，不能写死 2m。
+grep -Eq 'Task other-worktree-task，已占用 [0-9]+m[0-9]{2}s' "$TEMP_DIR/stale-busy.log" \
+  || fail "设备忙时必须说明占用时长。输出：$(cat "$TEMP_DIR/stale-busy.log")"
 assert_contains "$(cat "$TEMP_DIR/stale-busy.log")" "IOS_DEVICE_LEASE_WAIT_SECONDS=<秒>" \
   "无等待预算时必须提示如何排队"
 assert_equal "$builds_after_test" "$(build_count)" "阻塞时不得调用 xcodebuild"
