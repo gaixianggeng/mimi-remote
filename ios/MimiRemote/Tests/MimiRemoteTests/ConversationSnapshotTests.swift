@@ -76,8 +76,13 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
 
 @MainActor
 final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
-    // 快照只验证布局和样式，消息时间固定，避免每次运行因当前分钟变化产生视觉误报。
+    // 快照只验证布局和样式。绝对时间 1782879660 在 Asia/Shanghai 是 07/01 12:21，
+    // 在 UTC 是 07/01 04:21。旧基线按东八区写入；GitHub 托管机是 UTC，时差只占
+    // 不到 2% 像素，所以 main 上这组测试仍能过。整图重录会把 UTC 写进基线，
+    // 这里把进程时区固定回上海，重录和以后的比对都得到 12:21。
     private let snapshotMessageDate = Date(timeIntervalSince1970: 1_782_879_660)
+    private var previousTimeZone: TimeZone?
+    private var didPinSnapshotTimeZone = false
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -87,6 +92,17 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             UIDevice.current.userInterfaceIdiom == .pad,
             "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
         )
+        previousTimeZone = .current
+        NSTimeZone.default = TimeZone(identifier: "Asia/Shanghai")!
+        didPinSnapshotTimeZone = true
+    }
+
+    override func tearDownWithError() throws {
+        if didPinSnapshotTimeZone, let previousTimeZone {
+            NSTimeZone.default = previousTimeZone as NSTimeZone
+            didPinSnapshotTimeZone = false
+        }
+        try super.tearDownWithError()
     }
 
     // 路径条要在深路径下仍然只占一行高度，并从绝对路径的左侧开始展示。
