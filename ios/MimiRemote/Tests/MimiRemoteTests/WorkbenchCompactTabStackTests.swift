@@ -590,7 +590,7 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
     }
 
     @MainActor
-    func testPhoneSessionNavigationTitleShowsWorkspaceIconOnlyOnPhoneWithProject() {
+    func testSessionNavigationTitleShowsWorkspaceIconOnFloatingCapsuleHeader() {
         let phoneLayout = WorkbenchLayout(
             containerWidth: 402,
             horizontalSizeClass: .compact,
@@ -628,19 +628,19 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
                 projectID: nil
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             SessionNavigationTitlePresentation.showsWorkspaceIcon(
                 layout: compactPadLayout,
                 projectID: "proj_mimi"
             ),
-            "窄窗 iPad 顶栏保持原有纯文字排版"
+            "窄窗 iPad 悬浮顶栏与 iPhone 一样显示工作区图标"
         )
         XCTAssertFalse(
             SessionNavigationTitlePresentation.showsWorkspaceIcon(
                 layout: widePadLayout,
                 projectID: "proj_mimi"
             ),
-            "宽屏 iPad 顶栏保持原有纯文字排版"
+            "宽屏 iPad 仍用系统导航栏，标题保持纯文字"
         )
     }
 
@@ -671,9 +671,9 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         )
 
         XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: phoneLayout))
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 不启用悬浮玻璃顶栏")
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 不启用悬浮玻璃顶栏")
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 不启用悬浮玻璃顶栏")
+        XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 与 iPhone 一样启用悬浮玻璃顶栏")
+        XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 与 iPhone 一样启用悬浮玻璃顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 保留系统导航栏，不替换侧栏与检查器入口")
 
         // 三件等高（44pt），中间胶囊与左右按钮最小间距 8pt，最大宽度按 min(304, 可用宽度) 兜底。
         XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.itemHeight, 44)

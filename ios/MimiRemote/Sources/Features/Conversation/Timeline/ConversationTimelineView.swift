@@ -15,6 +15,7 @@ struct ConversationTimelineView: View {
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
     let deepensTopScrollEdge: Bool
+    let hidesBottomScrollEdge: Bool
     @State private var expandedActivityIDs: Set<String> = []
     @State private var expandedProcessMessageIDs: Set<UUID> = []
     @State private var collapsedProcessMessageIDs: Set<UUID> = []
@@ -36,12 +37,14 @@ struct ConversationTimelineView: View {
         layout: ConversationLayout,
         sessionID: SessionID? = nil,
         allowsTopUnderlap: Bool = false,
-        deepensTopScrollEdge: Bool = false
+        deepensTopScrollEdge: Bool = false,
+        hidesBottomScrollEdge: Bool = false
     ) {
         self.layout = layout
         explicitSessionID = sessionID
         self.allowsTopUnderlap = allowsTopUnderlap
         self.deepensTopScrollEdge = deepensTopScrollEdge
+        self.hidesBottomScrollEdge = hidesBottomScrollEdge
     }
 
     private var displayedSessionID: SessionID? {
@@ -208,7 +211,8 @@ struct ConversationTimelineView: View {
                 // 不再在任一边缘切出一整块与页面不同的实色底板。
                 .workbenchSoftConversationScrollEdges(
                     allowsTopUnderlap: allowsTopUnderlap,
-                    deepensTopEdge: deepensTopScrollEdge
+                    deepensTopEdge: deepensTopScrollEdge,
+                    hidesBottomEdge: hidesBottomScrollEdge
                 )
                 // 是否贴近底部用滚动几何实时判断，只在贴底时跟随流式输出，
                 // 用户上翻历史时不会被尾部更新甩回底部。

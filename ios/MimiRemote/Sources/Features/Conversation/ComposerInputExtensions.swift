@@ -536,19 +536,7 @@ extension ComposerView {
         .padding(.horizontal, singleLine ? 6 : 8)
         .padding(.vertical, singleLine ? 4 : 8)
         .frame(maxWidth: .infinity)
-        .modifier(
-            ComposerCardSurfaceModifier(
-                shape: shape,
-                tokens: tokens,
-                colorScheme: colorScheme,
-                reduceTransparency: reduceTransparency,
-                increasedContrast: colorSchemeContrast == .increased,
-                usesFloatingGlass: true,
-                voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
-                solidBorderColor: composerCardBorderColor(tokens),
-                borderWidth: composerCardBorderWidth
-            )
-        )
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
@@ -581,6 +569,9 @@ extension ComposerView {
         // Popover 必须挂在不会参与按压缩放的固定锚点上；否则系统可能在 spring
         // 回弹途中读取 source rect，让箭头与“+”入口出现瞬时偏移。
         .frame(width: 44, height: 44)
+        #if DEBUG
+        .modifier(ComposerAddContentEntryTriggerRegistration(action: { showsAddContentPanel.toggle() }))
+        #endif
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 skillShortcuts: enabledSkillShortcuts,
@@ -597,6 +588,7 @@ extension ComposerView {
                     for: composerRuntimeProvider
                 ),
                 showsCameraAction: showsCameraAttachmentAction,
+                usesFloatingGlass: composerUsesFloatingGlassSurface,
                 selectedSkillPaths: selectedSkillPaths,
                 onPickFile: {
                     presentFileImporter()
@@ -633,10 +625,14 @@ extension ComposerView {
                 }
             )
             .environmentObject(themeStore)
+            .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
             .onDisappear {
                 consumePendingAddContentAction()
             }
-            .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+            .presentationCompactAdaptation(
+                horizontal: dynamicTypeSize.isAccessibilitySize ? .sheet : .popover,
+                vertical: .sheet
+            )
         }
     }
 
@@ -725,12 +721,7 @@ extension ComposerView {
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .padding(8)
         .frame(maxWidth: .infinity)
-        .background {
-            composerContainerBackground(shape: shape, tokens: tokens)
-        }
-        .overlay {
-            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
-        }
+        .modifier(composerCardSurfaceModifier(shape: shape, tokens: tokens))
         .tint(tokens.accent)
         .accessibilityLabel(L10n.text("ui.expand_input_box"))
         .accessibilityValue(collapsedComposerText)
@@ -1266,7 +1257,12 @@ extension ComposerView {
         case .autoApprove:
             return themeStore.tokens(for: colorScheme).success
         case .fullAccess:
-            return .red
+            // 宽档卡片在 GlassEffectContainer 里。系统 `.red` 在离屏快照会收成黑色，
+            // 实机仍是红。这里用旧基线已经录到的 sRGB。iPhone 集成底栏继续用系统红。
+            if phoneKeyboardVisible != nil {
+                return .red
+            }
+            return Color(.sRGB, red: 1, green: 66.0 / 255.0, blue: 69.0 / 255.0, opacity: 1)
         }
     }
 

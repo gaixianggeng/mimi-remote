@@ -250,10 +250,11 @@ extension ComposerView {
         .help(ComposerTurnSettingsPolicy.unavailableMenuNotice)
     }
 
-    /// 与 `composerInputRow` / `phoneComposerCardBox` 一致：只有 iPhone 悬浮输入卡启用透明玻璃，
-    /// iPad 常规宽档与分屏窄档输入卡均使用实色底板。
+    /// 会话输入卡、待发送预览、模型九宫格和「+」面板请求同一套悬浮玻璃。
+    /// iPhone 与 iPad、窄档与宽档都不在这里分叉；经典模式、降低透明度、增强对比度
+    /// 和 iOS 26 以下的回退由 `ComposerCardResolvedSurface` 统一决定。
     var composerUsesFloatingGlassSurface: Bool {
-        usesNarrowComposerLayout && phoneKeyboardVisible != nil
+        true
     }
 
     private var modelGridPickerPopoverContent: some View {
@@ -685,7 +686,9 @@ struct ModelReasoningGridPopoverHost: View {
     private var presentationContainer: ModelReasoningGridPresentationContainer {
         ModelReasoningGridPresentationContainer.resolve(
             horizontalSizeClass: presentingHorizontalSizeClass,
-            verticalSizeClass: verticalSizeClass
+            verticalSizeClass: verticalSizeClass,
+            usesFloatingGlass: usesFloatingGlass,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
         )
     }
 
@@ -705,6 +708,7 @@ struct ModelReasoningGridPopoverHost: View {
             reduceTransparency: reduceTransparency,
             increasedContrast: increasedContrast
         )
+        let usesCompactPopover = presentationContainer == .compactPopover
         let picker = ModelReasoningGridPicker(
             options: options,
             layout: layout,
@@ -720,44 +724,30 @@ struct ModelReasoningGridPopoverHost: View {
         )
         // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
         .task { await onAppearEnsureCatalog() }
-        .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
-        // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
-        // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
-        // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
+        .presentationCompactAdaptation(
+            horizontal: usesCompactPopover ? .popover : .sheet,
+            vertical: .sheet
+        )
+        // compact popover 退化为 sheet（横屏、辅助功能大字号或 iPad 分屏）时，
+        // 标准字号贴合实际模型行数，辅助功能大字号使用 large detent 避免裁切。
         .presentationDetents(
             ModelReasoningGridPresentationChrome.presentationDetents(
                 layout: layout,
                 isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
             )
         )
-        .presentationDragIndicator(.visible)
+        .presentationDragIndicator(usesCompactPopover ? .hidden : .visible)
 
-        let presentedPicker = picker
-            .presentationCornerRadius(policy.cornerRadius)
-
-        if policy.backgroundOwner == .sheetPresentationBackground {
-            presentedPicker
-                .presentationBackground {
-                    ModelReasoningGridPresentationBackground(
-                        policy: policy,
-                        tokens: tokens,
-                        colorScheme: colorScheme,
-                        reduceTransparency: reduceTransparency,
-                        increasedContrast: increasedContrast
-                    )
-                    .environment(\.themeInterfaceStyle, interfaceStyle)
-                }
-        } else {
-            // 常规 iPad Popover：统一应用 `policy.cornerRadius`（20pt）并由面板自身根视图绘制共享实色表面，
-            // 同时声明 `.presentationBackground` 让宿主把箭头底色一并对齐。
-            presentedPicker
-                .presentationBackground(
-                    ModelReasoningGridPresentationChrome.solidFillColor(
-                        tokens: tokens,
-                        colorScheme: colorScheme
-                    )
-                )
-        }
+        picker.modifier(
+            ComposerPopupPresentationBackgroundModifier(
+                resolvedSurface: policy.surfaceStyle.composerCardSurface,
+                tokens: tokens,
+                colorScheme: colorScheme,
+                cornerRadius: policy.surfaceStyle == .liquidGlass && !presentationContainer.isSheet
+                    ? nil
+                    : policy.cornerRadius
+            )
+        )
     }
 }
 
@@ -789,10 +779,36 @@ private struct ComposerModelEntryTriggerBridgeKey: EnvironmentKey {
     static let defaultValue: ComposerModelEntryTriggerBridge? = nil
 }
 
+private struct ComposerAddContentEntryTriggerBridgeKey: EnvironmentKey {
+    static let defaultValue: ComposerModelEntryTriggerBridge? = nil
+}
+
 extension EnvironmentValues {
     var composerModelEntryTriggerBridge: ComposerModelEntryTriggerBridge? {
         get { self[ComposerModelEntryTriggerBridgeKey.self] }
         set { self[ComposerModelEntryTriggerBridgeKey.self] = newValue }
+    }
+
+    var composerAddContentEntryTriggerBridge: ComposerModelEntryTriggerBridge? {
+        get { self[ComposerAddContentEntryTriggerBridgeKey.self] }
+        set { self[ComposerAddContentEntryTriggerBridgeKey.self] = newValue }
+    }
+}
+
+struct ComposerAddContentEntryTriggerRegistration: ViewModifier {
+    @Environment(\.composerAddContentEntryTriggerBridge) private var bridge
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if let bridge {
+            content.onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)
+            } action: { frame in
+                bridge.register(frame: frame, action: action)
+            }
+        } else {
+            content
+        }
     }
 }
 

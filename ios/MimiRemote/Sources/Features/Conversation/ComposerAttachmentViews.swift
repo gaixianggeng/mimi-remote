@@ -458,10 +458,13 @@ struct FileImporterPresentationState: Equatable {
 struct AddContentPanel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
     @State private var page: AddContentPanelPage = .root
     @State private var searchText = ""
 
@@ -475,6 +478,7 @@ struct AddContentPanel: View {
     let showsAttachmentActions: Bool
     let showsSkillActions: Bool
     let showsCameraAction: Bool
+    var usesFloatingGlass: Bool = false
     let selectedSkillPaths: Set<String>
     let onPickFile: () -> Void
     let onCapturePhoto: () -> Void
@@ -485,6 +489,27 @@ struct AddContentPanel: View {
     let onRefreshCapabilities: () -> Void
     let onPermissionMode: (ComposerPermissionMode) -> Void
     let onShortcut: (String) -> Void
+
+    private var increasedContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    private var resolvedSurface: ComposerCardResolvedSurface {
+        ComposerCardResolvedSurface.resolve(
+            usesFloatingGlass: usesFloatingGlass,
+            interfaceStyle: interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
+    }
+
+    private var usesTranslucentInnerChrome: Bool {
+        resolvedSurface != .solidCard
+    }
+
+    private var adaptsToSheet: Bool {
+        dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact
+    }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -508,6 +533,7 @@ struct AddContentPanel: View {
                         errorMessage: capabilityErrorMessage,
                         isRefreshing: isRefreshingCapabilities,
                         maxListHeight: 320,
+                        usesTranslucentChrome: usesTranslucentInnerChrome,
                         onBack: {
                             searchText = ""
                             page = .root
@@ -547,17 +573,14 @@ struct AddContentPanel: View {
             reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 1),
             value: page
         )
-        // 整个 Sheet 只使用一层材质，避免内容区和底部留白分别落到不同的不透明背景上。
-        // “降低透明度”开启时改回主题实色，保证文字与控件对比度。
-        .presentationBackground {
-            if reduceTransparency {
-                tokens.surface
-            } else {
-                Rectangle()
-                    .fill(WorkbenchMaterial.surface)
-                    .overlay(tokens.surface.opacity(colorScheme == .light ? 0.28 : 0.20))
-            }
-        }
+        .modifier(
+            ComposerPopupPresentationBackgroundModifier(
+                resolvedSurface: resolvedSurface,
+                tokens: tokens,
+                colorScheme: colorScheme,
+                cornerRadius: resolvedSurface == .liquidGlass && !adaptsToSheet ? nil : 26
+            )
+        )
         .modifier(
             AddContentPanelPresentationSizing(
                 page: page,
@@ -565,8 +588,7 @@ struct AddContentPanel: View {
                 standardRootHeight: standardRootPanelHeight
             )
         )
-        .presentationDragIndicator(.visible)
-        .presentationCornerRadius(28)
+        .presentationDragIndicator(adaptsToSheet ? .visible : .hidden)
     }
 
     private func panelHeader(tokens: ThemeTokens) -> some View {
@@ -787,6 +809,36 @@ struct AddContentPanel: View {
         )
     }
 
+    private func innerCardFill(tokens: ThemeTokens) -> Color {
+        ComposerPopupPresentationSurface.innerCardFill(
+            tokens: tokens,
+            colorScheme: colorScheme,
+            usesTranslucentChrome: usesTranslucentInnerChrome,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
+    }
+
+    private func innerCardBorder(tokens: ThemeTokens) -> Color {
+        ComposerPopupPresentationSurface.innerCardBorder(
+            tokens: tokens,
+            colorScheme: colorScheme,
+            usesTranslucentChrome: usesTranslucentInnerChrome,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
+    }
+
+    private func innerIconCircleFill(tokens: ThemeTokens) -> Color {
+        usesTranslucentInnerChrome
+            ? ComposerEmbeddedPillPalette.fill(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+            : tokens.selectionFill
+    }
+
     private func sourceActionButton(
         title: String,
         subtitle: String,
@@ -795,13 +847,14 @@ struct AddContentPanel: View {
         tokens: ThemeTokens,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
+        return Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(themeStore.uiFont(size: 17, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .frame(width: 38, height: 38)
-                    .background(tokens.selectionFill, in: Circle())
+                    .background(innerIconCircleFill(tokens: tokens), in: Circle())
 
                 Text(title)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
@@ -811,12 +864,14 @@ struct AddContentPanel: View {
             }
             // 视觉内容保持紧凑，但整个格子都能点击，避免牺牲触控命中区域。
             .frame(maxWidth: .infinity, minHeight: 80)
-            .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .background(innerCardFill(tokens: tokens), in: shape)
             .overlay {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(tokens.border.opacity(0.62), lineWidth: 0.75)
+                shape.strokeBorder(
+                    innerCardBorder(tokens: tokens),
+                    lineWidth: increasedContrast ? 1.0 : 0.75
+                )
             }
-            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .contentShape(shape)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(title)
@@ -838,7 +893,7 @@ struct AddContentPanel: View {
                     .font(themeStore.uiFont(size: 16, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .frame(width: 36, height: 36)
-                    .background(tokens.selectionFill, in: Circle())
+                    .background(innerIconCircleFill(tokens: tokens), in: Circle())
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
@@ -950,7 +1005,11 @@ struct AddContentPanel: View {
                                     }
                                 }
                                 .padding(10)
-                                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .background(innerCardFill(tokens: tokens), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .strokeBorder(innerCardBorder(tokens: tokens), lineWidth: increasedContrast ? 1.0 : 0.75)
+                                }
                                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1001,9 +1060,13 @@ struct AddContentPanel: View {
                         }
                         .padding(10)
                         .background(
-                            tokens.elevatedSurface,
+                            innerCardFill(tokens: tokens),
                             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                         )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(innerCardBorder(tokens: tokens), lineWidth: increasedContrast ? 1.0 : 0.75)
+                        }
                         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1037,7 +1100,11 @@ struct AddContentPanel: View {
                                 .foregroundStyle(tokens.accent)
                         }
                         .padding(10)
-                        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .background(innerCardFill(tokens: tokens), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(innerCardBorder(tokens: tokens), lineWidth: increasedContrast ? 1.0 : 0.75)
+                        }
                         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
@@ -1073,7 +1140,10 @@ struct AddContentPanel: View {
         }
         .padding(.horizontal, 11)
         .frame(minHeight: 44)
-        .background(tokens.selectionFill.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            usesTranslucentInnerChrome ? innerIconCircleFill(tokens: tokens) : tokens.selectionFill.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
     }
 
     private func emptyCapabilities(title: String, detail: String, tokens: ThemeTokens) -> some View {

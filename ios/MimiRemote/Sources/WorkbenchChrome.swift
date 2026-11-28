@@ -977,20 +977,34 @@ extension View {
     @ViewBuilder
     func workbenchSoftConversationScrollEdges(
         allowsTopUnderlap: Bool,
-        deepensTopEdge: Bool = false
+        deepensTopEdge: Bool = false,
+        hidesBottomEdge: Bool = false
     ) -> some View {
         if #available(iOS 26.0, *) {
+            // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
+            // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
+            // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
+            // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
+            // 宽档玻璃输入卡自己虚化盖住的正文，底部不能再留全宽 soft edge，
+            // 否则卡片采到的是雾带，看起来像实色底板。两条修饰必须链在同一个列表上。
             if allowsTopUnderlap {
-                // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
-                // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
-                // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
-                // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
                 if deepensTopEdge {
-                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-                        .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                    if hidesBottomEdge {
+                        scrollEdgeEffectStyle(.soft, for: .top)
+                            .scrollEdgeEffectHidden(true, for: .bottom)
+                            .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                    } else {
+                        scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                            .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                    }
+                } else if hidesBottomEdge {
+                    scrollEdgeEffectStyle(.soft, for: .top)
+                        .scrollEdgeEffectHidden(true, for: .bottom)
                 } else {
                     scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
                 }
+            } else if hidesBottomEdge {
+                scrollEdgeEffectHidden(true, for: .bottom)
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -1623,7 +1637,7 @@ enum SessionNavigationTitlePresentation {
     }
 
     static func showsWorkspaceIcon(layout: WorkbenchLayout, projectID: String?) -> Bool {
-        guard layout.usesPhoneIntegratedBottomChrome,
+        guard PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: layout),
               let projectID = projectID?.trimmingCharacters(in: .whitespacesAndNewlines),
               !projectID.isEmpty else {
             return false
@@ -1660,7 +1674,7 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// iPhone 会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
+/// 紧凑导航会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
 private struct WorkbenchUsesFloatingCapsuleHeaderKey: EnvironmentKey {
     static let defaultValue = false
 }
