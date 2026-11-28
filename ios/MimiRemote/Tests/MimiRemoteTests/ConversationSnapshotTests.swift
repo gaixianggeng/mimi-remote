@@ -93,12 +93,25 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
         )
         previousTimeZone = .current
+        setenv("TZ", "Asia/Shanghai", 1)
+        tzset()
+        if let zone = CFTimeZoneCreateWithName(nil, "Asia/Shanghai" as CFString, true) {
+            CFTimeZoneSetDefault(zone)
+        }
         NSTimeZone.default = TimeZone(identifier: "Asia/Shanghai")!
         didPinSnapshotTimeZone = true
+        XCTAssertEqual(
+            TimeZone.current.identifier,
+            "Asia/Shanghai",
+            "会话快照必须把进程时区固定在东八区，否则 1782879660 会显示成 04:21。"
+        )
     }
 
     override func tearDownWithError() throws {
         if didPinSnapshotTimeZone, let previousTimeZone {
+            unsetenv("TZ")
+            tzset()
+            CFTimeZoneResetSystem()
             NSTimeZone.default = previousTimeZone
             didPinSnapshotTimeZone = false
         }

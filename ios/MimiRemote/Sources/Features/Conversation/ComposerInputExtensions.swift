@@ -1257,7 +1257,12 @@ extension ComposerView {
         case .autoApprove:
             return themeStore.tokens(for: colorScheme).success
         case .fullAccess:
-            return .red
+            // 宽档卡片在 GlassEffectContainer 里。系统 `.red` 在离屏快照会收成黑色，
+            // 实机仍是红。这里用旧基线已经录到的 sRGB。iPhone 集成底栏继续用系统红。
+            if phoneKeyboardVisible != nil {
+                return .red
+            }
+            return Color(.sRGB, red: 1, green: 66.0 / 255.0, blue: 69.0 / 255.0, opacity: 1)
         }
     }
 

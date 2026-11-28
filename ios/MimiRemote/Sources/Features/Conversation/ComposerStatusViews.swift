@@ -1299,41 +1299,23 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
     @ViewBuilder
     private func liquidGlassSurface(_ content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            // 手机集成底栏继续把正文放进 glassEffect，保持现有 iPhone 观感。
-            // 宽档容器不能这样：系统色（完全访问的 `.red`）在 GlassEffectContainer 里
-            // 离屏快照会收成黑色，实机仍是红色。玻璃只做底，文字留在普通图层。
-            if presentsInGlassContainer {
-                GlassEffectContainer(spacing: 0) {
-                    wideGlassContent(content)
-                }
-            } else {
-                content
-                    .glassEffect(.regular, in: shape)
-                    .overlay {
-                        if let voiceAccentBorderColor {
-                            shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
-                        }
+            let glass = content
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    if let voiceAccentBorderColor {
+                        shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
                     }
+                }
+            // safeAreaInset 里单独的 glassEffect 采不到列表，只会铺成一块均匀灰底。
+            // 顶栏胶囊能透出正文，是因为它放在 GlassEffectContainer 里。
+            if presentsInGlassContainer {
+                GlassEffectContainer(spacing: 0) { glass }
+            } else {
+                glass
             }
         } else {
             ultraThinMaterialSurface(content)
         }
-    }
-
-    @available(iOS 26.0, *)
-    @ViewBuilder
-    private func wideGlassContent(_ content: Content) -> some View {
-        content
-            .background {
-                shape
-                    .fill(Color.clear)
-                    .glassEffect(.regular, in: shape)
-            }
-            .overlay {
-                if let voiceAccentBorderColor {
-                    shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
-                }
-            }
     }
 
     private func ultraThinMaterialSurface(_ content: Content) -> some View {
