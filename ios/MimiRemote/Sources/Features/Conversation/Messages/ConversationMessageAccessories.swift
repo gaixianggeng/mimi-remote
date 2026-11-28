@@ -684,15 +684,14 @@ extension ConversationMessage {
 
     private static func compactTime(_ date: Date) -> String {
         // FormatStyle 默认跟着系统时区，不读测试里设置的 TimeZone.current。
-        // 显式传入后，会话快照可以把进程时区固定在东八区，和旧基线的 12:21 一致。
+        // 属性赋值后，会话快照可以把进程时区固定在东八区，和旧基线的 12:21 一致。
         let timeZone = TimeZone.current
         var calendar = Calendar.autoupdatingCurrent
         calendar.timeZone = timeZone
-        if calendar.isDateInToday(date) {
-            return date.formatted(.dateTime.hour().minute().timeZone(timeZone))
-        }
-        return date.formatted(
-            .dateTime.month(.twoDigits).day(.twoDigits).hour().minute().timeZone(timeZone)
-        )
+        var style = calendar.isDateInToday(date)
+            ? Date.FormatStyle.dateTime.hour().minute()
+            : Date.FormatStyle.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()
+        style.timeZone = timeZone
+        return date.formatted(style)
     }
 }
