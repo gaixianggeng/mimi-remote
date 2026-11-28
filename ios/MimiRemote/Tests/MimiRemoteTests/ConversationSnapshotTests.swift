@@ -99,7 +99,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
     override func tearDownWithError() throws {
         if didPinSnapshotTimeZone, let previousTimeZone {
-            NSTimeZone.default = previousTimeZone as NSTimeZone
+            NSTimeZone.default = previousTimeZone
             didPinSnapshotTimeZone = false
         }
         try super.tearDownWithError()
